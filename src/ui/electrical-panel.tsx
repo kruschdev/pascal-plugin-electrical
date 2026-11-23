@@ -156,6 +156,7 @@ export default function ElectricalRailPanel() {
     }
     let routedCount = 0
     let avoidedCount = 0
+    let skippedCount = 0
 
     runAsSingleSceneHistoryStep(useScene, () => {
       // 1. Reroute any existing clashing runs around higher-priority trades
@@ -189,16 +190,20 @@ export default function ElectricalRailPanel() {
             routedCount += 1
             avoidedCount += (outcome.result.avoidedObstacles as unknown[]).length
           }
-        } catch {
-          // Skip detached devices
+        } catch (err) {
+          skippedCount += 1
+          console.warn(`[pascal-plugin-electrical] Skipped routing device "${dev.id}":`, err)
         }
       }
     })
 
+    const skippedSuffix = skippedCount > 0 ? ` (${skippedCount} skipped)` : ''
     setStatusMsg(
       routedCount > 0
-        ? `Routed ${routedCount} run(s); yielded around ${avoidedCount} plumbing/HVAC/structural obstacle(s).`
-        : 'All assigned devices are already routed.',
+        ? `Routed ${routedCount} run(s); yielded around ${avoidedCount} plumbing/HVAC/structural obstacle(s)${skippedSuffix}.`
+        : skippedCount > 0
+          ? `No circuits routed (${skippedCount} device(s) skipped due to missing panel reference).`
+          : 'All assigned devices are already routed.',
     )
   }
 

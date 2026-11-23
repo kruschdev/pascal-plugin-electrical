@@ -205,7 +205,7 @@ describe('Pascal Plugin API v1 Conformance & Agent Operations (E-014 / E-016)', 
     )
     const txNode = txOut.changes!.create![0]!.node
     nodes[txNode.id] = txNode
-    expect(txNode.type).toBe('electrical:transformer')
+    expect(String(txNode.type)).toBe('electrical:transformer')
     expect(txOut.result.maxPrimaryOcpdAmps).toBe(125)
     expect(txOut.result.maxSecondaryOcpdAmps).toBe(300)
   })
@@ -236,8 +236,8 @@ describe('Pascal Plugin API v1 Conformance & Agent Operations (E-014 / E-016)', 
     const rGeo = buildElectricalConduitRunGeometry(run, dummyCtx)
     const rPlan = buildElectricalConduitRunFloorplan(run, dummyCtx)
     expect(rGeo.children.length).toBe(5) // 3 cylinders + 2 bend elbows sharing 1 SphereGeometry
-    expect((rGeo.children[3] as { geometry: unknown }).geometry).toBe(
-      (rGeo.children[4] as { geometry: unknown }).geometry,
+    expect((rGeo.children[3] as unknown as { geometry: unknown }).geometry).toBe(
+      (rGeo.children[4] as unknown as { geometry: unknown }).geometry,
     )
     expect(rPlan.kind).toBe('group')
 
