@@ -3,7 +3,7 @@
  * Uses Pascal host CSS variables and scoped inline layout so zero global CSS leaks.
  */
 
-import type { AnyNode } from '@pascal-app/core'
+import { type AnyNode, runAsSingleSceneHistoryStep } from '@pascal-app/core'
 import { openEditorView, useScene, useViewer } from '@pascal-app/editor'
 import { useMemo, useState } from 'react'
 import { electricalAgentOperations } from '../agent-operations'
@@ -50,11 +50,15 @@ export default function ElectricalRailPanel() {
 
   const placePanel = () => {
     const levelId = activeLevelOf(nodes, selectedLevelId)
+    if (!levelId) {
+      setStatusMsg('Create a building level first before placing electrical equipment.')
+      return
+    }
     const idx = panels.length + 1
     const outcome = electricalAgentOperations.electrical_place_panel(
       nodes,
       {
-        levelId: levelId ?? undefined,
+        levelId,
         name: occupancy === 'commercial' ? `LP-${idx}` : `MDP-${idx}`,
         position: [idx * 1.2 - 1.2, 1.52, 0],
         occupancy,
@@ -73,6 +77,10 @@ export default function ElectricalRailPanel() {
 
   const placeDevice = (deviceKind: 'duplex' | 'gfci' | 'evse' | 'junction-box' | 'motor-load') => {
     const levelId = activeLevelOf(nodes, selectedLevelId)
+    if (!levelId) {
+      setStatusMsg('Create a building level first before placing electrical equipment.')
+      return
+    }
     const primaryPanel = panels[0]
     const idx = devices.length + 1
     const isHeavy = deviceKind === 'evse' || deviceKind === 'motor-load'
@@ -82,7 +90,7 @@ export default function ElectricalRailPanel() {
     const outcome = electricalAgentOperations.electrical_place_device(
       nodes,
       {
-        levelId: levelId ?? undefined,
+        levelId,
         name: `${deviceKind.toUpperCase()}-${idx}`,
         position: [1.5 + idx * 0.8, deviceKind === 'junction-box' ? 2.45 : 0.4, 1.5],
         deviceKind,
@@ -106,6 +114,10 @@ export default function ElectricalRailPanel() {
 
   const autoRouteAll = () => {
     const levelId = activeLevelOf(nodes, selectedLevelId)
+    if (!levelId) {
+      setStatusMsg('Create a building level first before routing circuits.')
+      return
+    }
     const primaryPanel = panels[0]
     if (!primaryPanel) {
       setStatusMsg('Place an electrical panel first before routing circuits.')
@@ -114,39 +126,43 @@ export default function ElectricalRailPanel() {
     let routedCount = 0
     let avoidedCount = 0
 
-    // 1. Reroute any existing clashing runs around higher-priority trades
-    for (const run of runs) {
-      const path = Array.isArray(run.path) ? (run.path as Vec3[]) : []
-      if (path.length < 2) continue
-      const res = routeElectricalRun(path[0]!, path[path.length - 1]!, obstacles)
-      if (res.avoidedObstacles.length > 0 || res.remainingClashes.length === 0) {
-        updateNode(run.id as never, { path: res.path } as Partial<AnyNode>)
-        avoidedCount += res.avoidedObstacles.length
-        routedCount += 1
-      }
-    }
-
-    // 2. Route any devices attached to a panel that don't have a run yet
-    const routedDevices = new Set(runs.map((r) => r.targetDeviceId).filter(Boolean))
-    for (const dev of devices) {
-      if (routedDevices.has(dev.id)) continue
-      const pid = (typeof dev.panelId === 'string' && dev.panelId) || primaryPanel.id
-      try {
-        const outcome = electricalAgentOperations.electrical_route_circuit(
-          nodes,
-          { panelId: pid, targetDeviceId: dev.id, occupancy },
-          { activeLevelId: levelId },
-        )
-        const created = outcome.changes?.create?.[0]
-        if (created) {
-          createNode(created.node, created.parentId as never)
+    runAsSingleSceneHistoryStep(useScene, () => {
+      // 1. Reroute any existing clashing runs around higher-priority trades
+      for (const run of runs) {
+        const path = Array.isArray(run.path) ? (run.path as Vec3[]) : []
+        if (path.length < 2) continue
+        const res = routeElectricalRun(path[0]!, path[path.length - 1]!, obstacles)
+        if (res.avoidedObstacles.length > 0 || res.remainingClashes.length === 0) {
+          updateNode(run.id as never, { path: res.path } as Partial<AnyNode>)
+          avoidedCount += res.avoidedObstacles.length
           routedCount += 1
-          avoidedCount += (outcome.result.avoidedObstacles as unknown[]).length
         }
-      } catch {
-        // Skip detached devices
       }
-    }
+
+      // 2. Route any devices attached to a panel that don't have a run yet
+      const routedDevices = new Set(runs.map((r) => r.targetDeviceId).filter(Boolean))
+      for (const dev of devices) {
+        if (routedDevices.has(dev.id)) continue
+        const pid = (typeof dev.panelId === 'string' && dev.panelId) || primaryPanel.id
+        try {
+          const liveNodes = useScene.getState().nodes
+          const outcome = electricalAgentOperations.electrical_route_circuit(
+            liveNodes,
+            { panelId: pid, targetDeviceId: dev.id, occupancy },
+            { activeLevelId: levelId },
+          )
+          const created = outcome.changes?.create?.[0]
+          if (created) {
+            createNode(created.node, created.parentId as never)
+            routedDevices.add(dev.id)
+            routedCount += 1
+            avoidedCount += (outcome.result.avoidedObstacles as unknown[]).length
+          }
+        } catch {
+          // Skip detached devices
+        }
+      }
+    })
 
     setStatusMsg(
       routedCount > 0

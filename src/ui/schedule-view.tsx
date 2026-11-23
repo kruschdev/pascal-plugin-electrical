@@ -4,7 +4,7 @@
  */
 
 import { useScene, useViewer } from '@pascal-app/editor'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { auditSceneElectrical } from '../nec/audit'
 import { calculateSceneLoad, type SceneNodeLike } from '../nec/load-calc'
 import {
@@ -32,7 +32,16 @@ export default function ElectricalScheduleView() {
   } = useElectricalUi()
 
   const [copiedCsv, setCopiedCsv] = useState(false)
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const record = nodes as unknown as Readonly<Record<string, SceneNodeLike>>
+
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current !== null) {
+        clearTimeout(copyTimeoutRef.current)
+      }
+    }
+  }, [])
 
   const panels = useMemo(
     () => Object.values(record).filter((n) => n.type === 'electrical:panel'),
@@ -66,9 +75,19 @@ export default function ElectricalScheduleView() {
 
   const copyCsv = async () => {
     if (!schedule || typeof navigator === 'undefined' || !navigator.clipboard) return
-    await navigator.clipboard.writeText(formatPanelScheduleCsv(schedule))
-    setCopiedCsv(true)
-    setTimeout(() => setCopiedCsv(false), 1800)
+    try {
+      await navigator.clipboard.writeText(formatPanelScheduleCsv(schedule))
+      setCopiedCsv(true)
+      if (copyTimeoutRef.current !== null) {
+        clearTimeout(copyTimeoutRef.current)
+      }
+      copyTimeoutRef.current = setTimeout(() => {
+        copyTimeoutRef.current = null
+        setCopiedCsv(false)
+      }, 1800)
+    } catch {
+      setCopiedCsv(false)
+    }
   }
 
   const tabs: { id: ScheduleTab; label: string }[] = [
