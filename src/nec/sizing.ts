@@ -404,9 +404,7 @@ export type VoltageDropResult = {
 export function calculateVoltageDrop(input: VoltageDropInput): VoltageDropResult {
   const material = input.material ?? 'cu'
   const maxDropPct = input.maxDropPct ?? 3.0
-  const phaseMultiplier = input.phases === 3 ? Math.SQRT2 * 1.224744871391589 : 2 // sqrt(3) vs 2
   const kFactor = input.phases === 3 ? Math.sqrt(3) : 2
-  void phaseMultiplier
 
   const computeDropFor = (gauge: WireGauge): { volts: number; pct: number } => {
     const spec = CONDUCTOR_SPECS[gauge]
