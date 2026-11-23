@@ -50,6 +50,9 @@ export type PanelWireMetadata = {
 
 export type WiredPanelInteriorOptions = {
   schedule: PanelSchedule
+  width?: number
+  height?: number
+  depth?: number
   nemaRating?: 'NEMA-1' | 'NEMA-3R' | 'NEMA-4X'
   viewMode?: PanelInteriorViewMode
   wires?: PanelWireVisibility
@@ -202,12 +205,14 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
   const isThreePhase = schedule.voltageSystem !== '120/240V-1P'
   const is480V = schedule.voltageSystem === '277/480V-3P'
 
-  const w = isCommercial ? 0.52 : 0.42
+  const w = opts.width ?? (isCommercial ? 0.52 : 0.42)
   const visibleRows = Math.max(6, Math.min(21, schedule.rows.length))
-  const rowPitch = 0.0285 // ~1.12" vertical breaker pitch
+  const defaultRowPitch = 0.0285 // ~1.12" vertical breaker pitch
+  const h = opts.height ?? Math.max(isCommercial ? 1.05 : 0.86, visibleRows * defaultRowPitch + 0.34)
+  const maxBankH = Math.max(0.18, h - 0.32)
+  const rowPitch = Math.min(defaultRowPitch, maxBankH / visibleRows)
   const breakerBankH = visibleRows * rowPitch
-  const h = Math.max(isCommercial ? 1.05 : 0.86, breakerBankH + 0.34)
-  const d = 0.145
+  const d = opts.depth ?? 0.145
   const wall = 0.004
   const zBack = -d / 2 + wall
 

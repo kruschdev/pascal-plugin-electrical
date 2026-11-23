@@ -95,6 +95,9 @@ export function buildElectricalPanelGeometry(
   const cad = node.coverRemoved
     ? buildWiredPanelInteriorCad({
         schedule: buildPanelSchedule(node, []),
+        width: w,
+        height: h,
+        depth: d,
         nemaRating: node.nemaRating,
         viewMode: 'cover-off',
       })

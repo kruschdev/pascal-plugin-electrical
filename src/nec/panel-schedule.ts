@@ -462,7 +462,10 @@ export function buildElectricalTakeoff(
 
     // For cables (NM-B/MC) footage is cable length; for conduit (EMT/PVC/RMC) conductor footage is length * conductor count
     const isCable = raceway === 'nm-b' || raceway === 'mc'
-    const wireKey = isCable ? `${raceway.toUpperCase()} #${gauge}` : `THHN #${gauge} AWG`
+    const matTag = run.conductorMaterial === 'al' ? 'AL' : 'CU'
+    const wireKey = isCable
+      ? `${raceway.toUpperCase()} ${matTag} #${gauge}`
+      : `${matTag === 'AL' ? 'XHHW AL' : 'THHN CU'} #${gauge} AWG`
     wireFeetByGauge[wireKey] = (wireFeetByGauge[wireKey] ?? 0) + (isCable ? lenFt : lenFt * conductors)
 
     if (!isCable) {
@@ -682,10 +685,11 @@ export function buildElectricalTakeoff(
 
   for (const [wKey, info] of Object.entries(wireByGauge)) {
     const est = estimateWireUnitPricePerFtUsd(wKey)
+    const matLabel = wKey.includes(' AL ') ? 'Aluminum' : 'Copper'
     addLine(
       'wire-cable',
       `WIRE-${wKey.replace(/\s+/g, '-')}`,
-      `${wKey} Copper Conductor / Cable (incl. 10% waste)`,
+      `${wKey} ${matLabel} Conductor / Cable (incl. 10% waste)`,
       info.feet,
       'ft',
       est.usd,

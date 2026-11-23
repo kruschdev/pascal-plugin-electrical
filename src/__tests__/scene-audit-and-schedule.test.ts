@@ -369,4 +369,42 @@ describe('Live Scene NEC Audit, Panel Schedule & Takeoff', () => {
       txReport.findings.some((f) => f.codeRef === 'NEC 110.26(E)' && f.nodeIds.includes('electx_1')),
     ).toBe(true)
   })
+
+  test('R2-BUG-03: BOM takeoff distinguishes Aluminum vs Copper conductors and prices AL feeders accurately', () => {
+    const cuTakeoff = buildElectricalTakeoff({
+      run_cu: {
+        id: 'run_cu',
+        type: 'electrical:conduit-run',
+        racewayType: 'emt',
+        tradeSize: '1-1/2"',
+        conductorMaterial: 'cu',
+        wireGauge: '2',
+        totalConductorCount: 4,
+        path: [
+          [0, 1.5, 0],
+          [10, 1.5, 0],
+        ],
+      },
+    })
+    const alTakeoff = buildElectricalTakeoff({
+      run_al: {
+        id: 'run_al',
+        type: 'electrical:conduit-run',
+        racewayType: 'emt',
+        tradeSize: '1-1/2"',
+        conductorMaterial: 'al',
+        wireGauge: '2',
+        totalConductorCount: 4,
+        path: [
+          [0, 1.5, 0],
+          [10, 1.5, 0],
+        ],
+      },
+    })
+    const cuWire = cuTakeoff.pricing.lineItems.find((i) => i.category === 'wire-cable')!
+    const alWire = alTakeoff.pricing.lineItems.find((i) => i.category === 'wire-cable')!
+    expect(cuWire.description).toContain('Copper')
+    expect(alWire.description).toContain('Aluminum')
+    expect(alWire.unitPriceUsd).toBeLessThan(cuWire.unitPriceUsd * 0.6)
+  })
 })

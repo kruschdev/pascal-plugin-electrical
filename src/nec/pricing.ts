@@ -196,15 +196,17 @@ export function estimateBreakerPriceUsd(spec: string): { usd: number; hrs: numbe
 export function estimateWireUnitPricePerFtUsd(wireKey: string): { usd: number; hrsPerFt: number } {
   const gaugeMatch = wireKey.match(/#([0-9/]+(?:kcmil)?)/)
   const gauge = (gaugeMatch?.[1] as WireGauge | undefined) ?? '12'
-  const thhnBase = THHN_PRICE_PER_FT_USD[gauge] ?? 0.35
+  const isAluminum = /\bAL\b/i.test(wireKey)
+  const baseCu = THHN_PRICE_PER_FT_USD[gauge] ?? 0.35
+  const conductorBase = isAluminum ? round2(baseCu * 0.46) : baseCu
 
   if (wireKey.startsWith('NM-B')) {
-    return { usd: round2(thhnBase * 2.45), hrsPerFt: 0.014 }
+    return { usd: round2(conductorBase * 2.45), hrsPerFt: 0.014 }
   }
   if (wireKey.startsWith('MC')) {
-    return { usd: round2(thhnBase * 3.4), hrsPerFt: 0.018 }
+    return { usd: round2(conductorBase * 3.4), hrsPerFt: 0.018 }
   }
-  return { usd: thhnBase, hrsPerFt: 0.008 }
+  return { usd: conductorBase, hrsPerFt: 0.008 }
 }
 
 export function formatElectricalBomCsv(pricing: ElectricalPricingSummary): string {
