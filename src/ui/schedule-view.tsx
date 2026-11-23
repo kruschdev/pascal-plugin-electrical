@@ -1,0 +1,325 @@
+/**
+ * Full-pane EditorHostView (`krusch:electrical:schedule`) that opens beside the 3D/2D scene:
+ * Tabs: Panel Schedule | NEC 220 Load Calc | NEC & Trade Audit | Material Takeoff.
+ */
+
+import { useScene, useViewer } from '@pascal-app/editor'
+import { useMemo, useState } from 'react'
+import { auditSceneElectrical } from '../nec/audit'
+import { calculateSceneLoad, type SceneNodeLike } from '../nec/load-calc'
+import {
+  buildElectricalTakeoff,
+  buildPanelSchedule,
+  formatPanelScheduleCsv,
+} from '../nec/panel-schedule'
+import { COMMERCIAL_LIGHTING_VA_PER_SQFT, type CommercialOccupancy } from '../nec/tables'
+import { type ScheduleTab, useElectricalUi } from './store'
+
+export default function ElectricalScheduleView() {
+  const nodes = useScene((s) => s.nodes)
+  const setSelection = useViewer((s) => s.setSelection)
+  const {
+    occupancy,
+    setOccupancy,
+    residentialMethod,
+    setResidentialMethod,
+    commercialBuildingType,
+    setCommercialBuildingType,
+    activeTab,
+    setActiveTab,
+    selectedPanelId,
+    setSelectedPanelId,
+  } = useElectricalUi()
+
+  const [copiedCsv, setCopiedCsv] = useState(false)
+  const record = nodes as unknown as Readonly<Record<string, SceneNodeLike>>
+
+  const panels = useMemo(
+    () => Object.values(record).filter((n) => n.type === 'electrical:panel'),
+    [record],
+  )
+  const devices = useMemo(
+    () => Object.values(record).filter((n) => n.type === 'electrical:device'),
+    [record],
+  )
+  const runs = useMemo(
+    () => Object.values(record).filter((n) => n.type === 'electrical:conduit-run'),
+    [record],
+  )
+
+  const activePanel = panels.find((p) => p.id === selectedPanelId) ?? panels[0] ?? null
+  const schedule = useMemo(
+    () => (activePanel ? buildPanelSchedule(activePanel, devices, runs) : null),
+    [activePanel, devices, runs],
+  )
+  const loadCalc = useMemo(
+    () =>
+      calculateSceneLoad(record, {
+        occupancy,
+        residentialMethod,
+        commercialBuildingType,
+      }),
+    [record, occupancy, residentialMethod, commercialBuildingType],
+  )
+  const audit = useMemo(() => auditSceneElectrical(record), [record])
+  const takeoff = useMemo(() => buildElectricalTakeoff(record), [record])
+
+  const copyCsv = async () => {
+    if (!schedule || typeof navigator === 'undefined' || !navigator.clipboard) return
+    await navigator.clipboard.writeText(formatPanelScheduleCsv(schedule))
+    setCopiedCsv(true)
+    setTimeout(() => setCopiedCsv(false), 1800)
+  }
+
+  const tabs: { id: ScheduleTab; label: string }[] = [
+    { id: 'schedule', label: 'Panel Schedule' },
+    { id: 'load-calc', label: 'NEC 220 Load Calc' },
+    { id: 'audit', label: `NEC Audit (${audit.errorCount}/${audit.warningCount})` },
+    { id: 'takeoff', label: 'Takeoff' },
+  ]
+
+  return (
+    <div
+      style={{
+        height: '100%',
+        overflow: 'auto',
+        padding: 16,
+        fontSize: 12,
+        color: 'var(--foreground, #e5e7eb)',
+        background: 'var(--background, #0f172a)',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 14,
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 15 }}>Electrical Engineering & NEC Schedule</h2>
+          <div style={{ fontSize: 11, opacity: 0.7 }}>
+            Drafting aid — verify all load calculations and clearances with local AHJ before construction.
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setActiveTab(t.id)}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 6,
+                border: '1px solid var(--border, rgba(255,255,255,0.14))',
+                background: activeTab === t.id ? 'rgba(245,158,11,0.22)' : 'transparent',
+                color: 'inherit',
+                fontWeight: activeTab === t.id ? 600 : 400,
+                cursor: 'pointer',
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* TAB 1: Panel Schedule */}
+      {activeTab === 'schedule' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {!schedule ? (
+            <div style={{ opacity: 0.75 }}>No electrical panels in the scene yet. Place a panelboard from the Electrical rail panel.</div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <select
+                    value={schedule.panelId}
+                    onChange={(e) => setSelectedPanelId(e.target.value)}
+                    style={{
+                      padding: '4px 8px',
+                      borderRadius: 6,
+                      background: 'rgba(255,255,255,0.06)',
+                      color: 'inherit',
+                      border: '1px solid var(--border, rgba(255,255,255,0.18))',
+                    }}
+                  >
+                    {panels.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {String(p.name ?? p.id)} ({String(p.voltageSystem ?? '120/240V-1P')})
+                      </option>
+                    ))}
+                  </select>
+                  <span>
+                    {schedule.voltageSystem} · {schedule.busRatingAmps}A Bus / {schedule.mainBreakerAmps}A{' '}
+                    {schedule.mainType.toUpperCase()} · {schedule.usedSpaces}/{schedule.spaces} spaces ·{' '}
+                    {schedule.utilizationPct}% util · {schedule.imbalancePct}% phase imbalance
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void copyCsv()}
+                  style={{
+                    padding: '5px 10px',
+                    borderRadius: 6,
+                    border: '1px solid var(--border, rgba(255,255,255,0.18))',
+                    background: 'rgba(255,255,255,0.06)',
+                    color: 'inherit',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {copiedCsv ? 'Copied CSV' : 'Copy CSV'}
+                </button>
+              </div>
+
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.18)', textAlign: 'left' }}>
+                    <th style={thStyle}>Ckt</th>
+                    <th style={thStyle}>Description</th>
+                    <th style={thStyle}>Bkr</th>
+                    <th style={thStyle}>VA</th>
+                    <th style={{ ...thStyle, textAlign: 'center' }}>Phase</th>
+                    <th style={thStyle}>VA</th>
+                    <th style={thStyle}>Bkr</th>
+                    <th style={thStyle}>Description</th>
+                    <th style={thStyle}>Ckt</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {schedule.rows.map((row) => (
+                    <tr key={row.leftCircuit} style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                      <td style={tdStyle}>{row.leftCircuit}</td>
+                      <td style={tdStyle}>{row.left ? row.left.description : <span style={{ opacity: 0.45 }}>SPARE</span>}</td>
+                      <td style={tdStyle}>{row.left ? `${row.left.poles}P-${row.left.breakerAmps}A` : '—'}</td>
+                      <td style={tdStyle}>{row.left ? row.left.loadVa : 0}</td>
+                      <td style={{ ...tdStyle, textAlign: 'center', fontWeight: 700 }}>{row.phaseLabel}</td>
+                      <td style={tdStyle}>{row.right ? row.right.loadVa : 0}</td>
+                      <td style={tdStyle}>{row.right ? `${row.right.poles}P-${row.right.breakerAmps}A` : '—'}</td>
+                      <td style={tdStyle}>{row.right ? row.right.description : <span style={{ opacity: 0.45 }}>SPARE</span>}</td>
+                      <td style={tdStyle}>{row.rightCircuit}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* TAB 2: NEC 220 Load Calc */}
+      {activeTab === 'load-calc' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <select
+              value={occupancy}
+              onChange={(e) => setOccupancy(e.target.value as 'residential' | 'commercial')}
+              style={selectStyle}
+            >
+              <option value="residential">Residential (Dwelling Unit)</option>
+              <option value="commercial">Commercial Occupancy</option>
+            </select>
+            {occupancy === 'residential' ? (
+              <select
+                value={residentialMethod}
+                onChange={(e) => setResidentialMethod(e.target.value as 'standard' | 'optional')}
+                style={selectStyle}
+              >
+                <option value="standard">NEC 220 Standard Method</option>
+                <option value="optional">NEC 220.82 Optional Method</option>
+              </select>
+            ) : (
+              <select
+                value={commercialBuildingType}
+                onChange={(e) => setCommercialBuildingType(e.target.value as CommercialOccupancy)}
+                style={selectStyle}
+              >
+                {(Object.keys(COMMERCIAL_LIGHTING_VA_PER_SQFT) as CommercialOccupancy[]).map((k) => (
+                  <option key={k} value={k}>
+                    {COMMERCIAL_LIGHTING_VA_PER_SQFT[k].label} ({COMMERCIAL_LIGHTING_VA_PER_SQFT[k].vaPerSqFt} VA/sq ft)
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          <pre
+            style={{
+              margin: 0,
+              padding: 12,
+              borderRadius: 8,
+              background: 'rgba(255,255,255,0.04)',
+              border: '1px solid rgba(255,255,255,0.12)',
+              overflow: 'auto',
+              fontSize: 11,
+            }}
+          >
+            {JSON.stringify(loadCalc, null, 2)}
+          </pre>
+        </div>
+      )}
+
+      {/* TAB 3: NEC & Trade-Priority Audit */}
+      {activeTab === 'audit' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {audit.findings.length === 0 ? (
+            <div style={{ color: '#34d399', fontWeight: 600 }}>
+              All electrical panels, devices, conduit runs, and trade clearances pass NEC checks.
+            </div>
+          ) : (
+            audit.findings.map((f) => (
+              <div
+                key={f.id}
+                onClick={() => {
+                  if (f.nodeIds.length > 0) {
+                    setSelection({ selectedIds: f.nodeIds as never })
+                  }
+                }}
+                style={{
+                  padding: 10,
+                  borderRadius: 8,
+                  cursor: 'pointer',
+                  border: `1px solid ${f.severity === 'error' ? 'rgba(239,68,68,0.5)' : 'rgba(245,158,11,0.45)'}`,
+                  background: f.severity === 'error' ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.08)',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 600 }}>
+                  <span>{f.title}</span>
+                  <span style={{ fontSize: 10, opacity: 0.85 }}>{f.codeRef}</span>
+                </div>
+                <div style={{ marginTop: 4, opacity: 0.85 }}>{f.message}</div>
+                {f.suggestedFix && (
+                  <div style={{ marginTop: 4, fontSize: 11, color: '#38bdf8' }}>Fix: {f.suggestedFix}</div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* TAB 4: Takeoff */}
+      {activeTab === 'takeoff' && (
+        <pre
+          style={{
+            margin: 0,
+            padding: 12,
+            borderRadius: 8,
+            background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(255,255,255,0.12)',
+            overflow: 'auto',
+            fontSize: 11,
+          }}
+        >
+          {JSON.stringify(takeoff, null, 2)}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+const thStyle: React.CSSProperties = { padding: '5px 6px' }
+const tdStyle: React.CSSProperties = { padding: '4px 6px' }
+const selectStyle: React.CSSProperties = {
+  padding: '5px 8px',
+  borderRadius: 6,
+  background: 'rgba(255,255,255,0.06)',
+  color: 'inherit',
+  border: '1px solid rgba(255,255,255,0.18)',
+}

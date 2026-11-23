@@ -1,0 +1,89 @@
+{
+  "name": "@kruschdev/pascal-plugin-electrical",
+  "version": "0.1.0",
+  "description": "Residential & Commercial NEC electrical authoring, load calculations, panel schedules, and trade-priority obstacle-aware routing plugin for Pascal Editor.",
+  "author": "Kevin Ruschman <kruschdev@users.noreply.github.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kruschdev/pascal-plugin-electrical.git"
+  },
+  "homepage": "https://github.com/kruschdev/pascal-plugin-electrical",
+  "bugs": {
+    "url": "https://github.com/kruschdev/pascal-plugin-electrical/issues"
+  },
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./render": {
+      "types": "./src/render.ts",
+      "default": "./src/render.ts"
+    },
+    "./nec": {
+      "types": "./src/nec/index.ts",
+      "default": "./src/nec/index.ts"
+    },
+    "./agent-tools": {
+      "types": "./src/agent-tools.ts",
+      "default": "./src/agent-tools.ts"
+    },
+    "./agent-operations": {
+      "types": "./src/agent-operations.ts",
+      "default": "./src/agent-operations.ts"
+    }
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "check-types": "tsc --noEmit",
+    "test": "bun test src",
+    "check:render": "bun scripts/check-render-entry.ts",
+    "check": "bun run check-types && bun test && bun run check:render"
+  },
+  "peerDependencies": {
+    "@pascal-app/core": ">=1.0.0 <2",
+    "@pascal-app/editor": ">=1.0.0 <2",
+    "@pascal-app/viewer": ">=1.0.0 <2",
+    "react": "^18 || ^19",
+    "three": ">=0.185 <1",
+    "zod": "^4",
+    "zustand": "^5"
+  },
+  "devDependencies": {
+    "@pascal-app/core": "1.1.6",
+    "@pascal-app/editor": "1.1.6",
+    "@pascal-app/viewer": "1.1.6",
+    "@types/blob-stream": "^0.1.33",
+    "@types/bun": "^1.3.5",
+    "@types/node": "^22.19.12",
+    "@types/pdfkit": "^0.17.7",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@types/three": "^0.187.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "three": "^0.187.0",
+    "typescript": "^5.9.3",
+    "zod": "^4.6.7",
+    "zustand": "^5.1.0"
+  },
+  "keywords": [
+    "pascal",
+    "pascal-plugin",
+    "electrical",
+    "nec",
+    "mep",
+    "bim",
+    "aeco",
+    "3d",
+    "cad"
+  ]
+}
