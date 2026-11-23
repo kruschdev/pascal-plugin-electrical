@@ -309,7 +309,7 @@ export default function ElectricalRailPanel() {
               ...btnStyle,
               borderColor: 'rgba(56,189,248,0.55)',
               background: 'rgba(56,189,248,0.14)',
-              gridColumn: occupancy === 'commercial' ? '1 / -1' : '1 / -1',
+              gridColumn: '1 / -1',
               fontWeight: 600,
             }}
           >
