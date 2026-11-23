@@ -219,6 +219,18 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
   const group = new Group()
   group.name = `panel-interior-${schedule.panelId}`
 
+  // Per-build pooled wire materials keyed by (colorHex, highlighted) to avoid per-wire material allocations
+  const wireMatPool = new Map<string, MeshStandardMaterial>()
+  const getWireMat = (colorHex: number, highlighted = false): MeshStandardMaterial => {
+    const key = `${colorHex}:${highlighted ? 1 : 0}`
+    let m = wireMatPool.get(key)
+    if (!m) {
+      m = createWireMaterial(colorHex, highlighted)
+      wireMatPool.set(key, m)
+    }
+    return m
+  }
+
   // 1. Hollow Galvanized Steel Enclosure Tub (Cover OFF!)
   addHollowTub(group, w, h, d, wall, mats.galvanizedSteel)
 
@@ -363,7 +375,7 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
 
     if (showFeeders) {
       const ph = phaseWireHex(schedule.voltageSystem, feederPoles[i]!)
-      const fMat = createWireMaterial(ph.hex, false)
+      const fMat = getWireMat(ph.hex, false)
       const fPts = [
         new Vector3(lx * 0.55, h / 2 + 0.02, zBack + 0.055),
         new Vector3(lx * 0.85, h / 2 - 0.032, zBack + 0.055),
@@ -387,7 +399,7 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
     nLug.position.set(-neutralBarX, busTopY + 0.048, zBack + 0.026)
     group.add(nLug)
 
-    const nFeederMat = createWireMaterial(is480V ? 0x94a3b8 : 0xf8fafc, false)
+    const nFeederMat = getWireMat(is480V ? 0x94a3b8 : 0xf8fafc, false)
     const nFeeder = buildFilletedWireTube(
       [
         new Vector3(-0.024, h / 2 + 0.02, zBack + 0.046),
@@ -407,7 +419,7 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
     }
 
     // Grounding Electrode Conductor (GEC) entering bottom-right to ground bar
-    const gecMat = createWireMaterial(isCommercial ? 0x16a34a : 0xc87533, false)
+    const gecMat = getWireMat(isCommercial ? 0x16a34a : 0xc87533, false)
     const gec = buildFilletedWireTube(
       [
         new Vector3(groundBarX, -h / 2 - 0.01, zBack + 0.015),
@@ -531,7 +543,7 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
         const py = yTopSlot - p * rowPitch
         const rowPhase = schedule.rows[rowIdx + p]?.phaseLabel ?? 'L1'
         const ph = phaseWireHex(schedule.voltageSystem, rowPhase)
-        const hotMat = createWireMaterial(ph.hex, isHighlighted)
+        const hotMat = getWireMat(ph.hex, isHighlighted)
         const zHot = zBack + 0.042 + laneOffsetZ + p * 0.0045
         const xPoleGutter = xGutterHot + side * p * 0.0055
 
@@ -557,7 +569,7 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
     // Route Neutral Conductor (White on 120/208/240V, Gray on 277/480V) to neutral bar (1-pole or AFCI/GFCI or 120/240V)
     const needsNeutral = slot.poles === 1 || hasAfci || hasGfci || (!isThreePhase && slot.poles === 2)
     if (showNeutrals && needsNeutral) {
-      const neutralMat = createWireMaterial(is480V ? 0x94a3b8 : 0xf8fafc, isHighlighted)
+      const neutralMat = getWireMat(is480V ? 0x94a3b8 : 0xf8fafc, isHighlighted)
       const nTargetY = Math.max(barY - barLen / 2 + 0.02, Math.min(barY + barLen / 2 - 0.02, yTopSlot))
       const zNeutral = zBack + 0.026 + (lane % 3) * 0.003
       const xGutterNeutral = side * (w * 0.325 + (lane % 3) * 0.005)
@@ -576,12 +588,34 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
         } satisfies PanelWireMetadata
         group.add(nWire)
       }
+
+      // AFCI/GFCI breaker white neutral pigtail connecting breaker load-neutral lug to the neutral bar
+      if (hasAfci || hasGfci) {
+        const pigtail = buildFilletedWireTube(
+          [
+            new Vector3(xLug + side * 0.003, yTopSlot - 0.005, zBack + 0.032),
+            new Vector3(side * (neutralBarX - 0.016), yTopSlot - 0.012, zBack + 0.032),
+            new Vector3(side * neutralBarX, nTargetY - 0.006, zBack + 0.025),
+          ],
+          Math.max(0.0022, wireR * 0.85),
+          neutralMat,
+          0.01,
+        )
+        if (pigtail) {
+          pigtail.userData = {
+            ...meta,
+            kind: 'wire-neutral',
+            conductorLabel: `${hasAfci && hasGfci ? 'Dual-Function' : hasGfci ? 'GFCI' : 'AFCI'} Neutral Pigtail`,
+          } satisfies PanelWireMetadata
+          group.add(pigtail)
+        }
+      }
     }
 
     // Route Equipment Grounding Conductor (Bare Cu residential / Green THHN commercial) to outer ground bar
     if (showGrounds) {
-      const gMat = createWireMaterial(isCommercial ? 0x16a34a : 0xc87533, isHighlighted)
-      const gTargetY = Math.max(barY - barLen * 0.38, Math.min(barY + barLen * 0.38, yTopSlot * 0.9))
+      const gMat = getWireMat(isCommercial ? 0x16a34a : 0xc87533, isHighlighted)
+      const gTargetY = Math.max(barY - barLen * 0.42, Math.min(barY + barLen * 0.42, yTopSlot))
       const zGround = zBack + 0.011 + (lane % 2) * 0.0025
       const xGutterGnd = side * (w * 0.445)
       const gPts = [
