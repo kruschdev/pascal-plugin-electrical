@@ -4,6 +4,10 @@ An open-source, MIT-licensed **Residential and Commercial NEC Electrical** plugi
 
 I built this as a standalone external plugin implementing Pascal's full Plugin API v1 contract (`E-014`, `E-016`, `E-017`) so it installs cleanly alongside any Pascal host without requiring upstream core merges.
 
+![Live 3D Trade-Priority Routing in Pascal Editor: EMT conduit runs yielding cleanly around a 4-inch plumbing pipe and 18x10 HVAC trunk, with NEC 110.26 working-space clearance envelopes on LP-1 and TX-1](./assets/demo-3d-trade-routing.png)
+
+![Split 3D Viewport, Electrical Rail Panel, and Full-Pane 3-Phase Panelboard Schedule View](./assets/demo-panel-schedule.png)
+
 > **Drafting and engineering aid, not stamped engineering.** Always verify calculations, conductor sizing, and local AHJ amendments with a licensed engineer or electrical inspector before construction.
 
 ## Core Principle: Trade-Priority Routing
