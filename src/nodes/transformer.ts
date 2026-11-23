@@ -48,17 +48,21 @@ export type ElectricalTransformerNode = z.infer<typeof ElectricalTransformerNode
 
 export function getElectricalTransformerPorts(node: ElectricalTransformerNode): NodePort[] {
   const [x, y, zPos] = node.position
+  const cos = Math.cos(node.rotation)
+  const sin = Math.sin(node.rotation)
+  const pLx = -node.width * 0.25
+  const sLx = node.width * 0.25
   return [
     {
       id: 'primary-480v',
-      position: [x - node.width * 0.25, y + node.height, zPos],
+      position: [x + pLx * cos, y + node.height, zPos - pLx * sin],
       direction: [0, 1, 0],
       diameter: 2,
       system: 'electrical',
     },
     {
       id: 'secondary-208v',
-      position: [x + node.width * 0.25, y + node.height, zPos],
+      position: [x + sLx * cos, y + node.height, zPos - sLx * sin],
       direction: [0, 1, 0],
       diameter: 2.5,
       system: 'electrical',
@@ -73,6 +77,9 @@ export function buildElectricalTransformerGeometry(
   const group = new Group()
   group.name = `electrical-transformer-${node.id}`
   const { width: w, height: h, depth: d } = node
+  const isHighVoltage = node.primaryVoltage > 250 || node.secondaryVoltage > 250
+  const accentColor = isHighVoltage ? 0xdc2626 : 0x2563eb
+  const clearanceSystem = isHighVoltage ? '277/480V-3P' : '120/240V-1P'
 
   const body = new Mesh(
     new BoxGeometry(w, h, d),
@@ -83,16 +90,16 @@ export function buildElectricalTransformerGeometry(
   body.receiveShadow = true
   group.add(body)
 
-  // Red HV top cap indicator (480V primary)
+  // Voltage-coded top cap indicator (red >250V, blue <=250V)
   const cap = new Mesh(
     new BoxGeometry(w * 0.92, 0.05, d * 0.92),
-    new MeshLambertMaterial({ color: 0xdc2626 }),
+    new MeshLambertMaterial({ color: accentColor }),
   )
   cap.position.set(0, h + 0.025, 0)
   group.add(cap)
 
   if (node.showClearanceZone) {
-    const clear = getWorkingClearance110_26('277/480V-3P', 2)
+    const clear = getWorkingClearance110_26(clearanceSystem, 2)
     const cw = Math.max(clear.widthM, w)
     const cd = clear.depthM
     const ch = clear.heightM
@@ -100,7 +107,7 @@ export function buildElectricalTransformerGeometry(
     const clearMesh = new Mesh(
       clearGeo,
       new MeshLambertMaterial({
-        color: 0xdc2626,
+        color: accentColor,
         transparent: true,
         opacity: 0.12,
         depthWrite: false,
@@ -111,7 +118,7 @@ export function buildElectricalTransformerGeometry(
 
     const edges = new LineSegments(
       new EdgesGeometry(clearGeo),
-      new LineBasicMaterial({ color: 0xdc2626, transparent: true, opacity: 0.6 }),
+      new LineBasicMaterial({ color: accentColor, transparent: true, opacity: 0.6 }),
     )
     edges.position.copy(clearMesh.position)
     group.add(edges)
@@ -139,10 +146,14 @@ export function buildElectricalTransformerFloorplan(
     corner(hw, hd),
     corner(-hw, hd),
   ]
+  const [c1x, c1z] = corner(-hw * 0.3, 0)
+  const [c2x, c2z] = corner(hw * 0.3, 0)
 
   const view = ctx.viewState
   const selected = (view?.selected || view?.highlighted) ?? false
-  const stroke = selected && view?.palette ? view.palette.selectedStroke : '#dc2626'
+  const defaultStroke =
+    node.primaryVoltage > 250 || node.secondaryVoltage > 250 ? '#dc2626' : '#2563eb'
+  const stroke = selected && view?.palette ? view.palette.selectedStroke : defaultStroke
 
   const children: FloorplanGeometry[] = [
     {
@@ -152,8 +163,8 @@ export function buildElectricalTransformerFloorplan(
       stroke,
       strokeWidth: selected ? 0.03 : 0.02,
     },
-    { kind: 'circle', cx: cx - hw * 0.3, cy: cz, r: Math.min(hw, hd) * 0.42, stroke, strokeWidth: 0.015 },
-    { kind: 'circle', cx: cx + hw * 0.3, cy: cz, r: Math.min(hw, hd) * 0.42, stroke, strokeWidth: 0.015 },
+    { kind: 'circle', cx: c1x, cy: c1z, r: Math.min(hw, hd) * 0.42, stroke, strokeWidth: 0.015 },
+    { kind: 'circle', cx: c2x, cy: c2z, r: Math.min(hw, hd) * 0.42, stroke, strokeWidth: 0.015 },
   ]
   if (selected) children.push({ kind: 'move-handle', point: [cx, cz] })
   return { kind: 'group', children }
@@ -201,7 +212,16 @@ export const electricalTransformerRenderDefinition: NodeDefinition<typeof Electr
     },
   },
   geometry: buildElectricalTransformerGeometry,
-  geometryKey: (n) => JSON.stringify([n.width, n.depth, n.height, n.kvaRating, n.showClearanceZone]),
+  geometryKey: (n) =>
+    JSON.stringify([
+      n.width,
+      n.depth,
+      n.height,
+      n.kvaRating,
+      n.primaryVoltage,
+      n.secondaryVoltage,
+      n.showClearanceZone,
+    ]),
   ports: getElectricalTransformerPorts,
   floorplan: buildElectricalTransformerFloorplan,
   presentation: {

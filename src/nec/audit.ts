@@ -21,7 +21,6 @@ import { buildPanelSchedule } from './panel-schedule'
 import {
   type Aabb3,
   type Vec3,
-  aabbIntersects,
   countPathBendDegrees,
   detectRunTradeClashes,
   extractTradeObstacles,
@@ -124,66 +123,136 @@ function toVec3(v: unknown): Vec3 | null {
   return null
 }
 
-function getPanelWorkingSpaceBox(panel: SceneNodeLike): {
-  workingBox: Aabb3
-  dedicatedOverheadBox: Aabb3
+type OrientedPrismY = {
+  centerX: number
+  centerZ: number
+  cos: number
+  sin: number
+  lxMin: number
+  lxMax: number
+  lzMin: number
+  lzMax: number
+  yMin: number
+  yMax: number
+}
+
+function prismIntersectsAabb(prism: OrientedPrismY, box: Aabb3): boolean {
+  if (box.max[1] < prism.yMin || box.min[1] > prism.yMax) return false
+
+  // 2D Separating Axis Theorem (SAT) in XZ:
+  // 1) Project AABB corners onto equipment's local (lx, lz) axes
+  const boxCorners: [number, number][] = [
+    [box.min[0], box.min[2]],
+    [box.max[0], box.min[2]],
+    [box.max[0], box.max[2]],
+    [box.min[0], box.max[2]],
+  ]
+  let minLx = Number.POSITIVE_INFINITY
+  let maxLx = Number.NEGATIVE_INFINITY
+  let minLz = Number.POSITIVE_INFINITY
+  let maxLz = Number.NEGATIVE_INFINITY
+  for (const [wx, wz] of boxCorners) {
+    const dx = wx - prism.centerX
+    const dz = wz - prism.centerZ
+    const lx = dx * prism.cos - dz * prism.sin
+    const lz = dx * prism.sin + dz * prism.cos
+    if (lx < minLx) minLx = lx
+    if (lx > maxLx) maxLx = lx
+    if (lz < minLz) minLz = lz
+    if (lz > maxLz) maxLz = lz
+  }
+  if (maxLx < prism.lxMin || minLx > prism.lxMax) return false
+  if (maxLz < prism.lzMin || minLz > prism.lzMax) return false
+
+  // 2) Project oriented prism corners onto world (X, Z) axes
+  const prismCorners: [number, number][] = [
+    [prism.lxMin, prism.lzMin],
+    [prism.lxMax, prism.lzMin],
+    [prism.lxMax, prism.lzMax],
+    [prism.lxMin, prism.lzMax],
+  ]
+  let minWx = Number.POSITIVE_INFINITY
+  let maxWx = Number.NEGATIVE_INFINITY
+  let minWz = Number.POSITIVE_INFINITY
+  let maxWz = Number.NEGATIVE_INFINITY
+  for (const [lx, lz] of prismCorners) {
+    const wx = prism.centerX + lx * prism.cos + lz * prism.sin
+    const wz = prism.centerZ - lx * prism.sin + lz * prism.cos
+    if (wx < minWx) minWx = wx
+    if (wx > maxWx) maxWx = wx
+    if (wz < minWz) minWz = wz
+    if (wz > maxWz) maxWz = wz
+  }
+  if (maxWx < box.min[0] || minWx > box.max[0]) return false
+  if (maxWz < box.min[2] || minWz > box.max[2]) return false
+
+  return true
+}
+
+function getEquipmentSpacePrisms(
+  equip: SceneNodeLike,
+  kind: 'panel' | 'transformer',
+): {
+  workingPrism: OrientedPrismY
+  dedicatedOverheadPrism: OrientedPrismY
   depthIn: number
 } {
-  const pos: Vec3 = toVec3(panel.position) ?? [0, 1.5, 0]
-  const rotY = typeof panel.rotation === 'number' ? panel.rotation : 0
-  const panelW = typeof panel.width === 'number' ? panel.width : 0.4
-  const panelD = typeof panel.depth === 'number' ? panel.depth : 0.14
-  const panelH = typeof panel.height === 'number' ? panel.height : 0.9
-  const voltageSystem: VoltageSystem =
-    panel.voltageSystem === '120/208V-3P' || panel.voltageSystem === '277/480V-3P'
-      ? panel.voltageSystem
-      : '120/240V-1P'
+  const pos: Vec3 = toVec3(equip.position) ?? (kind === 'transformer' ? [0, 0, 0] : [0, 1.5, 0])
+  const rotY = typeof equip.rotation === 'number' ? equip.rotation : 0
+  const w = typeof equip.width === 'number' ? equip.width : kind === 'transformer' ? 0.76 : 0.4
+  const d = typeof equip.depth === 'number' ? equip.depth : kind === 'transformer' ? 0.64 : 0.14
+  const h = typeof equip.height === 'number' ? equip.height : kind === 'transformer' ? 0.95 : 0.9
+
+  let voltageSystem: VoltageSystem = '120/240V-1P'
+  if (kind === 'transformer') {
+    const primaryV = typeof equip.primaryVoltage === 'number' ? equip.primaryVoltage : 480
+    const secondaryV = typeof equip.secondaryVoltage === 'number' ? equip.secondaryVoltage : 208
+    voltageSystem = primaryV > 250 || secondaryV > 250 ? '277/480V-3P' : '120/240V-1P'
+  } else if (equip.voltageSystem === '120/208V-3P' || equip.voltageSystem === '277/480V-3P') {
+    voltageSystem = equip.voltageSystem
+  }
+
   const condition: WorkingSpaceCondition =
-    panel.condition110_26 === 1 || panel.condition110_26 === 3 ? panel.condition110_26 : 2
+    equip.condition110_26 === 1 || equip.condition110_26 === 3 ? equip.condition110_26 : 2
 
   const clearance = getWorkingClearance110_26(voltageSystem, condition)
-  const clearW = Math.max(clearance.widthM, panelW)
+  const clearW = Math.max(clearance.widthM, w)
   const clearD = clearance.depthM
-  const clearH = Math.max(clearance.heightM, panelH)
-
-  // Local +Z is front of panel; transform 4 front footprint corners into level XZ
+  const clearH = Math.max(clearance.heightM, h)
   const cos = Math.cos(rotY)
   const sin = Math.sin(rotY)
-  const toWorld = (lx: number, lz: number): [number, number] => [
-    pos[0] + lx * cos + lz * sin,
-    pos[2] - lx * sin + lz * cos,
-  ]
+  const baseY = kind === 'transformer' ? pos[1] : Math.max(0, pos[1] - 1.52)
+  const topY = kind === 'transformer' ? pos[1] + h : pos[1] + h / 2
+  const zFront = d / 2 + 0.02
 
-  const zFront = panelD / 2 + 0.02
-  const workCorners = [
-    toWorld(-clearW / 2, zFront),
-    toWorld(clearW / 2, zFront),
-    toWorld(clearW / 2, zFront + clearD),
-    toWorld(-clearW / 2, zFront + clearD),
-  ]
-  const xs = workCorners.map((c) => c[0])
-  const zs = workCorners.map((c) => c[1])
-  const workingBox: Aabb3 = {
-    min: [Math.min(...xs), 0, Math.min(...zs)],
-    max: [Math.max(...xs), clearH, Math.max(...zs)],
+  const workingPrism: OrientedPrismY = {
+    centerX: pos[0],
+    centerZ: pos[2],
+    cos,
+    sin,
+    lxMin: -clearW / 2,
+    lxMax: clearW / 2,
+    lzMin: zFront,
+    lzMax: zFront + clearD,
+    yMin: baseY,
+    yMax: baseY + clearH,
   }
 
-  // Dedicated electrical equipment space: panel footprint extending 6 ft (1.829 m) above top of panel
-  const footCorners = [
-    toWorld(-panelW / 2, -panelD / 2),
-    toWorld(panelW / 2, -panelD / 2),
-    toWorld(panelW / 2, panelD / 2),
-    toWorld(-panelW / 2, panelD / 2),
-  ]
-  const fxs = footCorners.map((c) => c[0])
-  const fzs = footCorners.map((c) => c[1])
-  const topY = pos[1] + panelH / 2
-  const dedicatedOverheadBox: Aabb3 = {
-    min: [Math.min(...fxs), topY, Math.min(...fzs)],
-    max: [Math.max(...fxs), topY + 1.829, Math.max(...fzs)],
+  // Dedicated overhead electrical space: equipment footprint extending 6 ft (1.829 m) above top
+  const dedicatedOverheadPrism: OrientedPrismY = {
+    centerX: pos[0],
+    centerZ: pos[2],
+    cos,
+    sin,
+    lxMin: -w / 2,
+    lxMax: w / 2,
+    lzMin: -d / 2,
+    lzMax: d / 2,
+    yMin: topY,
+    yMax: topY + 1.829,
   }
 
-  return { workingBox, dedicatedOverheadBox, depthIn: clearance.depthIn }
+  return { workingPrism, dedicatedOverheadPrism, depthIn: clearance.depthIn }
 }
 
 function extractObstructionBox(node: SceneNodeLike): Aabb3 | null {
@@ -250,52 +319,58 @@ export function auditSceneElectrical(
     findings.push({ id: `nec-${seq++}`, ...f })
   }
 
-  // 1. Audit Panels: NEC 110.26(A) working clearance, 110.26(E) dedicated overhead space, bus load, phase balance, solar 120%
-  for (const panel of panels) {
-    const panelName = (typeof panel.name === 'string' && panel.name) || panel.id
-    const { workingBox, dedicatedOverheadBox, depthIn } = getPanelWorkingSpaceBox(panel)
+  const auditEquipmentClearances = (equip: SceneNodeLike, kind: 'panel' | 'transformer') => {
+    const equipName = (typeof equip.name === 'string' && equip.name) || equip.id
+    const { workingPrism, dedicatedOverheadPrism, depthIn } = getEquipmentSpacePrisms(equip, kind)
 
-    // 1a. NEC 110.26(A) Working Space vs furniture / cabinets / HVAC equipment / columns
+    // NEC 110.26(A) Working Space vs furniture / cabinets / HVAC equipment / columns / floor transformers
     for (const other of all) {
-      if (other.id === panel.id) continue
+      if (other.id === equip.id) continue
       if (
         other.type !== 'item' &&
         other.type !== 'cabinet' &&
         other.type !== 'hvac-equipment' &&
-        other.type !== 'column'
+        other.type !== 'column' &&
+        other.type !== 'electrical:transformer'
       ) {
         continue
       }
       const box = extractObstructionBox(other)
       if (!box) continue
-      if (aabbIntersects(workingBox, box)) {
+      if (prismIntersectsAabb(workingPrism, box)) {
         push({
           severity: 'error',
           codeRef: 'NEC 110.26(A)',
           category: 'working-space',
-          title: `Working space obstructed in front of ${panelName}`,
-          message: `${other.type} (${other.id}) intrudes into the required 30"W x ${depthIn}"D x 78"H clear working space in front of ${panelName}.`,
-          nodeIds: [panel.id, other.id],
-          suggestedFix: `Relocate ${panelName} or clear ${other.id} at least ${depthIn}" in front of the panel.`,
+          title: `Working space obstructed in front of ${equipName}`,
+          message: `${other.type} (${other.id}) intrudes into the required 30"W x ${depthIn}"D x 78"H clear working space in front of ${equipName}.`,
+          nodeIds: [equip.id, other.id],
+          suggestedFix: `Relocate ${equipName} or clear ${other.id} at least ${depthIn}" in front of ${equipName}.`,
         })
       }
     }
 
-    // 1b. NEC 110.26(E) Dedicated Equipment Space vs foreign plumbing/HVAC directly overhead
+    // NEC 110.26(E) / 450.21 Dedicated Overhead Space vs foreign plumbing/HVAC directly overhead
     for (const obs of obstacles) {
       if (obs.trade !== 'plumbing' && obs.trade !== 'hvac') continue
-      if (aabbIntersects(dedicatedOverheadBox, obs.box)) {
+      if (prismIntersectsAabb(dedicatedOverheadPrism, obs.box)) {
         push({
           severity: 'error',
           codeRef: 'NEC 110.26(E)',
           category: 'dedicated-space',
-          title: `Foreign ${obs.trade} piping/duct over ${panelName}`,
-          message: `${obs.label} passes through the dedicated electrical space directly above ${panelName}. Foreign systems cannot occupy the footprint above a panelboard unless protected against leaks/condensation.`,
-          nodeIds: [panel.id, obs.nodeId],
-          suggestedFix: `Relocate ${panelName} clear of ${obs.label} (plumbing/HVAC hold right-of-way) or add NEC 110.26(E)(1)(a) leak protection above structural ceiling.`,
+          title: `Foreign ${obs.trade} piping/duct over ${equipName}`,
+          message: `${obs.label} passes through the dedicated electrical space directly above ${equipName}. Foreign systems cannot occupy the footprint above ${kind === 'transformer' ? 'electrical distribution equipment' : 'a panelboard'} unless protected against leaks/condensation.`,
+          nodeIds: [equip.id, obs.nodeId],
+          suggestedFix: `Relocate ${equipName} clear of ${obs.label} (plumbing/HVAC hold right-of-way) or add NEC 110.26(E)(1)(a) leak protection above structural ceiling.`,
         })
       }
     }
+  }
+
+  // 1. Audit Panels: NEC 110.26(A) working clearance, 110.26(E) dedicated overhead space, bus load, phase balance, solar 120%
+  for (const panel of panels) {
+    const panelName = (typeof panel.name === 'string' && panel.name) || panel.id
+    auditEquipmentClearances(panel, 'panel')
 
     // 1c. Panel Schedule Slot Conflicts, Capacity, Phase Balance, & Solar 120% Busbar
     const schedule = buildPanelSchedule(panel, devices, runs)
@@ -371,6 +446,11 @@ export function auditSceneElectrical(
         })
       }
     }
+  }
+
+  // 1d. Audit Step-Down Transformers: NEC 110.26(A) working space & 110.26(E) overhead foreign piping/ducting
+  for (const tx of transformers) {
+    auditEquipmentClearances(tx, 'transformer')
   }
 
   // 2. Audit Devices: NEC 314.16 Box Fill, 210.8 GFCI, 210.12 AFCI

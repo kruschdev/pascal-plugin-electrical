@@ -288,4 +288,74 @@ describe('Live Scene NEC Audit, Panel Schedule & Takeoff', () => {
     expect(ocpdFinding).toBeDefined()
     expect(ocpdFinding?.suggestedFix).toContain('#12')
   })
+
+  test('BUG-04: Local-yaw SAT eliminates 45° rotated panel false positives and audits electrical:transformer 110.26(A)/(E)', () => {
+    // 1) 45° rotated panel facing (+X, +Z): cabinet to the side [0.7..1.1] x [-0.4..0.0] is outside 30" local width (lx >= 0.495 > 0.381)
+    const rotatedCleanScene = {
+      elecpanel_rot: {
+        id: 'elecpanel_rot',
+        type: 'electrical:panel',
+        name: 'LP-45',
+        position: [0, 1.52, 0],
+        rotation: Math.PI / 4,
+        voltageSystem: '120/240V-1P',
+        condition110_26: 2,
+        width: 0.4,
+        depth: 0.14,
+        height: 0.9,
+      },
+      cabinet_side: {
+        id: 'cabinet_side',
+        type: 'cabinet',
+        position: [0.9, 0, -0.2],
+        width: 0.4,
+        depth: 0.4,
+        height: 0.9,
+      },
+    }
+    const cleanRotReport = auditSceneElectrical(rotatedCleanScene)
+    expect(cleanRotReport.findings.filter((f) => f.codeRef === 'NEC 110.26(A)')).toHaveLength(0)
+
+    // 2) Floor-mounted 480V transformer obstructed in front AND with overhead plumbing pipe at y = 2.1m (within 6 ft of top 0.95m)
+    const txViolationScene = {
+      electx_1: {
+        id: 'electx_1',
+        type: 'electrical:transformer',
+        name: 'TX-1',
+        position: [2, 0, 2],
+        rotation: 0,
+        primaryVoltage: 480,
+        secondaryVoltage: 208,
+        width: 0.76,
+        depth: 0.64,
+        height: 0.95,
+      },
+      item_crate: {
+        id: 'item_crate',
+        type: 'item',
+        position: [2, 0, 2.8], // inside 42" front working space!
+        width: 0.5,
+        depth: 0.5,
+        height: 1.0,
+      },
+      'pipe-segment_tx': {
+        id: 'pipe-segment_tx',
+        type: 'pipe-segment',
+        diameter: 3,
+        path: [
+          [1, 2.1, 2],
+          [3, 2.1, 2],
+        ],
+      },
+    }
+    const txReport = auditSceneElectrical(txViolationScene)
+    expect(txReport.passed).toBe(false)
+    expect(txReport.transformerCount).toBe(1)
+    expect(
+      txReport.findings.some((f) => f.codeRef === 'NEC 110.26(A)' && f.nodeIds.includes('electx_1')),
+    ).toBe(true)
+    expect(
+      txReport.findings.some((f) => f.codeRef === 'NEC 110.26(E)' && f.nodeIds.includes('electx_1')),
+    ).toBe(true)
+  })
 })

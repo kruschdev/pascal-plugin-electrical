@@ -29,6 +29,8 @@ import {
   buildElectricalTransformerFloorplan,
   buildElectricalTransformerGeometry,
   ElectricalTransformerNode,
+  electricalTransformerRenderDefinition,
+  getElectricalTransformerPorts,
 } from '../nodes/transformer'
 
 const dummyCtx = {} as GeometryContext
@@ -221,5 +223,22 @@ describe('Pascal Plugin API v1 Conformance & Agent Operations (E-014 / E-016)', 
     const tPlan = buildElectricalTransformerFloorplan(tx, dummyCtx)
     expect(tGeo.children.length).toBeGreaterThan(2)
     expect(tPlan.kind).toBe('group')
+
+    // BUG-04: Rotated 90° transformer rotates ports & coil circles onto Z axis and keys geometry by primaryVoltage
+    const txRot = ElectricalTransformerNode.parse({
+      id: 'electx_rot',
+      type: 'electrical:transformer',
+      position: [5, 0, 10],
+      rotation: Math.PI / 2,
+      primaryVoltage: 240,
+      secondaryVoltage: 120,
+    })
+    const ports = getElectricalTransformerPorts(txRot)
+    expect(ports[0]!.position[0]).toBeCloseTo(5, 5)
+    expect(ports[0]!.position[2]).toBeGreaterThan(10.1)
+    expect(ports[1]!.position[2]).toBeLessThan(9.9)
+    expect(electricalTransformerRenderDefinition.geometryKey!(tx)).not.toBe(
+      electricalTransformerRenderDefinition.geometryKey!(txRot),
+    )
   })
 })
