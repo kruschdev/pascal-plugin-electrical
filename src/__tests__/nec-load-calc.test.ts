@@ -145,4 +145,26 @@ describe('NEC Article 220 Residential & Commercial Load Calculations', () => {
     expect(sceneLoad.occupancy).toBe('commercial')
     expect(sceneLoad.squareFootage).toBeCloseTo(1076.39, 1)
   })
+
+  test('BUG-02: Table 220.55 Col. B (<8.75 kW @ 80%), Note 1 (>12 kW +5%/kW), and 220.82(C)(2) 100% Heat Pump', () => {
+    const smallCooktop = calculateResidentialLoad({
+      squareFootage: 1500,
+      method: 'standard',
+      appliances: [
+        { name: 'Induction Cooktop', watts: 4000 }, // Col B -> 80% = 3200 VA (never inflated to 8000 VA!)
+        { name: 'Pro Range', watts: 15000 }, // Note 1 -> 8000 * (1 + 0.05*3) = 9200 VA
+      ],
+    })
+    expect(smallCooktop.applianceDetails[0]!.demandedVa).toBe(3200)
+    expect(smallCooktop.applianceDetails[1]!.demandedVa).toBe(9200)
+
+    const optHeatPump = calculateResidentialLoad({
+      squareFootage: 2000,
+      method: 'optional',
+      appliances: [{ name: '3-Ton Heat Pump', watts: 4500 }], // 100% = 4500 VA (never 65%!)
+    })
+    expect(optHeatPump.applianceDetails[0]!.demandedVa).toBe(4500)
+    // General = 6000 + 3000 + 1500 = 10500 -> 10000 + 0.4*500 = 10200 + 4500 = 14700 VA
+    expect(optHeatPump.totalDemandVa).toBe(14700)
+  })
 })

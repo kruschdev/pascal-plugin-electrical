@@ -28,7 +28,7 @@ export type ResidentialApplianceLoad = {
   name: string
   watts: number
   isMotor?: boolean
-  category?: 'range' | 'dryer' | 'hvac-heating' | 'hvac-cooling' | 'evse' | 'fixed'
+  category?: 'range' | 'dryer' | 'hvac-heating' | 'hvac-cooling' | 'heat-pump' | 'evse' | 'fixed'
 }
 
 export type ResidentialLoadInput = {
@@ -82,9 +82,37 @@ function classifyAppliance(app: ResidentialApplianceLoad): NonNullable<Residenti
   if (/evse|ev.?charger|tesla|chargepoint/i.test(app.name)) return 'evse'
   if (/range|oven|cooktop/i.test(app.name)) return 'range'
   if (/dryer/i.test(app.name)) return 'dryer'
+  // Check heat pump BEFORE generic /heat/ so "Heat Pump" is never misclassified as 65% strip heat
+  if (/heat.?pump/i.test(app.name)) return 'heat-pump'
   if (/heat|furnace|boiler|baseboard/i.test(app.name)) return 'hvac-heating'
-  if (/a\/?c|air.?cond|cooling|condenser|compressor|heat.?pump/i.test(app.name)) return 'hvac-cooling'
+  if (/a\/?c|air.?cond|cooling|condenser|compressor/i.test(app.name)) return 'hvac-cooling'
   return 'fixed'
+}
+
+function calculateSingleRangeDemand(watts: number): { demanded: number; note: string } {
+  if (watts < 3500) {
+    return {
+      demanded: Math.round(watts * 0.8),
+      note: 'NEC Table 220.55 Col. A (< 3.5 kW @ 80%)',
+    }
+  }
+  if (watts < 8750) {
+    return {
+      demanded: Math.round(watts * 0.8),
+      note: 'NEC Table 220.55 Col. B (3.5-8.75 kW @ 80%)',
+    }
+  }
+  if (watts <= 12000) {
+    return {
+      demanded: NEC_220_RESIDENTIAL.rangeColumnCMaxVa,
+      note: 'NEC Table 220.55 Col. C (8.75-12 kW -> 8,000 VA)',
+    }
+  }
+  const extraKw = Math.ceil((Math.min(watts, 27000) - 12000) / 1000)
+  return {
+    demanded: Math.round(NEC_220_RESIDENTIAL.rangeColumnCMaxVa * (1 + 0.05 * extraKw)),
+    note: `NEC Table 220.55 Note 1 (+5%/kW over 12 kW -> +${extraKw * 5}%)`,
+  }
 }
 
 export function calculateResidentialLoad(input: ResidentialLoadInput): ResidentialLoadResult {
@@ -125,9 +153,10 @@ export function calculateResidentialLoad(input: ResidentialLoadInput): Residenti
       let demanded = Math.max(0, app.watts)
       let note: string | undefined
 
-      if (cat === 'range' && demanded <= 12000) {
-        demanded = NEC_220_RESIDENTIAL.rangeColumnCMaxVa
-        note = 'NEC Table 220.55 Col. C demand (<= 12 kW range)'
+      if (cat === 'range') {
+        const rangeCalc = calculateSingleRangeDemand(demanded)
+        demanded = rangeCalc.demanded
+        note = rangeCalc.note
       } else if (cat === 'dryer') {
         if (demanded < NEC_220_RESIDENTIAL.dryerMinVa) {
           demanded = NEC_220_RESIDENTIAL.dryerMinVa
@@ -146,8 +175,8 @@ export function calculateResidentialLoad(input: ResidentialLoadInput): Residenti
       }
 
       if (cat === 'hvac-heating') heatingTotalVa += demanded
-      if (cat === 'hvac-cooling') coolingTotalVa += demanded
-      if (app.isMotor && demanded > largestMotorVa) largestMotorVa = demanded
+      if (cat === 'hvac-cooling' || cat === 'heat-pump') coolingTotalVa += demanded
+      if ((app.isMotor || cat === 'heat-pump') && demanded > largestMotorVa) largestMotorVa = demanded
 
       applianceTotalVa += demanded
       applianceDetails.push({ name: app.name, ratedVa: app.watts, demandedVa: demanded, note })
@@ -161,6 +190,7 @@ export function calculateResidentialLoad(input: ResidentialLoadInput): Residenti
   } else {
     // NEC 220.82 Optional Calculation for Dwelling Units
     let generalAndAppliances = generalSubtotalVa
+    let heatPumpTotalVa = 0
     for (const app of appliances) {
       const cat = classifyAppliance(app)
       const watts = Math.max(0, app.watts)
@@ -170,7 +200,15 @@ export function calculateResidentialLoad(input: ResidentialLoadInput): Residenti
           name: app.name,
           ratedVa: watts,
           demandedVa: Math.round(watts * 0.65),
-          note: 'NEC 220.82(C) heating demand (65% < 4 units or 100% heat pump)',
+          note: 'NEC 220.82(C)(4) central electric space heating (< 4 units @ 65%)',
+        })
+      } else if (cat === 'heat-pump') {
+        heatPumpTotalVa += watts
+        applianceDetails.push({
+          name: app.name,
+          ratedVa: watts,
+          demandedVa: watts,
+          note: 'NEC 220.82(C)(2) 100% heat-pump compressor rating',
         })
       } else if (cat === 'hvac-cooling') {
         coolingTotalVa += watts
@@ -201,8 +239,12 @@ export function calculateResidentialLoad(input: ResidentialLoadInput): Residenti
     demandedGeneralVa = first10k + Math.round(over10k * NEC_220_RESIDENTIAL.optionalRemainderFactor)
 
     const heatingDemand = Math.round(heatingTotalVa * 0.65)
-    const hvacDemand = Math.max(coolingTotalVa, heatingDemand)
-    hvacOmitVa = Math.min(coolingTotalVa, heatingDemand)
+    const coolingOrHpDemand = Math.max(coolingTotalVa, heatPumpTotalVa)
+    const hvacDemand = Math.max(coolingOrHpDemand, heatingDemand)
+    hvacOmitVa =
+      coolingOrHpDemand > 0 && heatingDemand > 0
+        ? Math.min(coolingOrHpDemand, heatingDemand)
+        : 0
     totalDemandVa = demandedGeneralVa + hvacDemand + evseLoadVa
   }
 
