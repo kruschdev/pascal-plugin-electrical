@@ -10,6 +10,7 @@ import {
   electricalRenderPlugin,
   electricalScheduleView,
 } from '../index'
+import { ELECTRICAL_CAD_CATALOG, measureCadDimensionsMm } from '../cad'
 import {
   buildElectricalConduitRunFloorplan,
   buildElectricalConduitRunGeometry,
@@ -235,10 +236,8 @@ describe('Pascal Plugin API v1 Conformance & Agent Operations (E-014 / E-016)', 
     })
     const rGeo = buildElectricalConduitRunGeometry(run, dummyCtx)
     const rPlan = buildElectricalConduitRunFloorplan(run, dummyCtx)
-    expect(rGeo.children.length).toBe(5) // 3 cylinders + 2 bend elbows sharing 1 SphereGeometry
-    expect((rGeo.children[3] as unknown as { geometry: unknown }).geometry).toBe(
-      (rGeo.children[4] as unknown as { geometry: unknown }).geometry,
-    )
+    expect(rGeo.children.length).toBeGreaterThanOrEqual(3) // swept filleted tube + start/end box connectors + straps
+    expect(rGeo.children.some((c) => c.name === 'conduit-tube')).toBe(true)
     expect(rPlan.kind).toBe('group')
 
     const tx = ElectricalTransformerNode.parse({ id: 'electx_test', type: 'electrical:transformer' })
@@ -263,5 +262,20 @@ describe('Pascal Plugin API v1 Conformance & Agent Operations (E-014 / E-016)', 
     expect(electricalTransformerRenderDefinition.geometryKey!(tx)).not.toBe(
       electricalTransformerRenderDefinition.geometryKey!(txRot),
     )
+  })
+
+  test('All 30 clean-room electrical CAD material models (panels, boxes, devices, light fixtures, fittings) build valid 3D meshes', () => {
+    expect(ELECTRICAL_CAD_CATALOG.length).toBe(30)
+    const seen = new Set<string>()
+    for (const entry of ELECTRICAL_CAD_CATALOG) {
+      expect(seen.has(entry.slug)).toBe(false)
+      seen.add(entry.slug)
+      const group = entry.build()
+      expect(group.children.length).toBeGreaterThan(0)
+      const [wMm, hMm, dMm] = measureCadDimensionsMm(group)
+      expect(wMm).toBeGreaterThan(0)
+      expect(hMm).toBeGreaterThan(0)
+      expect(dMm).toBeGreaterThan(0)
+    }
   })
 })

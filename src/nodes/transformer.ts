@@ -23,6 +23,7 @@ import {
   Mesh,
   MeshLambertMaterial,
 } from 'three'
+import { buildTransformerCad } from '../cad/equipment'
 import { getWorkingClearance110_26 } from '../nec/tables'
 
 const Vec3Schema = z.tuple([z.number(), z.number(), z.number()])
@@ -81,22 +82,15 @@ export function buildElectricalTransformerGeometry(
   const accentColor = isHighVoltage ? 0xdc2626 : 0x2563eb
   const clearanceSystem = isHighVoltage ? '277/480V-3P' : '120/240V-1P'
 
-  const body = new Mesh(
-    new BoxGeometry(w, h, d),
-    new MeshLambertMaterial({ color: 0x475569 }),
+  group.add(
+    buildTransformerCad({
+      width: w,
+      height: h,
+      depth: d,
+      primaryVoltage: node.primaryVoltage,
+      secondaryVoltage: node.secondaryVoltage,
+    }),
   )
-  body.position.set(0, h / 2, 0)
-  body.castShadow = true
-  body.receiveShadow = true
-  group.add(body)
-
-  // Voltage-coded top cap indicator (red >250V, blue <=250V)
-  const cap = new Mesh(
-    new BoxGeometry(w * 0.92, 0.05, d * 0.92),
-    new MeshLambertMaterial({ color: accentColor }),
-  )
-  cap.position.set(0, h + 0.025, 0)
-  group.add(cap)
 
   if (node.showClearanceZone) {
     const clear = getWorkingClearance110_26(clearanceSystem, 2)

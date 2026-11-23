@@ -6,6 +6,7 @@ import {
   findNextFreePanelCircuit,
   formatPanelScheduleCsv,
 } from '../nec/panel-schedule'
+import { formatElectricalBomCsv } from '../nec/pricing'
 
 describe('Live Scene NEC Audit, Panel Schedule & Takeoff', () => {
   test('Detects NEC 110.26(A) working-space obstruction & NEC 110.26(E) overhead plumbing pipe', () => {
@@ -192,6 +193,16 @@ describe('Live Scene NEC Audit, Panel Schedule & Takeoff', () => {
     expect(takeoff.deviceCount).toBe(2)
     expect(takeoff.conduitByTypeAndSize['1" EMT']?.sticks10Ft).toBeGreaterThan(0)
     expect(takeoff.breakersBySpec['3P-40A']).toBe(1)
+    expect(takeoff.pricing.lineItems.length).toBeGreaterThanOrEqual(6)
+    expect(takeoff.pricing.materialSubtotalUsd).toBeGreaterThan(1500)
+    expect(takeoff.pricing.laborSubtotalUsd).toBeGreaterThan(500)
+    expect(takeoff.pricing.estimatedTotalUsd).toBeCloseTo(
+      takeoff.pricing.materialSubtotalUsd + takeoff.pricing.laborSubtotalUsd,
+      2,
+    )
+    const bomCsv = formatElectricalBomCsv(takeoff.pricing)
+    expect(bomCsv).toContain('Category,SKU,Description,CAD Model')
+    expect(bomCsv).toContain('TOTAL')
   })
 
   test('BUG-01: 2-pole 208V wye load computes exact VA/V_LL phase amps, skips multi-pole spans, and flags slot collisions', () => {

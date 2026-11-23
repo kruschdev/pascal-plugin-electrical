@@ -23,6 +23,7 @@ import {
   Mesh,
   MeshLambertMaterial,
 } from 'three'
+import { buildPanelCad } from '../cad/equipment'
 import { getWorkingClearance110_26, type VoltageSystem, type WorkingSpaceCondition } from '../nec/tables'
 
 const Vec3Schema = z.tuple([z.number(), z.number(), z.number()])
@@ -87,27 +88,17 @@ export function buildElectricalPanelGeometry(
 
   const { width: w, height: h, depth: d } = node
 
-  // NEMA enclosure body
-  const cabinetMat = new MeshLambertMaterial({ color: 0x6b7280 })
-  const cabinet = new Mesh(new BoxGeometry(w, h, d), cabinetMat)
-  cabinet.name = 'panel-cabinet'
-  cabinet.castShadow = true
-  cabinet.receiveShadow = true
-  group.add(cabinet)
-
-  // Front deadfront trim plate
-  const trimMat = new MeshLambertMaterial({ color: 0x4b5563 })
-  const trim = new Mesh(new BoxGeometry(w * 0.94, h * 0.94, 0.012), trimMat)
-  trim.position.set(0, 0, d / 2 + 0.006)
-  group.add(trim)
-
-  // Voltage-coded phase identification stripe along top header
-  const stripeMat = new MeshLambertMaterial({
-    color: VOLTAGE_ACCENT[node.voltageSystem as VoltageSystem] ?? 0xf59e0b,
+  // CAD-detailed NEMA panelboard / load center enclosure
+  const cad = buildPanelCad({
+    width: w,
+    height: h,
+    depth: d,
+    voltageSystem: node.voltageSystem as VoltageSystem,
+    nemaRating: node.nemaRating,
+    spaces: node.spaces,
+    doorOpen: false,
   })
-  const stripe = new Mesh(new BoxGeometry(w * 0.88, 0.045, 0.014), stripeMat)
-  stripe.position.set(0, h * 0.41, d / 2 + 0.009)
-  group.add(stripe)
+  group.add(cad)
 
   // NEC 110.26(A) clear working-space envelope in front of panel (+Z)
   if (node.showClearanceZone) {
@@ -272,6 +263,8 @@ export const electricalPanelRenderDefinition: NodeDefinition<typeof ElectricalPa
   geometryKey: (n) =>
     JSON.stringify([
       n.voltageSystem,
+      n.nemaRating,
+      n.spaces,
       n.width,
       n.depth,
       n.height,

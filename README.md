@@ -8,6 +8,8 @@ I built this as a standalone external plugin implementing Pascal's full Plugin A
 
 ![Split 3D Viewport, Electrical Rail Panel, and Full-Pane 3-Phase Panelboard Schedule View](./assets/demo-panel-schedule.png)
 
+![30 Clean-Room MIT Electrical CAD Material Models (.glb): Load Centers, Open-Deadfront Panels, Circuit Breakers, Dry-Type Transformers, NEC 314.16 Boxes, Wiring Devices, Residential & Commercial Light Fixtures, and Conduit Fittings](./assets/cad-material-catalog.png)
+
 > **Drafting and engineering aid, not stamped engineering.** Always verify calculations, conductor sizing, and local AHJ amendments with a licensed engineer or electrical inspector before construction.
 
 ## Core Principle: Trade-Priority Routing
@@ -38,14 +40,16 @@ Zero LLM calls, zero React/Three.js dependencies:
 - **Table 310.16 + 310.15(B)/(C) + 240.4(D)**: Copper & Aluminum `60°C` / `75°C` / `90°C` ampacity, ambient correction, rooftop `+33°C` adder, bundling adjustment, `334.80` NM-B 60°C cap, and small-conductor OCPD limits.
 - **Chapter 9 Conduit Fill**: EMT, PVC Sch 40, and RMC (`53%` / `31%` / `40%` + `60%` nipple exception `<= 24"`).
 - **Article 314.16 Box Fill**: Conductors, 2x device yokes, internal clamps, support fittings, and equipment grounds.
-- **Panelboard Schedules & Takeoff**: Odd/Even `L1/L2` (1P) and `A/B/C` (3P) breaker schedules, phase imbalance %, CSV export, and wire/conduit/box/breaker takeoff.
+- **Panelboard Schedules, Material Lists & Cost Estimation**: Odd/Even `L1/L2` (1P) and `A/B/C` (3P) breaker schedules, phase imbalance %, CSV export, and a full **Priced Bill of Materials (BOM)** calculating 10%-waste wire rolls, 10 ft conduit sticks, connectors/couplings/straps, NEC 314.16 boxes, breakers, panels, transformers, fixtures, reference US material pricing, estimated labor hours/cost, custom distributor `priceOverrides`, and one-click BOM CSV export.
+- **30-Model Clean-Room MIT 3D CAD Library (`./cad` & `assets/cad/`)**: Every material (closed/open load centers, 277/480V 3P panelboards, NEMA 3R panels, 1P/2P/3P breakers, 75 kVA transformer, 100A safety disconnect, 200A meter base, 1/2/3-gang PVC & 4" square / 4-11/16" / 4" octagon / weatherproof FS boxes, NEMA 5-20R / GFCI / 14-50R / Decora switches / EVSE / 3P TEFC motor, 7 residential & commercial light fixtures, Type LB conduit body, and EMT fittings + Unistrut clamps) ships as both live Three.js geometry and pre-exported `.glb` + `.png` thumbnails in Pascal's `public/items/<slug>/` layout.
 
 ### Full Pascal Plugin API v1 Surface
 | Entrypoint | Export | Boundary Guarantee |
 |---|---|---|
 | `.` | `electricalPlugin`, `electricalHostPanel`, `electricalScheduleView`, `electricalChatExtension` | Full editor integration (`EditorHostPanel`, full-pane `EditorHostView`, `InspectorExtension`, chat cards) |
 | `./render` | `electricalRenderPlugin` | Editor-free read-only viewer manifest (verified by `bun run check:render`) |
-| `./nec` | Pure NEC & trade-routing functions | Framework-free TypeScript (zero React, Three.js, or `@pascal-app/*`) |
+| `./cad` | `ELECTRICAL_CAD_CATALOG`, `buildElectricalCadPart`, `buildPanelCad`, `buildElectricalBoxCad`, `buildDeviceCad`, `buildConduitRunCad` | Editor-free, React-free Three.js CAD part builders for all 30 electrical materials |
+| `./nec` | Pure NEC, trade-routing & BOM pricing functions | Framework-free TypeScript (zero React, Three.js, or `@pascal-app/*`) |
 | `./agent-tools` | `electricalAgentTools` (`PluginAgentTools`, `E-016`) | Pure Zod-only contracts (`7` tools + skill) |
 | `./agent-operations` | `electricalAgentOperations` (`AgentOperations`, `E-016`) | Pure scene operations runnable on MCP, detached runtime, or live chat |
 

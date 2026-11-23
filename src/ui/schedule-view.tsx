@@ -12,6 +12,7 @@ import {
   buildPanelSchedule,
   formatPanelScheduleCsv,
 } from '../nec/panel-schedule'
+import { formatElectricalBomCsv } from '../nec/pricing'
 import { COMMERCIAL_LIGHTING_VA_PER_SQFT, type CommercialOccupancy } from '../nec/tables'
 import { type ScheduleTab, useElectricalUi } from './store'
 
@@ -32,13 +33,18 @@ export default function ElectricalScheduleView() {
   } = useElectricalUi()
 
   const [copiedCsv, setCopiedCsv] = useState(false)
+  const [copiedBomCsv, setCopiedBomCsv] = useState(false)
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const bomCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const record = nodes as unknown as Readonly<Record<string, SceneNodeLike>>
 
   useEffect(() => {
     return () => {
       if (copyTimeoutRef.current !== null) {
         clearTimeout(copyTimeoutRef.current)
+      }
+      if (bomCopyTimeoutRef.current !== null) {
+        clearTimeout(bomCopyTimeoutRef.current)
       }
     }
   }, [])
@@ -90,11 +96,28 @@ export default function ElectricalScheduleView() {
     }
   }
 
+  const copyBomCsv = async () => {
+    if (typeof navigator === 'undefined' || !navigator.clipboard) return
+    try {
+      await navigator.clipboard.writeText(formatElectricalBomCsv(takeoff.pricing))
+      setCopiedBomCsv(true)
+      if (bomCopyTimeoutRef.current !== null) {
+        clearTimeout(bomCopyTimeoutRef.current)
+      }
+      bomCopyTimeoutRef.current = setTimeout(() => {
+        bomCopyTimeoutRef.current = null
+        setCopiedBomCsv(false)
+      }, 1800)
+    } catch {
+      setCopiedBomCsv(false)
+    }
+  }
+
   const tabs: { id: ScheduleTab; label: string }[] = [
     { id: 'schedule', label: 'Panel Schedule' },
     { id: 'load-calc', label: 'NEC 220 Load Calc' },
     { id: 'audit', label: `NEC Audit (${audit.errorCount}/${audit.warningCount})` },
-    { id: 'takeoff', label: 'Takeoff' },
+    { id: 'takeoff', label: 'Takeoff & Cost' },
   ]
 
   return (
@@ -313,21 +336,76 @@ export default function ElectricalScheduleView() {
         </div>
       )}
 
-      {/* TAB 4: Takeoff */}
+      {/* TAB 4: Takeoff & Cost Estimate */}
       {activeTab === 'takeoff' && (
-        <pre
-          style={{
-            margin: 0,
-            padding: 12,
-            borderRadius: 8,
-            background: 'rgba(255,255,255,0.04)',
-            border: '1px solid rgba(255,255,255,0.12)',
-            overflow: 'auto',
-            fontSize: 11,
-          }}
-        >
-          {JSON.stringify(takeoff, null, 2)}
-        </pre>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12 }}>
+              <span>
+                Materials: <strong>${takeoff.pricing.materialSubtotalUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong>
+              </span>
+              <span>
+                Est. Labor ({takeoff.pricing.laborHoursTotal} hrs @ ${takeoff.pricing.laborRatePerHourUsd}/hr):{' '}
+                <strong>${takeoff.pricing.laborSubtotalUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong>
+              </span>
+              <span>
+                Est. Total:{' '}
+                <strong style={{ color: '#34d399' }}>
+                  ${takeoff.pricing.estimatedTotalUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </strong>
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void copyBomCsv()}
+              style={{
+                padding: '5px 10px',
+                borderRadius: 6,
+                border: '1px solid var(--border, rgba(255,255,255,0.18))',
+                background: 'rgba(255,255,255,0.06)',
+                color: 'inherit',
+                cursor: 'pointer',
+              }}
+            >
+              {copiedBomCsv ? 'Copied BOM CSV' : 'Copy BOM CSV'}
+            </button>
+          </div>
+
+          <div style={{ fontSize: 11, opacity: 0.7 }}>{takeoff.pricing.disclaimer}</div>
+
+          {takeoff.pricing.lineItems.length === 0 ? (
+            <div style={{ opacity: 0.75 }}>Place panels, devices, fixtures, or conduit runs to generate a priced material takeoff.</div>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.18)', textAlign: 'left' }}>
+                  <th style={thStyle}>Category</th>
+                  <th style={thStyle}>Description</th>
+                  <th style={thStyle}>Qty</th>
+                  <th style={thStyle}>Unit</th>
+                  <th style={{ ...thStyle, textAlign: 'right' }}>Unit ($)</th>
+                  <th style={{ ...thStyle, textAlign: 'right' }}>Material ($)</th>
+                  <th style={{ ...thStyle, textAlign: 'right' }}>Labor (hrs)</th>
+                  <th style={{ ...thStyle, textAlign: 'right' }}>Labor ($)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {takeoff.pricing.lineItems.map((item) => (
+                  <tr key={item.sku} style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                    <td style={tdStyle}>{item.category}</td>
+                    <td style={tdStyle}>{item.description}</td>
+                    <td style={tdStyle}>{item.quantity}</td>
+                    <td style={tdStyle}>{item.unit}</td>
+                    <td style={{ ...tdStyle, textAlign: 'right' }}>${item.unitPriceUsd.toFixed(2)}</td>
+                    <td style={{ ...tdStyle, textAlign: 'right' }}>${item.extendedMaterialUsd.toFixed(2)}</td>
+                    <td style={{ ...tdStyle, textAlign: 'right' }}>{item.extendedLaborHours.toFixed(2)}</td>
+                    <td style={{ ...tdStyle, textAlign: 'right' }}>${item.extendedLaborUsd.toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       )}
     </div>
   )

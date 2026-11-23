@@ -14,15 +14,9 @@ import {
   objectId,
 } from '@pascal-app/core'
 import { z } from 'zod'
-import {
-  CylinderGeometry,
-  Group,
-  Mesh,
-  MeshLambertMaterial,
-  SphereGeometry,
-  Vector3,
-} from 'three'
-import { CONDUIT_OUTER_DIAMETER_M, type ConduitTradeSize, type RacewayType, type WireGauge } from '../nec/tables'
+import { Group } from 'three'
+import { buildConduitRunCad } from '../cad/equipment'
+import type { ConduitTradeSize, RacewayType, WireGauge } from '../nec/tables'
 
 const Vec3Schema = z.tuple([z.number(), z.number(), z.number()])
 
@@ -101,50 +95,18 @@ function normalizeDir(
   return [dx / len, dy / len, dz / len]
 }
 
-const UP = new Vector3(0, 1, 0)
-
 export function buildElectricalConduitRunGeometry(
   node: ElectricalConduitRunNode,
   _ctx: GeometryContext,
 ): Group {
-  const group = new Group()
-  group.name = `electrical-conduit-${node.id}`
-  const { num: color } = colorForRun(node)
-  const mat = new MeshLambertMaterial({ color })
-  const outerDiam =
-    node.racewayType === 'nm-b'
-      ? 0.014
-      : (CONDUIT_OUTER_DIAMETER_M[node.tradeSize as ConduitTradeSize] ?? 0.023)
-  const radius = outerDiam / 2
-
-  for (let i = 0; i < node.path.length - 1; i++) {
-    const p0 = node.path[i]!
-    const p1 = node.path[i + 1]!
-    const v0 = new Vector3(p0[0], p0[1], p0[2])
-    const v1 = new Vector3(p1[0], p1[1], p1[2])
-    const delta = new Vector3().subVectors(v1, v0)
-    const len = delta.length()
-    if (len < 1e-4) continue
-
-    const cyl = new Mesh(new CylinderGeometry(radius, radius, len, 10), mat)
-    cyl.position.copy(v0).addScaledVector(delta, 0.5)
-    cyl.quaternion.setFromUnitVectors(UP, delta.clone().normalize())
-    cyl.castShadow = true
-    group.add(cyl)
-  }
-
-  // Smooth bend couplings at every interior vertex (shared SphereGeometry across run)
-  if (node.path.length > 2) {
-    const elbowGeo = new SphereGeometry(radius * 1.18, 10, 10)
-    for (let i = 1; i < node.path.length - 1; i++) {
-      const p = node.path[i]!
-      const elbow = new Mesh(elbowGeo, mat)
-      elbow.position.set(p[0], p[1], p[2])
-      group.add(elbow)
-    }
-  }
-
-  return group
+  return buildConduitRunCad({
+    id: node.id,
+    path: node.path,
+    racewayType: node.racewayType as RacewayType,
+    tradeSize: node.tradeSize as ConduitTradeSize,
+    wireGauge: node.wireGauge as WireGauge,
+    voltage: node.voltage,
+  })
 }
 
 export function buildElectricalConduitRunFloorplan(

@@ -14,6 +14,7 @@ import {
   buildPanelSchedule,
   formatPanelScheduleCsv,
 } from './nec/panel-schedule'
+import { formatElectricalBomCsv } from './nec/pricing'
 import { extractTradeObstacles, routeElectricalRun, type Vec3 } from './nec/routing'
 import {
   calculateConduitFill,
@@ -490,6 +491,7 @@ export const electricalAgentOperations = {
         panelCount: schedules.length,
         schedules,
         takeoff,
+        takeoffCsv: formatElectricalBomCsv(takeoff.pricing),
       },
     }
   },

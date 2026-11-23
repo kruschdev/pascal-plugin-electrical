@@ -28,6 +28,10 @@
       "types": "./src/nec/index.ts",
       "default": "./src/nec/index.ts"
     },
+    "./cad": {
+      "types": "./src/cad/index.ts",
+      "default": "./src/cad/index.ts"
+    },
     "./agent-tools": {
       "types": "./src/agent-tools.ts",
       "default": "./src/agent-tools.ts"
@@ -46,6 +50,7 @@
     "check-types": "tsc --noEmit",
     "test": "bun test src",
     "check:render": "bun scripts/check-render-entry.ts",
+    "export:cad": "bun scripts/export-cad-catalog.ts",
     "check": "bun run check-types && bun test && bun run check:render"
   },
   "peerDependencies": {

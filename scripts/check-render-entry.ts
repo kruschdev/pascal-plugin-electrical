@@ -46,6 +46,7 @@ async function checkForbidden(entry: string, pattern: RegExp): Promise<Hit[]> {
 }
 
 const renderEntry = pkg.exports['./render'].default as string
+const cadEntry = pkg.exports['./cad'].default as string
 const agentToolsEntry = pkg.exports['./agent-tools'].default as string
 const necEntry = pkg.exports['./nec'].default as string
 const rootEntry = pkg.exports['.'].default as string
@@ -54,6 +55,13 @@ const renderHits = await checkForbidden(renderEntry, /^(@pascal-app\/editor|next
 if (renderHits.length > 0) {
   console.error(`./render (${renderEntry}) reaches editor-only modules:`)
   for (const hit of renderHits) console.error(`  ${hit.importer} -> ${hit.specifier}`)
+  process.exit(1)
+}
+
+const cadHits = await checkForbidden(cadEntry, /^(react|react-dom|@pascal-app\/editor|next)(\/|$)/)
+if (cadHits.length > 0) {
+  console.error(`./cad (${cadEntry}) must remain editor-free & React-free:`)
+  for (const hit of cadHits) console.error(`  ${hit.importer} -> ${hit.specifier}`)
   process.exit(1)
 }
 

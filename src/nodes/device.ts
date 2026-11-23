@@ -14,7 +14,9 @@ import {
   objectId,
 } from '@pascal-app/core'
 import { z } from 'zod'
-import { BoxGeometry, CylinderGeometry, Group, Mesh, MeshLambertMaterial } from 'three'
+import { Group } from 'three'
+import { buildDeviceCad } from '../cad/equipment'
+import type { BoxType, OccupancyType } from '../nec/tables'
 
 const Vec3Schema = z.tuple([z.number(), z.number(), z.number()])
 
@@ -106,62 +108,13 @@ export function buildElectricalDeviceGeometry(
   node: ElectricalDeviceNode,
   _ctx: GeometryContext,
 ): Group {
-  const group = new Group()
+  const group = buildDeviceCad({
+    deviceKind: node.deviceKind,
+    boxType: node.boxType as BoxType,
+    occupancy: node.occupancy as OccupancyType,
+    breakerAmps: node.breakerAmps,
+  })
   group.name = `electrical-device-${node.id}`
-  const color = DEVICE_COLORS[node.deviceKind]?.num ?? 0xf59e0b
-
-  if (node.deviceKind === 'luminaire') {
-    const housing = new Mesh(
-      new CylinderGeometry(0.16, 0.16, 0.04, 16),
-      new MeshLambertMaterial({ color: 0xfef08a }),
-    )
-    group.add(housing)
-    return group
-  }
-
-  if (node.deviceKind === 'evse') {
-    const body = new Mesh(
-      new BoxGeometry(0.24, 0.36, 0.12),
-      new MeshLambertMaterial({ color: 0x0e7490 }),
-    )
-    const statusBar = new Mesh(
-      new BoxGeometry(0.16, 0.03, 0.015),
-      new MeshLambertMaterial({ color: 0x22d3ee }),
-    )
-    statusBar.position.set(0, 0.08, 0.065)
-    group.add(body, statusBar)
-    return group
-  }
-
-  if (node.deviceKind === 'junction-box') {
-    const jbox = new Mesh(
-      new BoxGeometry(0.11, 0.11, 0.055),
-      new MeshLambertMaterial({ color: 0x64748b }),
-    )
-    group.add(jbox)
-    return group
-  }
-
-  if (node.deviceKind === 'exit-sign') {
-    const sign = new Mesh(
-      new BoxGeometry(0.32, 0.2, 0.05),
-      new MeshLambertMaterial({ color: 0xdc2626 }),
-    )
-    group.add(sign)
-    return group
-  }
-
-  // Standard wall box + color-coded faceplate
-  const box = new Mesh(
-    new BoxGeometry(0.075, 0.115, 0.065),
-    new MeshLambertMaterial({ color: 0x475569 }),
-  )
-  const plate = new Mesh(
-    new BoxGeometry(0.082, 0.125, 0.008),
-    new MeshLambertMaterial({ color }),
-  )
-  plate.position.set(0, 0, 0.036)
-  group.add(box, plate)
   return group
 }
 
@@ -265,7 +218,7 @@ export const electricalDeviceRenderDefinition: NodeDefinition<typeof ElectricalD
     snappable: {},
   },
   geometry: buildElectricalDeviceGeometry,
-  geometryKey: (n) => JSON.stringify([n.deviceKind]),
+  geometryKey: (n) => JSON.stringify([n.deviceKind, n.boxType, n.occupancy, n.breakerAmps]),
   ports: getElectricalDevicePorts,
   floorplan: buildElectricalDeviceFloorplan,
   presentation: {

@@ -4,6 +4,20 @@
  */
 
 import type { SceneNodeLike } from './load-calc'
+import {
+  BOX_UNIT_PRICES_USD,
+  CONDUIT_STICK_PRICES_USD,
+  DEFAULT_LABOR_RATE_USD,
+  DEVICE_UNIT_PRICES_USD,
+  type ElectricalBomCategory,
+  type ElectricalBomLineItem,
+  type ElectricalPricingOptions,
+  type ElectricalPricingSummary,
+  estimateBreakerPriceUsd,
+  estimatePanelPriceUsd,
+  estimateTransformerPriceUsd,
+  estimateWireUnitPricePerFtUsd,
+} from './pricing'
 import { polylineLengthM, type Vec3 } from './routing'
 import {
   type ConduitTradeSize,
@@ -84,6 +98,7 @@ export type ElectricalTakeoff = {
   totalWireFt: number
   stapleBoxes: number
   wireNutBags: number
+  pricing: ElectricalPricingSummary
 }
 
 const WIRE_ROLL_SIZES: Partial<Record<WireGauge, number>> = {
@@ -417,6 +432,7 @@ export function formatPanelScheduleCsv(schedule: PanelSchedule): string {
 
 export function buildElectricalTakeoff(
   nodes: Readonly<Record<string, SceneNodeLike>>,
+  pricingOptions: ElectricalPricingOptions = {},
 ): ElectricalTakeoff {
   const all = Object.values(nodes)
   const panels = all.filter((n) => n.type === 'electrical:panel')
@@ -426,7 +442,9 @@ export function buildElectricalTakeoff(
 
   const wireFeetByGauge: Record<string, number> = {}
   const conduitFeet: Record<string, number> = {}
+  const conduitRunCountByKey: Record<string, number> = {}
   const boxesByType: Record<string, number> = {}
+  const devicesByKind: Record<string, { count: number; occupancy: string }> = {}
   const breakersBySpec: Record<string, number> = {}
 
   for (const run of runs) {
@@ -450,6 +468,7 @@ export function buildElectricalTakeoff(
     if (!isCable) {
       const cKey = `${tradeSize} ${raceway.toUpperCase()}`
       conduitFeet[cKey] = (conduitFeet[cKey] ?? 0) + lenFt
+      conduitRunCountByKey[cKey] = (conduitRunCountByKey[cKey] ?? 0) + 1
     }
   }
 
@@ -457,6 +476,12 @@ export function buildElectricalTakeoff(
   for (const dev of devices) {
     const bType = typeof dev.boxType === 'string' ? dev.boxType : 'single-gang-standard'
     boxesByType[bType] = (boxesByType[bType] ?? 0) + 1
+
+    const dKind = typeof dev.deviceKind === 'string' ? dev.deviceKind : 'duplex'
+    const occ = dev.occupancy === 'commercial' ? 'commercial' : 'residential'
+    const dKey = `${dKind}:${occ}`
+    const prev = devicesByKind[dKey]
+    devicesByKind[dKey] = { count: (prev?.count ?? 0) + 1, occupancy: occ }
 
     const panelId = typeof dev.panelId === 'string' ? dev.panelId : 'unassigned'
     const ckt = typeof dev.circuitNumber === 'number' ? dev.circuitNumber : 0
@@ -499,6 +524,200 @@ export function buildElectricalTakeoff(
     }
   }
 
+  const stapleBoxes = totalWireFt > 0 ? Math.ceil(totalWireFt / 4.5 / 200) : 0
+  const wireNutBags = devices.length > 0 ? Math.ceil((devices.length * 3) / 100) : 0
+
+  // ─── Line-Item BOM Pricing & Estimated Labor Rollup ──────────────────────
+  const laborRate = pricingOptions.laborRatePerHourUsd ?? DEFAULT_LABOR_RATE_USD
+  const markupPct = pricingOptions.materialMarkupPct ?? 0
+  const markupMult = 1 + markupPct / 100
+  const overrides = pricingOptions.priceOverrides ?? {}
+  const lineItems: ElectricalBomLineItem[] = []
+
+  const addLine = (
+    category: ElectricalBomCategory,
+    sku: string,
+    description: string,
+    quantity: number,
+    unit: ElectricalBomLineItem['unit'],
+    defaultUnitUsd: number,
+    laborHoursPerUnit: number,
+    cadSlug?: string,
+  ) => {
+    if (quantity <= 0) return
+    const rawUnit = overrides[sku] ?? defaultUnitUsd
+    const unitPriceUsd = round2(rawUnit * markupMult)
+    const extendedMaterialUsd = round2(unitPriceUsd * quantity)
+    const extendedLaborHours = round2(laborHoursPerUnit * quantity)
+    const extendedLaborUsd = round2(extendedLaborHours * laborRate)
+    lineItems.push({
+      category,
+      sku,
+      description,
+      cadSlug,
+      quantity,
+      unit,
+      unitPriceUsd,
+      extendedMaterialUsd,
+      laborHoursPerUnit,
+      extendedLaborHours,
+      extendedLaborUsd,
+    })
+  }
+
+  for (const p of panels) {
+    const occ = p.occupancy === 'commercial' ? 'commercial' : 'residential'
+    const vs = typeof p.voltageSystem === 'string' ? p.voltageSystem : '120/240V-1P'
+    const bus = typeof p.busRatingAmps === 'number' ? p.busRatingAmps : 200
+    const nema = typeof p.nemaRating === 'string' ? p.nemaRating : 'NEMA-1'
+    const est = estimatePanelPriceUsd(occ, vs, bus, nema)
+    addLine(
+      'panels-gear',
+      `PANEL-${vs}-${bus}A-${nema}`,
+      `${(typeof p.name === 'string' && p.name) || p.id}: ${bus}A ${vs} ${nema} Panelboard`,
+      1,
+      'ea',
+      est.usd,
+      est.hrs,
+      est.cadSlug,
+    )
+  }
+
+  for (const tx of transformers) {
+    const kva = typeof tx.kvaRating === 'number' ? tx.kvaRating : 75
+    const est = estimateTransformerPriceUsd(kva)
+    addLine(
+      'panels-gear',
+      `TX-${kva}KVA`,
+      `${(typeof tx.name === 'string' && tx.name) || tx.id}: ${kva} kVA Dry-Type Step-Down Transformer`,
+      1,
+      'ea',
+      est.usd,
+      est.hrs,
+      'transformer-75kva-480v',
+    )
+  }
+
+  for (const [spec, count] of Object.entries(breakersBySpec)) {
+    const est = estimateBreakerPriceUsd(spec)
+    addLine(
+      'breakers',
+      `BKR-${spec.replace(/\s+/g, '-')}`,
+      `Circuit Breaker (${spec})`,
+      count,
+      'ea',
+      est.usd,
+      est.hrs,
+      'breaker-1p-2p-3p-set',
+    )
+  }
+
+  for (const [bType, count] of Object.entries(boxesByType)) {
+    const spec = BOX_UNIT_PRICES_USD[bType] ?? BOX_UNIT_PRICES_USD['single-gang-standard']!
+    addLine('outlet-boxes', `BOX-${bType}`, spec.label, count, 'ea', spec.usd, spec.hrs, spec.cadSlug)
+  }
+
+  for (const [dKey, info] of Object.entries(devicesByKind)) {
+    const dKind = dKey.split(':')[0] ?? 'duplex'
+    const spec = DEVICE_UNIT_PRICES_USD[dKind] ?? DEVICE_UNIT_PRICES_USD.duplex!
+    const isCommLuminaire = dKind === 'luminaire' && info.occupancy === 'commercial'
+    const unitUsd = isCommLuminaire ? 98.0 : dKind === 'luminaire' ? 42.0 : spec.usd
+    const label = isCommLuminaire
+      ? 'Commercial 2x4 LED Recessed Troffer Fixture'
+      : dKind === 'luminaire'
+        ? 'Residential Flush LED Ceiling Luminaire'
+        : spec.label
+    const cadSlug =
+      dKind === 'luminaire'
+        ? isCommLuminaire
+          ? 'fixture-troffer-2x4'
+          : 'fixture-flush-ceiling-drum'
+        : spec.cadSlug
+    addLine(
+      spec.category,
+      `DEV-${dKind}-${info.occupancy}`,
+      label,
+      info.count,
+      'ea',
+      unitUsd,
+      spec.hrs,
+      cadSlug,
+    )
+  }
+
+  for (const [cKey, info] of Object.entries(conduitByTypeAndSize)) {
+    const [sizeRaw, typeRaw] = cKey.split(' ')
+    const size = (sizeRaw ?? '3/4"') as ConduitTradeSize
+    const cType = (typeRaw === 'PVC-40' || typeRaw === 'RMC' ? typeRaw : 'EMT') as
+      | 'EMT'
+      | 'PVC-40'
+      | 'RMC'
+    const stickUsd = CONDUIT_STICK_PRICES_USD[cType]?.[size] ?? 11.4
+    const hrsPerStick = cType === 'RMC' ? 0.65 : cType === 'PVC-40' ? 0.32 : 0.42
+    addLine(
+      'conduit-fittings',
+      `COND-${cType}-${size}`,
+      `${size} ${cType} Conduit (10 ft stick, incl. 10% waste)`,
+      info.sticks10Ft,
+      'stick (10ft)',
+      stickUsd,
+      hrsPerStick,
+      'fitting-emt-connector-coupling',
+    )
+
+    // Matching connectors (2/run), couplings (1/stick), and 1-hole straps (1 per 8 ft)
+    const runCount = conduitRunCountByKey[cKey] ?? 1
+    const fittingQty = runCount * 2 + info.sticks10Ft + Math.ceil(info.feet / 8)
+    addLine(
+      'conduit-fittings',
+      `FIT-${cType}-${size}`,
+      `${size} ${cType} Connectors, Couplings & Support Straps`,
+      fittingQty,
+      'ea',
+      cType === 'RMC' ? 3.85 : 1.45,
+      0.06,
+      'fitting-emt-connector-coupling',
+    )
+  }
+
+  for (const [wKey, info] of Object.entries(wireByGauge)) {
+    const est = estimateWireUnitPricePerFtUsd(wKey)
+    addLine(
+      'wire-cable',
+      `WIRE-${wKey.replace(/\s+/g, '-')}`,
+      `${wKey} Copper Conductor / Cable (incl. 10% waste)`,
+      info.feet,
+      'ft',
+      est.usd,
+      est.hrsPerFt,
+    )
+  }
+
+  if (stapleBoxes > 0) {
+    addLine('consumables', 'CONS-STAPLES', 'NM-B Staples / Conduit Fastener Box (200 ct)', stapleBoxes, 'box', 14.5, 0)
+  }
+  if (wireNutBags > 0) {
+    addLine('consumables', 'CONS-WIRENUTS', 'UL Listed Wire Connectors / Wago Pack (100 ct)', wireNutBags, 'bag', 18.5, 0)
+  }
+
+  const materialSubtotalUsd = round2(lineItems.reduce((s, i) => s + i.extendedMaterialUsd, 0))
+  const laborHoursTotal = round2(lineItems.reduce((s, i) => s + i.extendedLaborHours, 0))
+  const laborSubtotalUsd = round2(lineItems.reduce((s, i) => s + i.extendedLaborUsd, 0))
+  const estimatedTotalUsd = round2(materialSubtotalUsd + laborSubtotalUsd)
+
+  const pricing: ElectricalPricingSummary = {
+    currency: 'USD',
+    laborRatePerHourUsd: laborRate,
+    materialMarkupPct: markupPct,
+    materialSubtotalUsd,
+    laborHoursTotal,
+    laborSubtotalUsd,
+    estimatedTotalUsd,
+    lineItems,
+    disclaimer:
+      'Reference 2026 US electrical supply-house estimates only; override unit prices with live distributor quotes before bidding.',
+  }
+
   return {
     wireByGauge,
     conduitByTypeAndSize,
@@ -508,7 +727,8 @@ export function buildElectricalTakeoff(
     transformerCount: transformers.length,
     deviceCount: devices.length,
     totalWireFt,
-    stapleBoxes: totalWireFt > 0 ? Math.ceil(totalWireFt / 4.5 / 200) : 0,
-    wireNutBags: devices.length > 0 ? Math.ceil((devices.length * 3) / 100) : 0,
+    stapleBoxes,
+    wireNutBags,
+    pricing,
   }
 }
