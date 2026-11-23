@@ -92,5 +92,5 @@ if (!probeHits.some((hit) => hit.specifier.startsWith('@pascal-app/editor'))) {
 }
 
 console.log(
-  `Entry boundary gates PASSED: ./render editor-free, ./agent-tools Zod-pure, ./nec framework-free (negative probe caught ${probeHits.length} editor import(s) from root).`,
+  `Entry boundary gates PASSED: ./render editor-free, ./cad editor-free, ./agent-tools Zod-pure, ./nec framework-free (negative probe caught ${probeHits.length} editor import(s) from root).`,
 )
