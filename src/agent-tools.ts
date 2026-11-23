@@ -192,11 +192,13 @@ export const electricalAgentTools: PluginAgentTools = {
       name: 'electrical_generate_schedule',
       title: 'Generate panel schedules & material takeoff',
       description:
-        'Generate odd/even split-phase (L1/L2) or three-phase (A/B/C) breaker panel schedules, phase balance %, CSV export, and electrical bill of materials.',
+        'Generate odd/even split-phase (L1/L2) or three-phase (A/B/C) breaker panel schedules, phase balance %, CSV export, and priced electrical bill of materials with labor estimates.',
       runsIn: 'operation',
       rendersView: true,
       input: {
         panelId: z.string().optional(),
+        laborRatePerHourUsd: z.number().min(0).max(500).optional(),
+        materialMarkupPct: z.number().min(0).max(200).optional(),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
     },

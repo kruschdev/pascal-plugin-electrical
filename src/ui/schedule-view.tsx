@@ -434,8 +434,8 @@ export default function ElectricalScheduleView() {
                 </tr>
               </thead>
               <tbody>
-                {takeoff.pricing.lineItems.map((item) => (
-                  <tr key={item.sku} style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+                {takeoff.pricing.lineItems.map((item, idx) => (
+                  <tr key={`${item.sku}-${idx}`} style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
                     <td style={tdStyle}>{item.category}</td>
                     <td style={tdStyle}>{item.description}</td>
                     <td style={tdStyle}>{item.quantity}</td>

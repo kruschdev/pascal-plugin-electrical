@@ -470,7 +470,14 @@ export const electricalAgentOperations = {
     return { result: report as unknown as Record<string, unknown> }
   },
 
-  electrical_generate_schedule: (nodes: SceneNodes, input: { panelId?: string }) => {
+  electrical_generate_schedule: (
+    nodes: SceneNodes,
+    input: {
+      panelId?: string
+      laborRatePerHourUsd?: number
+      materialMarkupPct?: number
+    },
+  ) => {
     const record = asRecord(nodes)
     const all = Object.values(record)
     const panels = all.filter(
@@ -485,7 +492,10 @@ export const electricalAgentOperations = {
       const s = buildPanelSchedule(p, devices, runs)
       return { ...s, csv: formatPanelScheduleCsv(s) }
     })
-    const takeoff = buildElectricalTakeoff(record)
+    const takeoff = buildElectricalTakeoff(record, {
+      laborRatePerHourUsd: input.laborRatePerHourUsd,
+      materialMarkupPct: input.materialMarkupPct,
+    })
     return {
       result: {
         panelCount: schedules.length,
