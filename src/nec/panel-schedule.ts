@@ -39,6 +39,18 @@ export type PanelScheduleRow = {
   rightCircuit: number
 }
 
+export type PanelSlotConflict = {
+  slot: number
+  existingDeviceIds: string[]
+  conflictingDeviceIds: string[]
+}
+
+export type PanelOverflowCircuit = {
+  circuitNumber: number
+  poles: 1 | 2 | 3
+  deviceIds: string[]
+}
+
 export type PanelSchedule = {
   panelId: string
   panelName: string
@@ -57,6 +69,8 @@ export type PanelSchedule = {
   totalLineAmps: number
   utilizationPct: number
   imbalancePct: number
+  slotConflicts: PanelSlotConflict[]
+  overflowCircuits: PanelOverflowCircuit[]
 }
 
 export type ElectricalTakeoff = {
@@ -88,6 +102,54 @@ function phaseForRowIndex(rowIndex: number, threePhase: boolean): 'L1' | 'L2' | 
   return rowIndex % 2 === 0 ? 'L1' : 'L2'
 }
 
+function occupiedSlotsOf(
+  devices: readonly SceneNodeLike[],
+  panelId?: string,
+): Set<number> {
+  const occupied = new Set<number>()
+  for (const dev of devices) {
+    if (panelId && dev.panelId !== panelId) continue
+    const rawCkt =
+      typeof dev.circuitNumber === 'number' && dev.circuitNumber >= 1
+        ? Math.floor(dev.circuitNumber)
+        : 0
+    if (rawCkt <= 0) continue
+    const poles: 1 | 2 | 3 = dev.poles === 3 ? 3 : dev.poles === 2 ? 2 : 1
+    for (let p = 0; p < poles; p++) {
+      occupied.add(rawCkt + p * 2)
+    }
+  }
+  return occupied
+}
+
+/**
+ * Find the lowest free starting slot (`1..spaces`) on `panel` whose full multi-pole span
+ * (`ckt, ckt+2, ..., ckt+(poles-1)*2`) does not collide with any existing circuit or exceed `spaces`.
+ */
+export function findNextFreePanelCircuit(
+  panel: SceneNodeLike | null | undefined,
+  existingDevices: readonly SceneNodeLike[],
+  poles: 1 | 2 | 3 = 1,
+): number {
+  const maxSpaces = Math.min(
+    84,
+    Math.max(4, Math.ceil((typeof panel?.spaces === 'number' ? panel.spaces : 40) / 2) * 2),
+  )
+  const occupied = occupiedSlotsOf(existingDevices, panel?.id)
+  for (let ckt = 1; ckt <= maxSpaces; ckt++) {
+    let fits = true
+    for (let p = 0; p < poles; p++) {
+      const slot = ckt + p * 2
+      if (slot > maxSpaces || occupied.has(slot)) {
+        fits = false
+        break
+      }
+    }
+    if (fits) return ckt
+  }
+  return Math.min(84, maxSpaces)
+}
+
 export function buildPanelSchedule(
   panel: SceneNodeLike,
   devices: readonly SceneNodeLike[],
@@ -107,20 +169,47 @@ export function buildPanelSchedule(
   const panelDevices = devices.filter((d) => d.panelId === panel.id)
   const panelRuns = runs.filter((r) => r.panelId === panel.id)
 
-  // Group devices by circuitNumber
+  // Group explicit circuits first; assign unassigned devices (`circuitNumber <= 0`) to non-colliding slots
   const grouped = new Map<number, SceneNodeLike[]>()
-  let nextAutoCircuit = 1
+  const explicitOccupied = occupiedSlotsOf(panelDevices, panel.id)
+  let autoCursor = 1
+  const allocateFreeSlot = (poles: 1 | 2 | 3): number => {
+    while (autoCursor <= 200) {
+      const candidate = autoCursor++
+      let free = true
+      for (let p = 0; p < poles; p++) {
+        if (explicitOccupied.has(candidate + p * 2)) {
+          free = false
+          break
+        }
+      }
+      if (free) {
+        for (let p = 0; p < poles; p++) explicitOccupied.add(candidate + p * 2)
+        return candidate
+      }
+    }
+    return autoCursor
+  }
+
   for (const dev of panelDevices) {
-    const rawCkt = typeof dev.circuitNumber === 'number' && dev.circuitNumber >= 1 ? Math.floor(dev.circuitNumber) : 0
-    const ckt = rawCkt > 0 ? rawCkt : nextAutoCircuit++
+    const rawCkt =
+      typeof dev.circuitNumber === 'number' && dev.circuitNumber >= 1
+        ? Math.floor(dev.circuitNumber)
+        : 0
+    const poles: 1 | 2 | 3 = dev.poles === 3 ? 3 : dev.poles === 2 ? 2 : 1
+    const ckt = rawCkt > 0 ? rawCkt : allocateFreeSlot(poles)
     const list = grouped.get(ckt) ?? []
     list.push(dev)
     grouped.set(ckt, list)
   }
 
   const slotMap = new Map<number, PanelSlotEntry>()
+  const slotConflicts: PanelSlotConflict[] = []
+  const overflowCircuits: PanelOverflowCircuit[] = []
 
-  for (const [ckt, devs] of grouped.entries()) {
+  const sortedCircuits = Array.from(grouped.entries()).sort((a, b) => a[0] - b[0])
+
+  for (const [ckt, devs] of sortedCircuits) {
     const first = devs[0]!
     const poles: 1 | 2 | 3 =
       first.poles === 3 ? 3 : first.poles === 2 ? 2 : 1
@@ -142,6 +231,12 @@ export function buildPanelSchedule(
         ? (typeof first.name === 'string' && first.name) || String(first.deviceKind ?? 'Circuit')
         : `${String(first.name ?? first.deviceKind ?? 'Branch')} (${devs.length} devices)`
 
+    const devIds = devs.map((d) => d.id)
+    const maxPoleSlot = ckt + (poles - 1) * 2
+    if (maxPoleSlot > spaces) {
+      overflowCircuits.push({ circuitNumber: ckt, poles, deviceIds: devIds })
+    }
+
     const entry: PanelSlotEntry = {
       circuitNumber: ckt,
       description: label,
@@ -151,37 +246,80 @@ export function buildPanelSchedule(
       loadVa: Math.round(totalVa),
       continuous,
       protection: Array.from(protectionSet),
-      deviceIds: devs.map((d) => d.id),
+      deviceIds: devIds,
     }
 
-    slotMap.set(ckt, entry)
+    const existingPrimary = slotMap.get(ckt)
+    if (existingPrimary) {
+      slotConflicts.push({
+        slot: ckt,
+        existingDeviceIds: existingPrimary.deviceIds,
+        conflictingDeviceIds: devIds,
+      })
+      continue
+    }
+
+    if (ckt <= spaces) {
+      slotMap.set(ckt, entry)
+    }
+
     // Multi-pole breakers occupy consecutive odd or even slots (+2 per additional pole)
     for (let p = 1; p < poles; p++) {
       const contCkt = ckt + p * 2
-      if (contCkt <= spaces) {
-        slotMap.set(contCkt, {
-          ...entry,
-          circuitNumber: contCkt,
-          description: `↳ ${label} (Pole ${p + 1}/${poles})`,
-          loadVa: 0,
-          isContinuation: true,
+      if (contCkt > spaces) continue
+      const existingCont = slotMap.get(contCkt)
+      if (existingCont) {
+        slotConflicts.push({
+          slot: contCkt,
+          existingDeviceIds: existingCont.deviceIds,
+          conflictingDeviceIds: devIds,
         })
+        continue
       }
+      slotMap.set(contCkt, {
+        ...entry,
+        circuitNumber: contCkt,
+        description: `↳ ${label} (Pole ${p + 1}/${poles})`,
+        loadVa: 0,
+        isContinuation: true,
+      })
     }
   }
 
+  const vLN = getVoltageLineToNeutral(voltageSystem)
+  const vLL = getVoltageLineToLine(voltageSystem)
+
   const phaseVa = { A: 0, B: 0, C: threePhase ? 0 : undefined as number | undefined }
+  const rawPhaseAmps = { A: 0, B: 0, C: threePhase ? 0 : undefined as number | undefined }
   const rows: PanelScheduleRow[] = []
   const rowCount = spaces / 2
 
   const addLoadToPhases = (slot: PanelSlotEntry, startRowIdx: number) => {
     if (slot.isContinuation || slot.loadVa <= 0) return
     const vaPerPole = slot.loadVa / slot.poles
+    // Exact line current per pole:
+    // - 1-pole: VA / V_LN
+    // - 2-pole line-to-line (240V 1Φ or 208V/480V 3Φ wye): VA / V_LL on each of the 2 connected phases
+    // - 3-pole balanced 3Φ: VA / (V_LL * sqrt(3)) on each of phases A, B, C
+    const ampsPerPole =
+      slot.poles === 1
+        ? slot.loadVa / vLN
+        : slot.poles === 2
+          ? slot.loadVa / vLL
+          : slot.loadVa / (vLL * Math.sqrt(3))
+
     for (let p = 0; p < slot.poles; p++) {
       const ph = phaseForRowIndex(startRowIdx + p, threePhase)
-      if (ph === 'L1' || ph === 'A') phaseVa.A += vaPerPole
-      else if (ph === 'L2' || ph === 'B') phaseVa.B += vaPerPole
-      else if (ph === 'C' && phaseVa.C !== undefined) phaseVa.C += vaPerPole
+      if (ph === 'L1' || ph === 'A') {
+        phaseVa.A += vaPerPole
+        rawPhaseAmps.A += ampsPerPole
+      } else if (ph === 'L2' || ph === 'B') {
+        phaseVa.B += vaPerPole
+        rawPhaseAmps.B += ampsPerPole
+      } else if (ph === 'C' && phaseVa.C !== undefined && rawPhaseAmps.C !== undefined) {
+        phaseVa.C += vaPerPole
+        rawPhaseAmps.C += ampsPerPole
+      }
     }
   }
 
@@ -202,12 +340,10 @@ export function buildPanelSchedule(
     })
   }
 
-  const vLN = getVoltageLineToNeutral(voltageSystem)
-  const vLL = getVoltageLineToLine(voltageSystem)
   const phaseAmps = {
-    A: round2(phaseVa.A / vLN),
-    B: round2(phaseVa.B / vLN),
-    C: phaseVa.C !== undefined ? round2(phaseVa.C / vLN) : undefined,
+    A: round2(rawPhaseAmps.A),
+    B: round2(rawPhaseAmps.B),
+    C: rawPhaseAmps.C !== undefined ? round2(rawPhaseAmps.C) : undefined,
   }
 
   const totalConnectedVa = Math.round(phaseVa.A + phaseVa.B + (phaseVa.C ?? 0))
@@ -245,6 +381,8 @@ export function buildPanelSchedule(
     totalLineAmps,
     utilizationPct,
     imbalancePct,
+    slotConflicts,
+    overflowCircuits,
   }
 }
 

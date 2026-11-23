@@ -297,8 +297,30 @@ export function auditSceneElectrical(
       }
     }
 
-    // 1c. Panel Schedule Load, Phase Balance, & Solar 120% Busbar
+    // 1c. Panel Schedule Slot Conflicts, Capacity, Phase Balance, & Solar 120% Busbar
     const schedule = buildPanelSchedule(panel, devices, runs)
+    for (const conflict of schedule.slotConflicts) {
+      push({
+        severity: 'error',
+        codeRef: 'NEC 408.36',
+        category: 'panel-load',
+        title: `Breaker slot collision on ${panelName} (Circuit ${conflict.slot})`,
+        message: `Circuit slot ${conflict.slot} on ${panelName} is double-booked by multi-pole breaker span (${conflict.existingDeviceIds.join(', ')}) and (${conflict.conflictingDeviceIds.join(', ')}).`,
+        nodeIds: [panel.id, ...conflict.existingDeviceIds, ...conflict.conflictingDeviceIds],
+        suggestedFix: `Move conflicting device(s) to an unoccupied circuit slot on ${panelName}.`,
+      })
+    }
+    for (const over of schedule.overflowCircuits) {
+      push({
+        severity: 'error',
+        codeRef: 'NEC 408.54',
+        category: 'panel-load',
+        title: `Circuit ${over.circuitNumber} (${over.poles}P) exceeds ${panelName} spaces (${schedule.spaces})`,
+        message: `${over.poles}-pole circuit starting at slot ${over.circuitNumber} extends past ${panelName}'s ${schedule.spaces}-space bus.`,
+        nodeIds: [panel.id, ...over.deviceIds],
+        suggestedFix: `Increase ${panelName} spaces or move circuit ${over.circuitNumber} to a lower available slot.`,
+      })
+    }
     if (schedule.utilizationPct > 100) {
       push({
         severity: 'error',

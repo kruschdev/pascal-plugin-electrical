@@ -3,6 +3,7 @@ import { auditSceneElectrical } from '../nec/audit'
 import {
   buildElectricalTakeoff,
   buildPanelSchedule,
+  findNextFreePanelCircuit,
   formatPanelScheduleCsv,
 } from '../nec/panel-schedule'
 
@@ -191,5 +192,54 @@ describe('Live Scene NEC Audit, Panel Schedule & Takeoff', () => {
     expect(takeoff.deviceCount).toBe(2)
     expect(takeoff.conduitByTypeAndSize['1" EMT']?.sticks10Ft).toBeGreaterThan(0)
     expect(takeoff.breakersBySpec['3P-40A']).toBe(1)
+  })
+
+  test('BUG-01: 2-pole 208V wye load computes exact VA/V_LL phase amps, skips multi-pole spans, and flags slot collisions', () => {
+    const panel = {
+      id: 'elecpanel_wye',
+      type: 'electrical:panel',
+      name: 'LP-WYE',
+      occupancy: 'commercial',
+      voltageSystem: '120/208V-3P',
+      busRatingAmps: 200,
+      mainBreakerAmps: 200,
+      spaces: 12,
+    }
+    const twoPole208 = {
+      id: 'elecdev_2p',
+      type: 'electrical:device',
+      name: '208V Water Heater',
+      panelId: 'elecpanel_wye',
+      circuitNumber: 1, // spans 1 (Phase A) and 3 (Phase B)
+      poles: 2,
+      breakerAmps: 25,
+      loadVa: 4160, // 4160 / 208V = 20.0A on Phase A and 20.0A on Phase B
+    }
+    const collidingSinglePole = {
+      id: 'elecdev_collide',
+      type: 'electrical:device',
+      name: 'Colliding Outlet',
+      panelId: 'elecpanel_wye',
+      circuitNumber: 3, // collides with pole 2 of circuit 1!
+      poles: 1,
+      breakerAmps: 20,
+      loadVa: 180,
+    }
+
+    expect(findNextFreePanelCircuit(panel, [twoPole208], 1)).toBe(2)
+    expect(findNextFreePanelCircuit(panel, [twoPole208, { ...collidingSinglePole, circuitNumber: 2 }], 2)).toBe(4)
+
+    const cleanSched = buildPanelSchedule(panel, [twoPole208])
+    expect(cleanSched.phaseAmps.A).toBe(20)
+    expect(cleanSched.phaseAmps.B).toBe(20)
+    expect(cleanSched.phaseAmps.C).toBe(0)
+    expect(cleanSched.slotConflicts).toHaveLength(0)
+
+    const conflictReport = auditSceneElectrical({
+      elecpanel_wye: panel,
+      elecdev_2p: twoPole208,
+      elecdev_collide: collidingSinglePole,
+    })
+    expect(conflictReport.findings.some((f) => f.codeRef === 'NEC 408.36')).toBe(true)
   })
 })

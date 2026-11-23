@@ -9,6 +9,7 @@ import { useMemo, useState } from 'react'
 import { electricalAgentOperations } from '../agent-operations'
 import { auditSceneElectrical } from '../nec/audit'
 import type { SceneNodeLike } from '../nec/load-calc'
+import { findNextFreePanelCircuit } from '../nec/panel-schedule'
 import { extractTradeObstacles, routeElectricalRun, type Vec3 } from '../nec/routing'
 import { useElectricalUi } from './store'
 
@@ -75,6 +76,9 @@ export default function ElectricalRailPanel() {
     const primaryPanel = panels[0]
     const idx = devices.length + 1
     const isHeavy = deviceKind === 'evse' || deviceKind === 'motor-load'
+    const poles: 1 | 2 | 3 =
+      deviceKind === 'motor-load' && occupancy === 'commercial' ? 3 : isHeavy ? 2 : 1
+    const nextCircuit = findNextFreePanelCircuit(primaryPanel, devices, poles)
     const outcome = electricalAgentOperations.electrical_place_device(
       nodes,
       {
@@ -84,8 +88,8 @@ export default function ElectricalRailPanel() {
         deviceKind,
         occupancy,
         panelId: primaryPanel?.id,
-        circuitNumber: Math.max(1, idx * 2 - 1),
-        poles: deviceKind === 'motor-load' && occupancy === 'commercial' ? 3 : isHeavy ? 2 : 1,
+        circuitNumber: nextCircuit,
+        poles,
         breakerAmps: deviceKind === 'evse' ? 50 : deviceKind === 'motor-load' ? 30 : 20,
         loadVa: deviceKind === 'evse' ? 9600 : deviceKind === 'motor-load' ? 4800 : 180,
         continuous: deviceKind === 'evse',
