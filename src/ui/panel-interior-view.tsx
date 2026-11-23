@@ -11,7 +11,10 @@ import {
   Box3,
   Color,
   DirectionalLight,
+  Group,
   HemisphereLight,
+  type Material,
+  type Object3D,
   PerspectiveCamera,
   Raycaster,
   Scene,
@@ -39,6 +42,32 @@ const PRESET_VIEWS: Record<
   'right-gutter': { label: 'Zoom: Right Gutter', theta: 0.58, phi: 0.04, distFactor: 0.68, targetYRatio: -0.04, targetXRatio: 0.26 },
 }
 
+function disposeObjectTree(root: Object3D): void {
+  const geometries = new Set<{ dispose: () => void }>()
+  const materials = new Set<Material>()
+  root.traverse((obj) => {
+    const mesh = obj as { geometry?: { dispose?: () => void }; material?: Material | Material[] }
+    if (mesh.geometry && typeof mesh.geometry.dispose === 'function') {
+      geometries.add(mesh.geometry as { dispose: () => void })
+    }
+    if (Array.isArray(mesh.material)) {
+      for (const m of mesh.material) materials.add(m)
+    } else if (mesh.material) {
+      materials.add(mesh.material)
+    }
+  })
+  for (const g of geometries) g.dispose()
+  for (const m of materials) m.dispose()
+}
+
+type ViewerRuntime = {
+  scene: Scene
+  camera: PerspectiveCamera
+  renderer: WebGLRenderer
+  holder: Group
+  renderFrame: () => void
+}
+
 export default function PanelInteriorView({
   schedule,
   nemaRating,
@@ -49,8 +78,16 @@ export default function PanelInteriorView({
   onSelectDeviceIds?: (ids: string[]) => void
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const runtimeRef = useRef<ViewerRuntime | null>(null)
+  const boundsRef = useRef({
+    size: new Vector3(0.45, 0.92, 0.15),
+    center: new Vector3(0, 0, 0),
+    maxDim: 0.92,
+  })
+
   const [viewMode, setViewMode] = useState<PanelInteriorViewMode>('cover-off')
   const [preset, setPreset] = useState<CameraPreset>('breakers')
+  const [presetTick, setPresetTick] = useState(0)
   const [showHots, setShowHots] = useState(true)
   const [showNeutrals, setShowNeutrals] = useState(true)
   const [showGrounds, setShowGrounds] = useState(true)
@@ -58,18 +95,24 @@ export default function PanelInteriorView({
   const [selectedCircuit, setSelectedCircuit] = useState<number | null>(null)
   const [pickedMeta, setPickedMeta] = useState<PanelWireMetadata | null>(null)
 
-  // Live orbit state persisted across renders
   const orbitRef = useRef({
     theta: PRESET_VIEWS.breakers.theta,
     phi: PRESET_VIEWS.breakers.phi,
-    dist: 0.75,
-    target: new Vector3(0, -0.05, 0),
+    dist: 0.72,
+    target: new Vector3(0, -0.05, 0.02),
     dragging: false,
     lastX: 0,
     lastY: 0,
     moved: false,
   })
 
+  // Reset picked circuit metadata when user switches panels
+  useEffect(() => {
+    setSelectedCircuit(null)
+    setPickedMeta(null)
+  }, [schedule.panelId])
+
+  // 1. Mount-only WebGLRenderer + ResizeObserver + Orbit/Raycaster lifecycle (zero context thrashing)
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -79,7 +122,6 @@ export default function PanelInteriorView({
 
     const scene = new Scene()
     scene.background = new Color(0x0b1220)
-
     scene.add(new HemisphereLight(0xf8fafc, 0x334155, 1.35))
     scene.add(new AmbientLight(0xffffff, 0.35))
     const keyLight = new DirectionalLight(0xffffff, 1.75)
@@ -89,31 +131,9 @@ export default function PanelInteriorView({
     fillLight.position.set(-2.0, 0.6, 1.8)
     scene.add(fillLight)
 
-    const panelGroup = buildWiredPanelInteriorCad({
-      schedule,
-      nemaRating,
-      viewMode,
-      wires: { showHots, showNeutrals, showGrounds, showFeeders },
-      highlightCircuit: selectedCircuit,
-    })
-    scene.add(panelGroup)
-
-    const box = new Box3().setFromObject(panelGroup)
-    const size = new Vector3()
-    const center = new Vector3()
-    box.getSize(size)
-    box.getCenter(center)
-
-    const maxDim = Math.max(size.x, size.y, size.z, 0.5)
-    const pConf = PRESET_VIEWS[preset]
-    orbitRef.current.theta = pConf.theta
-    orbitRef.current.phi = pConf.phi
-    orbitRef.current.dist = maxDim * pConf.distFactor
-    orbitRef.current.target.set(
-      center.x + size.x * pConf.targetXRatio,
-      center.y + size.y * pConf.targetYRatio,
-      center.z + 0.02,
-    )
+    const holder = new Group()
+    holder.name = 'panel-interior-holder'
+    scene.add(holder)
 
     const camera = new PerspectiveCamera(38, width / height, 0.01, 20)
     const renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
@@ -122,7 +142,7 @@ export default function PanelInteriorView({
     container.innerHTML = ''
     container.appendChild(renderer.domElement)
 
-    const updateCamera = () => {
+    const renderFrame = () => {
       const o = orbitRef.current
       const cosPhi = Math.cos(o.phi)
       camera.position.set(
@@ -134,7 +154,7 @@ export default function PanelInteriorView({
       renderer.render(scene, camera)
     }
 
-    updateCamera()
+    runtimeRef.current = { scene, camera, renderer, holder, renderFrame }
 
     const raycaster = new Raycaster()
     const pointer = new Vector2()
@@ -156,7 +176,7 @@ export default function PanelInteriorView({
       orbitRef.current.lastY = e.clientY
       orbitRef.current.theta = Math.max(-1.4, Math.min(1.4, orbitRef.current.theta - dx * 0.007))
       orbitRef.current.phi = Math.max(-0.9, Math.min(0.9, orbitRef.current.phi + dy * 0.007))
-      updateCamera()
+      renderFrame()
     }
 
     const onPointerUp = (e: PointerEvent) => {
@@ -171,7 +191,7 @@ export default function PanelInteriorView({
       pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
       pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
       raycaster.setFromCamera(pointer, camera)
-      const hits = raycaster.intersectObjects(panelGroup.children, true)
+      const hits = raycaster.intersectObjects(holder.children, true)
       const hitWithMeta = hits.find((h) => h.object.userData && (h.object.userData as PanelWireMetadata).kind)
       if (hitWithMeta) {
         const meta = hitWithMeta.object.userData as PanelWireMetadata
@@ -187,16 +207,16 @@ export default function PanelInteriorView({
       e.preventDefault()
       const factor = e.deltaY > 0 ? 1.1 : 0.91
       orbitRef.current.dist = Math.max(0.22, Math.min(3.0, orbitRef.current.dist * factor))
-      updateCamera()
+      renderFrame()
     }
 
-    const onResize = () => {
+    const syncSize = () => {
       const wNew = Math.max(320, container.clientWidth || 680)
       const hNew = Math.max(360, container.clientHeight || 480)
       camera.aspect = wNew / hNew
       camera.updateProjectionMatrix()
       renderer.setSize(wNew, hNew)
-      updateCamera()
+      renderFrame()
     }
 
     const el = renderer.domElement
@@ -205,22 +225,75 @@ export default function PanelInteriorView({
     el.addEventListener('pointermove', onPointerMove)
     el.addEventListener('pointerup', onPointerUp)
     el.addEventListener('wheel', onWheel, { passive: false })
-    window.addEventListener('resize', onResize)
+
+    let ro: ResizeObserver | null = null
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(syncSize)
+      ro.observe(container)
+    }
+    window.addEventListener('resize', syncSize)
 
     return () => {
+      runtimeRef.current = null
       el.removeEventListener('pointerdown', onPointerDown)
       el.removeEventListener('pointermove', onPointerMove)
       el.removeEventListener('pointerup', onPointerUp)
       el.removeEventListener('wheel', onWheel)
-      window.removeEventListener('resize', onResize)
-      panelGroup.traverse((obj) => {
-        const mesh = obj as { geometry?: { dispose?: () => void }; material?: { dispose?: () => void } }
-        mesh.geometry?.dispose?.()
-        mesh.material?.dispose?.()
-      })
+      window.removeEventListener('resize', syncSize)
+      ro?.disconnect()
+      disposeObjectTree(holder)
+      holder.clear()
       renderer.dispose()
     }
-  }, [schedule, nemaRating, viewMode, preset, showHots, showNeutrals, showGrounds, showFeeders, selectedCircuit])
+  }, [])
+
+  // 2. Rebuild ONLY the panel CAD group when schedule, layers, cover mode, or selection changes (preserves camera!)
+  useEffect(() => {
+    const rt = runtimeRef.current
+    if (!rt) return
+
+    disposeObjectTree(rt.holder)
+    rt.holder.clear()
+
+    const panelGroup = buildWiredPanelInteriorCad({
+      schedule,
+      nemaRating,
+      viewMode,
+      wires: { showHots, showNeutrals, showGrounds, showFeeders },
+      highlightCircuit: selectedCircuit,
+    })
+    rt.holder.add(panelGroup)
+
+    const box = new Box3().setFromObject(panelGroup)
+    const size = new Vector3()
+    const center = new Vector3()
+    box.getSize(size)
+    box.getCenter(center)
+    boundsRef.current = {
+      size,
+      center,
+      maxDim: Math.max(size.x, size.y, size.z, 0.5),
+    }
+
+    rt.renderFrame()
+  }, [schedule, nemaRating, viewMode, showHots, showNeutrals, showGrounds, showFeeders, selectedCircuit])
+
+  // 3. Apply camera preset ONLY when preset button is clicked or user switches to a different panel
+  useEffect(() => {
+    const rt = runtimeRef.current
+    if (!rt) return
+    const { size, center, maxDim } = boundsRef.current
+    const pConf = PRESET_VIEWS[preset]
+    orbitRef.current.theta = pConf.theta
+    orbitRef.current.phi = pConf.phi
+    orbitRef.current.dist = maxDim * pConf.distFactor
+    orbitRef.current.target.set(
+      center.x + size.x * pConf.targetXRatio,
+      center.y + size.y * pConf.targetYRatio,
+      center.z + 0.02,
+    )
+    rt.renderFrame()
+  }, [preset, presetTick, schedule.panelId])
 
   const phaseLegend =
     schedule.voltageSystem === '277/480V-3P'
@@ -248,7 +321,7 @@ export default function PanelInteriorView({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      {/* Top Toolbar: Cover Mode + Camera Zoom Presets + Wire Layer Toggles */}
+      {/* Top Toolbar: Cover Mode + Camera Zoom Presets */}
       <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
           {(
@@ -274,7 +347,10 @@ export default function PanelInteriorView({
             <button
               key={pKey}
               type="button"
-              onClick={() => setPreset(pKey)}
+              onClick={() => {
+                setPreset(pKey)
+                setPresetTick((t) => t + 1)
+              }}
               style={pillBtn(preset === pKey, 'rgba(56,189,248,0.22)')}
             >
               {PRESET_VIEWS[pKey].label}
