@@ -99,9 +99,9 @@ export const electricalAgentTools: PluginAgentTools = {
             '4-oct-1.5',
             '4-oct-2.125',
           ])
-          .default('single-gang-standard'),
-        wireGauge: z.enum(['18', '16', '14', '12', '10', '8', '6']).default('12'),
-        conductorCount: z.number().int().min(0).max(40).default(4),
+          .optional(),
+        wireGauge: z.enum(['18', '16', '14', '12', '10', '8', '6']).optional(),
+        conductorCount: z.number().int().min(0).max(40).optional(),
       },
       annotations: { destructiveHint: false, idempotentHint: false },
     },
@@ -109,7 +109,7 @@ export const electricalAgentTools: PluginAgentTools = {
       name: 'electrical_route_circuit',
       title: 'Route trade-aware electrical circuit',
       description:
-        'Route a 3D electrical conduit or cable run from a panel to a device, automatically yielding around Pascal plumbing (pipe-*), HVAC (duct-*, hvac-equipment), and structural (beam, column) obstacles. Computes actual routed length, voltage drop, and NEC 358.26 bend totals.',
+        'Route a 3D electrical conduit or cable run from a panel to a device, automatically yielding around Pascal plumbing (pipe-*), HVAC (duct-*, hvac-equipment), and structural (beam, column) obstacles. Auto-sizes wireGauge and tradeSize when omitted.',
       runsIn: 'operation',
       input: {
         panelId: z.string(),
@@ -119,7 +119,7 @@ export const electricalAgentTools: PluginAgentTools = {
         racewayType: z.enum(['nm-b', 'mc', 'emt', 'pvc-40', 'rmc']).optional(),
         tradeSize: z
           .enum(['1/2"', '3/4"', '1"', '1-1/4"', '1-1/2"', '2"', '2-1/2"', '3"', '4"'])
-          .default('3/4"'),
+          .optional(),
         wireGauge: z
           .enum([
             '14', '12', '10', '8', '6', '4', '3', '2', '1',

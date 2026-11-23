@@ -42,6 +42,7 @@ export type AmpacityInput = {
   currentCarryingCount?: number
   loadAmps?: number
   continuousLoad?: boolean
+  breakerAmps?: number
 }
 
 export type AmpacityResult = {
@@ -56,6 +57,7 @@ export type AmpacityResult = {
   smallConductorCapApplied: boolean
   requiredAmpacity: number
   compliant: boolean
+  breakerCompliant: boolean
   recommendedGauge: WireGauge
   notes: string[]
 }
@@ -126,6 +128,8 @@ export function calculateDeratedAmpacity(input: AmpacityInput): AmpacityResult {
   }
 
   const compliant = finalAllowable > 0 && finalAllowable >= requiredAmpacity
+  const breakerCompliant =
+    input.breakerAmps === undefined || (maxBreaker > 0 && input.breakerAmps <= maxBreaker)
   const recommendedGauge = recommendWireGauge({
     ...input,
     loadAmps,
@@ -143,6 +147,7 @@ export function calculateDeratedAmpacity(input: AmpacityInput): AmpacityResult {
     smallConductorCapApplied,
     requiredAmpacity,
     compliant,
+    breakerCompliant,
     recommendedGauge,
     notes,
   }
@@ -155,6 +160,18 @@ function nextStandardOcpdFloor(amps: number): number {
     if (r <= amps) best = r
   }
   return best
+}
+
+function maxOcpdForAllowable(
+  material: ConductorMaterial,
+  gauge: WireGauge,
+  allowable: number,
+): number {
+  const smallCap = SMALL_CONDUCTOR_OCPD_MAX[material][gauge]
+  if (smallCap !== undefined) {
+    return allowable >= smallCap ? smallCap : nextStandardOcpdFloor(allowable)
+  }
+  return allowable <= 800 ? nextStandardOcpd(allowable) : nextStandardOcpdFloor(allowable)
 }
 
 export function recommendWireGauge(
@@ -174,8 +191,17 @@ export function recommendWireGauge(
   for (const gauge of WIRE_GAUGE_ORDER) {
     const row = AMPACITY_TABLE_310_16[material][gauge]
     if (row[insulationRating] <= 0) continue
-    const allowable = Math.min(row[insulationRating] * tempFactor * bundlingFactor, row[terminalRating])
-    if (allowable >= required) return gauge
+    const allowable = round2(
+      Math.min(row[insulationRating] * tempFactor * bundlingFactor, row[terminalRating]),
+    )
+    if (allowable < required) continue
+    if (
+      input.breakerAmps !== undefined &&
+      maxOcpdForAllowable(material, gauge, allowable) < input.breakerAmps
+    ) {
+      continue
+    }
+    return gauge
   }
   return '750kcmil'
 }

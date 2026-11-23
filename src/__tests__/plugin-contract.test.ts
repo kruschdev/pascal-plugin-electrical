@@ -154,6 +154,39 @@ describe('Pascal Plugin API v1 Conformance & Agent Operations (E-014 / E-016)', 
       fallbackSquareFootage: 2000,
     })
     expect(loadOut.result.minimumServiceAmps).toBe(100)
+
+    // BUG-03: Placing & routing a 50A continuous EVSE without manual wireGauge/tradeSize auto-sizes cleanly
+    const evseOut = electricalAgentOperations.electrical_place_device(
+      nodes,
+      {
+        name: 'Garage EVSE',
+        position: [6, 1.1, 0],
+        deviceKind: 'evse',
+        panelId: panelNode.id,
+        circuitNumber: 2,
+        poles: 2,
+        breakerAmps: 50,
+        loadVa: 9600,
+        continuous: true,
+        gfciProtected: true,
+      },
+      ctx,
+    )
+    const evseNode = evseOut.changes!.create![0]!.node
+    nodes[evseNode.id] = evseNode
+
+    const evseRoute = electricalAgentOperations.electrical_route_circuit(
+      nodes,
+      { panelId: panelNode.id, targetDeviceId: evseNode.id, racewayType: 'nm-b' },
+      ctx,
+    )
+    const evseRun = evseRoute.changes!.create![0]!.node
+    nodes[evseRun.id] = evseRun
+    // 40A * 1.25 = 50A required -> NM-B 60°C cap requires #6 Cu (55A)
+    expect(evseRoute.result.wireGauge).toBe('6')
+
+    const auditAfterEvse = electricalAgentOperations.electrical_audit_nec(nodes)
+    expect(auditAfterEvse.result.passed).toBe(true)
   })
 
   test('All 4 node 3D geometry and 2D floorplan builders produce valid Three.js & Floorplan outputs', () => {

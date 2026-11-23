@@ -15,17 +15,23 @@ import {
   formatPanelScheduleCsv,
 } from './nec/panel-schedule'
 import { extractTradeObstacles, routeElectricalRun, type Vec3 } from './nec/routing'
-import { calculateVoltageDrop } from './nec/sizing'
+import { calculateConduitFill, calculateVoltageDrop, recommendWireGauge } from './nec/sizing'
 import {
   type ConduitTradeSize,
+  METERS_TO_FEET,
   type OccupancyType,
   type RacewayType,
   type VoltageSystem,
+  WIRE_GAUGE_ORDER,
   type WireGauge,
   getVoltageLineToLine,
   getVoltageLineToNeutral,
   isThreePhaseSystem,
 } from './nec/tables'
+
+function largerWireGauge(a: WireGauge, b: WireGauge): WireGauge {
+  return WIRE_GAUGE_ORDER.indexOf(a) >= WIRE_GAUGE_ORDER.indexOf(b) ? a : b
+}
 
 function asRecord(nodes: SceneNodes): Readonly<Record<string, SceneNodeLike>> {
   return nodes as unknown as Readonly<Record<string, SceneNodeLike>>
@@ -139,6 +145,28 @@ export const electricalAgentOperations = {
     }
     const id = deterministicId('elecdev', nodes)
     const deviceKind = input.deviceKind ?? 'duplex'
+    const breakerAmps = input.breakerAmps ?? 20
+    const poles: 1 | 2 | 3 = input.poles ?? 1
+    const autoWireGauge =
+      breakerAmps >= 50
+        ? '6'
+        : breakerAmps >= 40
+          ? '8'
+          : breakerAmps >= 30
+            ? '10'
+            : breakerAmps <= 15
+              ? '14'
+              : '12'
+    const autoBoxType =
+      deviceKind === 'junction-box'
+        ? '4-sq-2.125'
+        : breakerAmps >= 40
+          ? '4-11-16-2.125'
+          : breakerAmps >= 30
+            ? '4-sq-2.125'
+            : 'single-gang-standard'
+    const autoConductorCount =
+      input.conductorCount ?? (poles === 3 ? 3 : breakerAmps >= 30 ? 3 : 4)
     const node = {
       object: 'node',
       id,
@@ -153,16 +181,16 @@ export const electricalAgentOperations = {
       occupancy: input.occupancy ?? 'residential',
       panelId: input.panelId,
       circuitNumber: input.circuitNumber ?? 1,
-      poles: input.poles ?? 1,
-      breakerAmps: input.breakerAmps ?? 20,
+      poles,
+      breakerAmps,
       loadVa: input.loadVa ?? 180,
       continuous: input.continuous ?? false,
       isMotor: deviceKind === 'motor-load',
       gfciProtected: input.gfciProtected ?? deviceKind === 'gfci',
       afciProtected: input.afciProtected ?? deviceKind === 'afci',
-      boxType: input.boxType ?? (deviceKind === 'junction-box' ? '4-sq-2.125' : 'single-gang-standard'),
-      wireGauge: input.wireGauge ?? '12',
-      conductorCount: input.conductorCount ?? 4,
+      boxType: input.boxType ?? autoBoxType,
+      wireGauge: input.wireGauge ?? autoWireGauge,
+      conductorCount: autoConductorCount,
       clampCount: 1,
       yokeCount: deviceKind === 'junction-box' ? 0 : 1,
     } as unknown as AnyNode
@@ -235,11 +263,53 @@ export const electricalAgentOperations = {
       Math.round(
         (phases === 3 ? loadVa / (voltage * Math.sqrt(3)) : loadVa / voltage) * 100,
       ) / 100
-    const wireGauge: WireGauge =
-      input.wireGauge ??
-      (typeof device.wireGauge === 'string' && device.wireGauge !== '18' && device.wireGauge !== '16'
-        ? (device.wireGauge as WireGauge)
-        : '12')
+    const breakerAmps = typeof device.breakerAmps === 'number' ? device.breakerAmps : 20
+    const continuousLoad = device.continuous === true
+    const ccc = poles === 3 ? 3 : 2
+    const totalConductors = poles === 3 ? 4 : 3
+
+    let wireGauge: WireGauge
+    if (input.wireGauge) {
+      wireGauge = input.wireGauge
+    } else {
+      const ampGauge = recommendWireGauge({
+        material: 'cu',
+        insulationRating: '90C',
+        racewayType,
+        ambientTempC: 30,
+        currentCarryingCount: ccc,
+        loadAmps: Math.max(1, loadAmps),
+        continuousLoad,
+        breakerAmps,
+      })
+      const vdCheck = calculateVoltageDrop({
+        wireGauge: ampGauge,
+        material: 'cu',
+        loadAmps: Math.max(1, loadAmps),
+        oneWayLengthFt: route.routedLengthFt,
+        voltage,
+        phases,
+        maxDropPct: 3.0,
+      })
+      wireGauge = largerWireGauge(ampGauge, vdCheck.recommendedGauge)
+    }
+
+    let tradeSize: ConduitTradeSize = input.tradeSize ?? '3/4"'
+    if (
+      !input.tradeSize &&
+      (racewayType === 'emt' || racewayType === 'pvc-40' || racewayType === 'rmc')
+    ) {
+      const lengthIn = route.routedLengthM * METERS_TO_FEET * 12
+      const fill = calculateConduitFill({
+        conduitType: racewayType,
+        tradeSize: '3/4"',
+        conductors: [{ gauge: wireGauge, count: totalConductors }],
+        lengthInches: lengthIn > 0 ? lengthIn : undefined,
+      })
+      if (!fill.compliant) {
+        tradeSize = fill.recommendedTradeSize
+      }
+    }
 
     const vd = calculateVoltageDrop({
       wireGauge,
@@ -267,12 +337,12 @@ export const electricalAgentOperations = {
       path: route.path,
       occupancy,
       racewayType,
-      tradeSize: input.tradeSize ?? '3/4"',
+      tradeSize,
       conductorMaterial: 'cu',
       insulationRating: '90C',
       wireGauge,
-      currentCarryingCount: poles === 3 ? 3 : 2,
-      totalConductorCount: poles === 3 ? 4 : 3,
+      currentCarryingCount: ccc,
+      totalConductorCount: totalConductors,
       ambientTempC: 30,
       rooftopExposed: false,
       inPlenum: false,
@@ -280,7 +350,7 @@ export const electricalAgentOperations = {
       targetDeviceId: device.id,
       circuitNumber: ckt,
       loadAmps: Math.max(1, loadAmps),
-      continuous: device.continuous === true,
+      continuous: continuousLoad,
       voltage,
       phases,
     } as unknown as AnyNode
@@ -289,6 +359,8 @@ export const electricalAgentOperations = {
       result: {
         conduitRunId: id,
         name: runName,
+        wireGauge,
+        tradeSize,
         routedLengthM: route.routedLengthM,
         routedLengthFt: route.routedLengthFt,
         detourAddedM: route.detourAddedM,

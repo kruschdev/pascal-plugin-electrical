@@ -242,4 +242,50 @@ describe('Live Scene NEC Audit, Panel Schedule & Takeoff', () => {
     })
     expect(conflictReport.findings.some((f) => f.codeRef === 'NEC 408.36')).toBe(true)
   })
+
+  test('BUG-03: Flags NEC 240.4(D) when #14 AWG Cu is protected by a 20A breaker despite carrying <= 15A', () => {
+    const scene = {
+      elecpanel_1: {
+        id: 'elecpanel_1',
+        type: 'electrical:panel',
+        name: 'MDP-1',
+        voltageSystem: '120/240V-1P',
+        busRatingAmps: 200,
+        mainBreakerAmps: 200,
+      },
+      elecdev_1: {
+        id: 'elecdev_1',
+        type: 'electrical:device',
+        name: 'Hall Outlet',
+        panelId: 'elecpanel_1',
+        circuitNumber: 1,
+        poles: 1,
+        breakerAmps: 20, // 20A OCPD > 15A max for #14 Cu!
+        loadVa: 1440,
+      },
+      eleccond_1: {
+        id: 'eleccond_1',
+        type: 'electrical:conduit-run',
+        name: 'CKT-1',
+        panelId: 'elecpanel_1',
+        targetDeviceId: 'elecdev_1',
+        circuitNumber: 1,
+        racewayType: 'emt',
+        wireGauge: '14',
+        loadAmps: 12,
+        voltage: 120,
+        phases: 1,
+        path: [
+          [0, 1.5, 0],
+          [3, 1.5, 0],
+        ],
+      },
+    }
+
+    const report = auditSceneElectrical(scene)
+    expect(report.passed).toBe(false)
+    const ocpdFinding = report.findings.find((f) => f.codeRef === 'NEC 240.4(D)')
+    expect(ocpdFinding).toBeDefined()
+    expect(ocpdFinding?.suggestedFix).toContain('#12')
+  })
 })

@@ -517,12 +517,41 @@ export function auditSceneElectrical(
       })
     }
 
-    // 3d. NEC 310.16 / 310.15 / 240.4(D) Derated Ampacity
+    // 3d. NEC 310.16 / 310.15 / 240.4(D) Derated Ampacity & Breaker OCPD Protection
     const loadAmps = typeof run.loadAmps === 'number' ? run.loadAmps : 16
     const ccc = typeof run.currentCarryingCount === 'number' ? run.currentCarryingCount : 2
     const ambientTempC = typeof run.ambientTempC === 'number' ? run.ambientTempC : 30
     const rooftopExposed = run.rooftopExposed === true
     const continuousLoad = run.continuous === true
+
+    let connectedBreakerAmps: number | undefined =
+      typeof run.breakerAmps === 'number' ? run.breakerAmps : undefined
+    let connectedDevId: string | undefined
+    if (connectedBreakerAmps === undefined && typeof run.targetDeviceId === 'string') {
+      const target = nodes[run.targetDeviceId]
+      if (target && typeof target.breakerAmps === 'number') {
+        connectedBreakerAmps = target.breakerAmps
+        connectedDevId = target.id
+      }
+    }
+    if (
+      connectedBreakerAmps === undefined &&
+      typeof run.panelId === 'string' &&
+      typeof run.circuitNumber === 'number'
+    ) {
+      for (const dev of devices) {
+        if (
+          dev.panelId === run.panelId &&
+          dev.circuitNumber === run.circuitNumber &&
+          typeof dev.breakerAmps === 'number'
+        ) {
+          if (connectedBreakerAmps === undefined || dev.breakerAmps > connectedBreakerAmps) {
+            connectedBreakerAmps = dev.breakerAmps
+            connectedDevId = dev.id
+          }
+        }
+      }
+    }
 
     const ampResult = calculateDeratedAmpacity({
       wireGauge,
@@ -534,6 +563,7 @@ export function auditSceneElectrical(
       currentCarryingCount: ccc,
       loadAmps,
       continuousLoad,
+      breakerAmps: connectedBreakerAmps,
     })
     if (!ampResult.compliant) {
       push({
@@ -544,6 +574,16 @@ export function auditSceneElectrical(
         message: `Allowable derated ampacity (${ampResult.finalAllowableAmpacity}A) is below required load (${ampResult.requiredAmpacity}A).`,
         nodeIds: [run.id],
         suggestedFix: `Upsize wireGauge to #${ampResult.recommendedGauge} ${material.toUpperCase()}.`,
+      })
+    } else if (connectedBreakerAmps !== undefined && !ampResult.breakerCompliant) {
+      push({
+        severity: 'error',
+        codeRef: ampResult.smallConductorCapApplied ? 'NEC 240.4(D)' : 'NEC 240.4',
+        category: 'ampacity',
+        title: `Over-fused conductor on ${runName} (#${wireGauge} ${material.toUpperCase()} on ${connectedBreakerAmps}A breaker)`,
+        message: `Circuit breaker (${connectedBreakerAmps}A) exceeds maximum OCPD (${ampResult.maxBreakerAmps}A) permitted for #${wireGauge} ${material.toUpperCase()} (allowable ampacity ${ampResult.finalAllowableAmpacity}A).`,
+        nodeIds: connectedDevId ? [run.id, connectedDevId] : [run.id],
+        suggestedFix: `Upsize wireGauge to #${ampResult.recommendedGauge} ${material.toUpperCase()} or reduce breaker rating to <= ${ampResult.maxBreakerAmps}A.`,
       })
     }
 
