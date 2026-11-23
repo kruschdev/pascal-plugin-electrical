@@ -15,7 +15,12 @@ import {
   formatPanelScheduleCsv,
 } from './nec/panel-schedule'
 import { extractTradeObstacles, routeElectricalRun, type Vec3 } from './nec/routing'
-import { calculateConduitFill, calculateVoltageDrop, recommendWireGauge } from './nec/sizing'
+import {
+  calculateConduitFill,
+  calculateTransformerSizing,
+  calculateVoltageDrop,
+  recommendWireGauge,
+} from './nec/sizing'
 import {
   type ConduitTradeSize,
   METERS_TO_FEET,
@@ -111,6 +116,66 @@ export const electricalAgentOperations = {
         voltageSystem,
         busRatingAmps,
         levelId: parentId,
+      },
+      changes: { create: [{ node, parentId: parentId ?? undefined }] },
+    }
+  },
+
+  electrical_place_transformer: (
+    nodes: SceneNodes,
+    input: {
+      levelId?: string
+      name?: string
+      position: [number, number, number]
+      rotation?: number
+      kvaRating?: number
+      primaryVoltage?: number
+      secondaryVoltage?: number
+      fedFromPanelId?: string
+      nemaRating?: 'NEMA-1' | 'NEMA-2' | 'NEMA-3R'
+      showClearanceZone?: boolean
+    },
+    context: AgentContext,
+  ) => {
+    const parentId = resolveLevelId(nodes, input.levelId, context)
+    if (input.fedFromPanelId && !nodes[input.fedFromPanelId]) {
+      refuse('panel_not_found', `Electrical panel "${input.fedFromPanelId}" does not exist in the scene.`)
+    }
+    const id = deterministicId('electx', nodes)
+    const kvaRating = input.kvaRating ?? 75
+    const primaryVoltage = input.primaryVoltage ?? 480
+    const secondaryVoltage = input.secondaryVoltage ?? 208
+    const sizing = calculateTransformerSizing(kvaRating, primaryVoltage, secondaryVoltage)
+    const name = input.name ?? `TX-1 (${kvaRating} kVA)`
+
+    const node = {
+      object: 'node',
+      id,
+      type: 'electrical:transformer',
+      name,
+      parentId,
+      visible: true,
+      metadata: {},
+      position: input.position,
+      rotation: input.rotation ?? 0,
+      kvaRating,
+      primaryVoltage,
+      secondaryVoltage,
+      fedFromPanelId: input.fedFromPanelId,
+      impedancePct: 4.5,
+      nemaRating: input.nemaRating ?? 'NEMA-2',
+      showClearanceZone: input.showClearanceZone ?? true,
+      width: 0.76,
+      depth: 0.64,
+      height: 0.95,
+    } as unknown as AnyNode
+
+    return {
+      result: {
+        transformerId: id,
+        name,
+        levelId: parentId,
+        ...sizing,
       },
       changes: { create: [{ node, parentId: parentId ?? undefined }] },
     }

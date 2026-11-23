@@ -46,7 +46,7 @@ Zero LLM calls, zero React/Three.js dependencies:
 | `.` | `electricalPlugin`, `electricalHostPanel`, `electricalScheduleView`, `electricalChatExtension` | Full editor integration (`EditorHostPanel`, full-pane `EditorHostView`, `InspectorExtension`, chat cards) |
 | `./render` | `electricalRenderPlugin` | Editor-free read-only viewer manifest (verified by `bun run check:render`) |
 | `./nec` | Pure NEC & trade-routing functions | Framework-free TypeScript (zero React, Three.js, or `@pascal-app/*`) |
-| `./agent-tools` | `electricalAgentTools` (`PluginAgentTools`, `E-016`) | Pure Zod-only contracts (`6` tools + skill) |
+| `./agent-tools` | `electricalAgentTools` (`PluginAgentTools`, `E-016`) | Pure Zod-only contracts (`7` tools + skill) |
 | `./agent-operations` | `electricalAgentOperations` (`AgentOperations`, `E-016`) | Pure scene operations runnable on MCP, detached runtime, or live chat |
 
 ## Load in a Pascal Host

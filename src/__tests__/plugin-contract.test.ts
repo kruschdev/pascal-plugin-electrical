@@ -189,6 +189,25 @@ describe('Pascal Plugin API v1 Conformance & Agent Operations (E-014 / E-016)', 
 
     const auditAfterEvse = electricalAgentOperations.electrical_audit_nec(nodes)
     expect(auditAfterEvse.result.passed).toBe(true)
+
+    // OPT-02: Commercial step-down transformer placement operation creates electrical:transformer with NEC 450.3(B) sizing
+    const txOut = electricalAgentOperations.electrical_place_transformer(
+      nodes,
+      {
+        name: 'TX-1 (75 kVA)',
+        position: [3, 0, -2],
+        kvaRating: 75,
+        primaryVoltage: 480,
+        secondaryVoltage: 208,
+        fedFromPanelId: panelNode.id,
+      },
+      ctx,
+    )
+    const txNode = txOut.changes!.create![0]!.node
+    nodes[txNode.id] = txNode
+    expect(txNode.type).toBe('electrical:transformer')
+    expect(txOut.result.maxPrimaryOcpdAmps).toBe(125)
+    expect(txOut.result.maxSecondaryOcpdAmps).toBe(300)
   })
 
   test('All 4 node 3D geometry and 2D floorplan builders produce valid Three.js & Floorplan outputs', () => {
@@ -211,11 +230,15 @@ describe('Pascal Plugin API v1 Conformance & Agent Operations (E-014 / E-016)', 
         [0, 1.5, 0],
         [0, 2.5, 0],
         [3, 2.5, 0],
+        [3, 0.4, 0],
       ],
     })
     const rGeo = buildElectricalConduitRunGeometry(run, dummyCtx)
     const rPlan = buildElectricalConduitRunFloorplan(run, dummyCtx)
-    expect(rGeo.children.length).toBe(3) // 2 cylinders + 1 bend elbow
+    expect(rGeo.children.length).toBe(5) // 3 cylinders + 2 bend elbows sharing 1 SphereGeometry
+    expect((rGeo.children[3] as { geometry: unknown }).geometry).toBe(
+      (rGeo.children[4] as { geometry: unknown }).geometry,
+    )
     expect(rPlan.kind).toBe('group')
 
     const tx = ElectricalTransformerNode.parse({ id: 'electx_test', type: 'electrical:transformer' })

@@ -19,7 +19,6 @@ import {
   Group,
   Mesh,
   MeshLambertMaterial,
-  Quaternion,
   SphereGeometry,
   Vector3,
 } from 'three'
@@ -134,12 +133,15 @@ export function buildElectricalConduitRunGeometry(
     group.add(cyl)
   }
 
-  // Smooth bend couplings at every interior vertex
-  for (let i = 1; i < node.path.length - 1; i++) {
-    const p = node.path[i]!
-    const elbow = new Mesh(new SphereGeometry(radius * 1.18, 10, 10), mat)
-    elbow.position.set(p[0], p[1], p[2])
-    group.add(elbow)
+  // Smooth bend couplings at every interior vertex (shared SphereGeometry across run)
+  if (node.path.length > 2) {
+    const elbowGeo = new SphereGeometry(radius * 1.18, 10, 10)
+    for (let i = 1; i < node.path.length - 1; i++) {
+      const p = node.path[i]!
+      const elbow = new Mesh(elbowGeo, mat)
+      elbow.position.set(p[0], p[1], p[2])
+      group.add(elbow)
+    }
   }
 
   return group

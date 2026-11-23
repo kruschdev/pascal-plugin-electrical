@@ -47,6 +47,37 @@ export default function ElectricalRailPanel() {
     () => Object.values(record).filter((n) => n.type === 'electrical:conduit-run'),
     [record],
   )
+  const transformers = useMemo(
+    () => Object.values(record).filter((n) => n.type === 'electrical:transformer'),
+    [record],
+  )
+
+  const placeTransformer = () => {
+    const levelId = activeLevelOf(nodes, selectedLevelId)
+    if (!levelId) {
+      setStatusMsg('Create a building level first before placing electrical equipment.')
+      return
+    }
+    const idx = transformers.length + 1
+    const outcome = electricalAgentOperations.electrical_place_transformer(
+      nodes,
+      {
+        levelId,
+        name: `TX-${idx} (75 kVA)`,
+        position: [idx * 1.4, 0, -1.2],
+        kvaRating: 75,
+        primaryVoltage: 480,
+        secondaryVoltage: 208,
+        fedFromPanelId: panels[0]?.id,
+      },
+      { activeLevelId: levelId },
+    )
+    const created = outcome.changes?.create?.[0]
+    if (created) {
+      createNode(created.node, created.parentId as never)
+      setStatusMsg(`Placed ${outcome.result.name} (480V -> 208V 3Φ).`)
+    }
+  }
 
   const placePanel = () => {
     const levelId = activeLevelOf(nodes, selectedLevelId)
@@ -244,10 +275,19 @@ export default function ElectricalRailPanel() {
           <button type="button" onClick={() => placeDevice('junction-box')} style={btnStyle}>
             + Pull / J-Box
           </button>
+          {occupancy === 'commercial' && (
+            <button type="button" onClick={placeTransformer} style={btnStyle}>
+              + Transformer
+            </button>
+          )}
           <button
             type="button"
             onClick={() => openEditorView(ELECTRICAL_SCHEDULE_VIEW_ID, { beside: true })}
-            style={{ ...btnStyle, borderColor: 'rgba(245,158,11,0.5)' }}
+            style={{
+              ...btnStyle,
+              borderColor: 'rgba(245,158,11,0.5)',
+              gridColumn: occupancy === 'commercial' ? '1 / -1' : undefined,
+            }}
           >
             Open Schedule
           </button>

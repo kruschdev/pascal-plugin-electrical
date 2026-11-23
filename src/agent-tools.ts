@@ -49,6 +49,26 @@ export const electricalAgentTools: PluginAgentTools = {
       annotations: { destructiveHint: false, idempotentHint: false },
     },
     {
+      name: 'electrical_place_transformer',
+      title: 'Place commercial step-down transformer',
+      description:
+        'Place a commercial dry-type step-down transformer (e.g., 480V 3Φ primary to 120/208V 3Φ secondary) on a level with NEC Table 450.3(B) FLA/OCPD sizing and 110.26 working clearance.',
+      runsIn: 'operation',
+      input: {
+        levelId: z.string().optional(),
+        name: z.string().default('TX-1 (75 kVA)'),
+        position: Vec3,
+        rotation: z.number().default(0),
+        kvaRating: z.number().min(15).max(1000).default(75),
+        primaryVoltage: z.number().min(120).max(600).default(480),
+        secondaryVoltage: z.number().min(120).max(600).default(208),
+        fedFromPanelId: z.string().optional(),
+        nemaRating: z.enum(['NEMA-1', 'NEMA-2', 'NEMA-3R']).default('NEMA-2'),
+        showClearanceZone: z.boolean().default(true),
+      },
+      annotations: { destructiveHint: false, idempotentHint: false },
+    },
+    {
       name: 'electrical_place_device',
       title: 'Place electrical device or junction box',
       description:
