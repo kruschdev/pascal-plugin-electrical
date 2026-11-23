@@ -6,4 +6,5 @@
 export * from './materials'
 export * from './boxes'
 export * from './equipment'
+export * from './panel-interior'
 export * from './catalog'

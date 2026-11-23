@@ -24,6 +24,8 @@ import {
   MeshLambertMaterial,
 } from 'three'
 import { buildPanelCad } from '../cad/equipment'
+import { buildWiredPanelInteriorCad } from '../cad/panel-interior'
+import { buildPanelSchedule } from '../nec/panel-schedule'
 import { getWorkingClearance110_26, type VoltageSystem, type WorkingSpaceCondition } from '../nec/tables'
 
 const Vec3Schema = z.tuple([z.number(), z.number(), z.number()])
@@ -44,6 +46,7 @@ export const ElectricalPanelNode = BaseNode.extend({
   fedFromPanelId: z.string().optional(),
   solarBackfeedAmps: z.number().min(0).max(400).default(0),
   showClearanceZone: z.boolean().default(true),
+  coverRemoved: z.boolean().default(false),
   width: z.number().min(0.25).max(1.2).default(0.38),
   depth: z.number().min(0.09).max(0.45).default(0.14),
   height: z.number().min(0.4).max(2.1).default(0.92),
@@ -88,16 +91,22 @@ export function buildElectricalPanelGeometry(
 
   const { width: w, height: h, depth: d } = node
 
-  // CAD-detailed NEMA panelboard / load center enclosure
-  const cad = buildPanelCad({
-    width: w,
-    height: h,
-    depth: d,
-    voltageSystem: node.voltageSystem as VoltageSystem,
-    nemaRating: node.nemaRating,
-    spaces: node.spaces,
-    doorOpen: false,
-  })
+  // CAD-detailed NEMA panelboard (cover closed or cover-off exposed copper busbars)
+  const cad = node.coverRemoved
+    ? buildWiredPanelInteriorCad({
+        schedule: buildPanelSchedule(node, []),
+        nemaRating: node.nemaRating,
+        viewMode: 'cover-off',
+      })
+    : buildPanelCad({
+        width: w,
+        height: h,
+        depth: d,
+        voltageSystem: node.voltageSystem as VoltageSystem,
+        nemaRating: node.nemaRating,
+        spaces: node.spaces,
+        doorOpen: false,
+      })
   group.add(cad)
 
   // NEC 110.26(A) clear working-space envelope in front of panel (+Z)
@@ -247,6 +256,7 @@ export const electricalPanelRenderDefinition: NodeDefinition<typeof ElectricalPa
     condition110_26: 2,
     solarBackfeedAmps: 0,
     showClearanceZone: true,
+    coverRemoved: false,
     width: 0.38,
     depth: 0.14,
     height: 0.92,
@@ -270,6 +280,7 @@ export const electricalPanelRenderDefinition: NodeDefinition<typeof ElectricalPa
       n.height,
       n.condition110_26,
       n.showClearanceZone,
+      n.coverRemoved,
       n.position[1],
     ]),
   ports: getElectricalPanelPorts,

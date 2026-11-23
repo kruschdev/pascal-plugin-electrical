@@ -28,7 +28,7 @@ export default function ElectricalRailPanel() {
   const createNode = useScene((s) => s.createNode)
   const updateNode = useScene((s) => s.updateNode)
   const selectedLevelId = useViewer((s) => s.selection.levelId)
-  const { occupancy, setOccupancy } = useElectricalUi()
+  const { occupancy, setOccupancy, setActiveTab, setSelectedPanelId } = useElectricalUi()
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
 
   const record = nodes as unknown as Readonly<Record<string, SceneNodeLike>>
@@ -287,14 +287,33 @@ export default function ElectricalRailPanel() {
           )}
           <button
             type="button"
-            onClick={() => openEditorView(ELECTRICAL_SCHEDULE_VIEW_ID, { beside: true })}
+            onClick={() => {
+              setActiveTab('schedule')
+              openEditorView(ELECTRICAL_SCHEDULE_VIEW_ID, { beside: true })
+            }}
             style={{
               ...btnStyle,
               borderColor: 'rgba(245,158,11,0.5)',
-              gridColumn: occupancy === 'commercial' ? '1 / -1' : undefined,
             }}
           >
             Open Schedule
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (panels[0]) setSelectedPanelId(panels[0].id)
+              setActiveTab('panel-interior')
+              openEditorView(ELECTRICAL_SCHEDULE_VIEW_ID, { beside: true })
+            }}
+            style={{
+              ...btnStyle,
+              borderColor: 'rgba(56,189,248,0.55)',
+              background: 'rgba(56,189,248,0.14)',
+              gridColumn: occupancy === 'commercial' ? '1 / -1' : '1 / -1',
+              fontWeight: 600,
+            }}
+          >
+            Inspect Panel Wiring (3D Cover Off)
           </button>
         </div>
       </div>

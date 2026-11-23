@@ -20,31 +20,31 @@
     },
     {
       "slug": "panel-res-200a-open",
-      "name": "200A Load Center (Open Deadfront)",
+      "name": "200A Load Center (Cover Off — Wired)",
       "category": "panels-gear",
-      "necRef": "NEC 408.36 / 408.54",
-      "description": "Open-door residential panelboard showing copper busbars, neutral/ground bars, main breaker, and twin breaker columns.",
+      "necRef": "NEC 408.36 / 312.6",
+      "description": "Cover-off residential 200A panelboard showing copper busbars, neutral/ground bars, service feeders, 1P/2P breakers, and every individual branch wire landed on its lug.",
       "dimensionsMm": [
-        505,
-        944,
-        454
+        426,
+        901,
+        149
       ],
-      "glbBytes": 32520,
+      "glbBytes": 730528,
       "modelPath": "./panel-res-200a-open/model.glb",
       "thumbnailPath": "./panel-res-200a-open/thumbnail.png"
     },
     {
       "slug": "panel-comm-400a-3p",
-      "name": "400A 277/480V 3P Panelboard",
+      "name": "400A 277/480V 3P Panelboard (Cover Off)",
       "category": "panels-gear",
       "necRef": "NEC 408 / 277-480V",
-      "description": "Commercial 20\"W 42-space 277/480V 3-phase wye distribution panelboard with HV header stripe and 3-bus interior.",
+      "description": "Cover-off commercial 400A 277/480V 3-phase panelboard with 3-bus copper interior, Brown/Orange/Yellow phase wiring, 3-pole motor breakers, and isolated neutral/ground bars.",
       "dimensionsMm": [
-        672,
-        1264,
-        565
+        526,
+        1091,
+        149
       ],
-      "glbBytes": 32816,
+      "glbBytes": 573420,
       "modelPath": "./panel-comm-400a-3p/model.glb",
       "thumbnailPath": "./panel-comm-400a-3p/thumbnail.png"
     },

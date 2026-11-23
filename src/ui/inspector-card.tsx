@@ -5,8 +5,10 @@
  */
 
 import type { AnyNode } from '@pascal-app/core'
-import { useScene } from '@pascal-app/editor'
+import { openEditorView, useScene } from '@pascal-app/editor'
 import type { SceneNodeLike } from '../nec/load-calc'
+import { ELECTRICAL_SCHEDULE_VIEW_ID } from './electrical-panel'
+import { useElectricalUi } from './store'
 import { buildPanelSchedule } from '../nec/panel-schedule'
 import {
   countPathBendDegrees,
@@ -39,6 +41,8 @@ import {
 
 export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
   const nodes = useScene((s) => s.nodes) as unknown as Readonly<Record<string, SceneNodeLike>>
+  const setActiveTab = useElectricalUi((s) => s.setActiveTab)
+  const setSelectedPanelId = useElectricalUi((s) => s.setSelectedPanelId)
   if (!node) return null
   const raw = node as unknown as SceneNodeLike
 
@@ -60,6 +64,27 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
         <Row label="Utilization" value={`${schedule.utilizationPct}%`} warn={schedule.utilizationPct > 80} />
         <Row label="Phase Imbalance" value={`${schedule.imbalancePct}%`} warn={schedule.imbalancePct > 20} />
         <Row label="Spaces Used" value={`${schedule.usedSpaces} / ${schedule.spaces}`} />
+        <button
+          type="button"
+          onClick={() => {
+            setSelectedPanelId(raw.id)
+            setActiveTab('panel-interior')
+            openEditorView(ELECTRICAL_SCHEDULE_VIEW_ID, { beside: true })
+          }}
+          style={{
+            marginTop: 4,
+            padding: '5px 8px',
+            borderRadius: 6,
+            border: '1px solid rgba(56,189,248,0.5)',
+            background: 'rgba(56,189,248,0.16)',
+            color: 'inherit',
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: 'pointer',
+          }}
+        >
+          Zoom Into Panel Wiring (Cover Off)
+        </button>
       </div>
     )
   }

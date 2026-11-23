@@ -43,8 +43,9 @@ export const electricalPanelParametrics: ParametricDescriptor<ElectricalPanelNod
       ],
     },
     {
-      label: 'NEC 110.26 Clearance',
+      label: 'NEC 110.26 Clearance & Inspection',
       fields: [
+        { key: 'coverRemoved', kind: 'boolean' },
         { key: 'showClearanceZone', kind: 'boolean' },
         { key: 'nemaRating', kind: 'enum', options: ['NEMA-1', 'NEMA-3R', 'NEMA-4X'] },
       ],

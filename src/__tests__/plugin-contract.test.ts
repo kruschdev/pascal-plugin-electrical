@@ -10,7 +10,8 @@ import {
   electricalRenderPlugin,
   electricalScheduleView,
 } from '../index'
-import { ELECTRICAL_CAD_CATALOG, measureCadDimensionsMm } from '../cad'
+import { buildWiredPanelInteriorCad, ELECTRICAL_CAD_CATALOG, measureCadDimensionsMm } from '../cad'
+import { buildPanelSchedule } from '../nec/panel-schedule'
 import {
   buildElectricalConduitRunFloorplan,
   buildElectricalConduitRunGeometry,
@@ -277,5 +278,56 @@ describe('Pascal Plugin API v1 Conformance & Agent Operations (E-014 / E-016)', 
       expect(hMm).toBeGreaterThan(0)
       expect(dMm).toBeGreaterThan(0)
     }
+  })
+
+  test('Cover-off wired panel interior builder generates exposed busbars, breakers, feeders, and individual branch wires with circuit metadata', () => {
+    const panel = ElectricalPanelNode.parse({
+      id: 'elecpanel_wired',
+      type: 'electrical:panel',
+      name: 'MDP-1',
+      voltageSystem: '120/240V-1P',
+      spaces: 12,
+      coverRemoved: true,
+    })
+    const openInScene = buildElectricalPanelGeometry(panel, dummyCtx)
+    expect(openInScene.children.length).toBeGreaterThan(0)
+
+    const sched = buildPanelSchedule(panel, [
+      {
+        id: 'd1',
+        type: 'electrical:device',
+        name: 'EVSE 50A',
+        panelId: 'elecpanel_wired',
+        circuitNumber: 1,
+        poles: 2,
+        breakerAmps: 50,
+        loadVa: 9600,
+        wireGauge: '6',
+      },
+      {
+        id: 'd2',
+        type: 'electrical:device',
+        name: 'Kitchen GFCI',
+        panelId: 'elecpanel_wired',
+        circuitNumber: 2,
+        poles: 1,
+        breakerAmps: 20,
+        loadVa: 1500,
+        wireGauge: '12',
+        gfciProtected: true,
+      },
+    ])
+    const wired = buildWiredPanelInteriorCad({ schedule: sched, viewMode: 'cover-off' })
+    const kinds = new Set<string>()
+    wired.traverse((obj) => {
+      const k = (obj.userData as { kind?: string } | undefined)?.kind
+      if (k) kinds.add(k)
+    })
+    expect(kinds.has('busbar')).toBe(true)
+    expect(kinds.has('feeder')).toBe(true)
+    expect(kinds.has('breaker')).toBe(true)
+    expect(kinds.has('wire-hot')).toBe(true)
+    expect(kinds.has('wire-neutral')).toBe(true)
+    expect(kinds.has('wire-ground')).toBe(true)
   })
 })

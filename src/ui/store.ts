@@ -6,7 +6,7 @@
 import { create } from 'zustand'
 import type { CommercialOccupancy, OccupancyType } from '../nec/tables'
 
-export type ScheduleTab = 'schedule' | 'load-calc' | 'audit' | 'takeoff'
+export type ScheduleTab = 'schedule' | 'panel-interior' | 'load-calc' | 'audit' | 'takeoff'
 
 type ElectricalUiState = {
   occupancy: OccupancyType

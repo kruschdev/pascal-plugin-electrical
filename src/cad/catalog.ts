@@ -6,7 +6,9 @@
  */
 
 import { Box3, type Group, Vector3 } from 'three'
+import { buildPanelSchedule } from '../nec/panel-schedule'
 import { buildElectricalBoxCad, buildWeatherproofBellBoxCad } from './boxes'
+import { buildWiredPanelInteriorCad } from './panel-interior'
 import {
   buildBreakerTrioCad,
   buildConduitBodyLbCad,
@@ -63,37 +65,72 @@ export const ELECTRICAL_CAD_CATALOG: readonly ElectricalCadEntry[] = [
   },
   {
     slug: 'panel-res-200a-open',
-    name: '200A Load Center (Open Deadfront)',
+    name: '200A Load Center (Cover Off — Wired)',
     category: 'panels-gear',
-    necRef: 'NEC 408.36 / 408.54',
-    description: 'Open-door residential panelboard showing copper busbars, neutral/ground bars, main breaker, and twin breaker columns.',
-    build: () =>
-      buildPanelCad({
-        width: 0.38,
-        height: 0.92,
-        depth: 0.14,
+    necRef: 'NEC 408.36 / 312.6',
+    description: 'Cover-off residential 200A panelboard showing copper busbars, neutral/ground bars, service feeders, 1P/2P breakers, and every individual branch wire landed on its lug.',
+    build: () => {
+      const panel = {
+        id: 'demo_res_200a',
+        type: 'electrical:panel',
+        name: 'MDP-1',
+        occupancy: 'residential',
         voltageSystem: '120/240V-1P',
+        busRatingAmps: 200,
+        mainBreakerAmps: 200,
+        mainType: 'main-breaker',
+        spaces: 20,
+      }
+      const devices = [
+        { id: 'd1', type: 'electrical:device', name: 'EVSE 50A', panelId: 'demo_res_200a', circuitNumber: 1, poles: 2, breakerAmps: 50, loadVa: 9600, wireGauge: '6', gfciProtected: true },
+        { id: 'd2', type: 'electrical:device', name: 'Range 40A', panelId: 'demo_res_200a', circuitNumber: 2, poles: 2, breakerAmps: 40, loadVa: 8000, wireGauge: '8' },
+        { id: 'd3', type: 'electrical:device', name: 'Dryer 30A', panelId: 'demo_res_200a', circuitNumber: 5, poles: 2, breakerAmps: 30, loadVa: 5000, wireGauge: '10' },
+        { id: 'd4', type: 'electrical:device', name: 'Kitchen GFCI 1', panelId: 'demo_res_200a', circuitNumber: 6, poles: 1, breakerAmps: 20, loadVa: 1500, wireGauge: '12', gfciProtected: true, afciProtected: true },
+        { id: 'd5', type: 'electrical:device', name: 'Kitchen GFCI 2', panelId: 'demo_res_200a', circuitNumber: 8, poles: 1, breakerAmps: 20, loadVa: 1500, wireGauge: '12', gfciProtected: true },
+        { id: 'd6', type: 'electrical:device', name: 'Living AFCI', panelId: 'demo_res_200a', circuitNumber: 9, poles: 1, breakerAmps: 20, loadVa: 1440, wireGauge: '12', afciProtected: true },
+        { id: 'd7', type: 'electrical:device', name: 'Master Bed AFCI', panelId: 'demo_res_200a', circuitNumber: 10, poles: 1, breakerAmps: 15, loadVa: 1080, wireGauge: '14', afciProtected: true },
+        { id: 'd8', type: 'electrical:device', name: 'Bath GFCI', panelId: 'demo_res_200a', circuitNumber: 11, poles: 1, breakerAmps: 20, loadVa: 1440, wireGauge: '12', gfciProtected: true },
+        { id: 'd9', type: 'electrical:device', name: 'Lighting', panelId: 'demo_res_200a', circuitNumber: 12, poles: 1, breakerAmps: 15, loadVa: 900, wireGauge: '14' },
+      ]
+      return buildWiredPanelInteriorCad({
+        schedule: buildPanelSchedule(panel, devices),
         nemaRating: 'NEMA-1',
-        spaces: 24,
-        doorOpen: true,
-      }),
+        viewMode: 'cover-off',
+      })
+    },
   },
   {
     slug: 'panel-comm-400a-3p',
-    name: '400A 277/480V 3P Panelboard',
+    name: '400A 277/480V 3P Panelboard (Cover Off)',
     category: 'panels-gear',
     necRef: 'NEC 408 / 277-480V',
-    description: 'Commercial 20"W 42-space 277/480V 3-phase wye distribution panelboard with HV header stripe and 3-bus interior.',
-    build: () =>
-      buildPanelCad({
-        width: 0.51,
-        height: 1.24,
-        depth: 0.15,
+    description: 'Cover-off commercial 400A 277/480V 3-phase panelboard with 3-bus copper interior, Brown/Orange/Yellow phase wiring, 3-pole motor breakers, and isolated neutral/ground bars.',
+    build: () => {
+      const panel = {
+        id: 'demo_comm_480v',
+        type: 'electrical:panel',
+        name: 'HDP-1',
+        occupancy: 'commercial',
         voltageSystem: '277/480V-3P',
+        busRatingAmps: 400,
+        mainBreakerAmps: 400,
+        mainType: 'main-breaker',
+        spaces: 24,
+      }
+      const devices = [
+        { id: 'c1', type: 'electrical:device', name: 'RTU-1 3P Motor', panelId: 'demo_comm_480v', circuitNumber: 1, poles: 3, breakerAmps: 60, loadVa: 36000, wireGauge: '6' },
+        { id: 'c2', type: 'electrical:device', name: 'TX-1 75kVA Feeder', panelId: 'demo_comm_480v', circuitNumber: 2, poles: 3, breakerAmps: 125, loadVa: 75000, wireGauge: '2' },
+        { id: 'c3', type: 'electrical:device', name: 'Warehouse High-Bay Ltg', panelId: 'demo_comm_480v', circuitNumber: 7, poles: 1, breakerAmps: 20, loadVa: 3600, wireGauge: '12' },
+        { id: 'c4', type: 'electrical:device', name: 'Office 277V Troffers', panelId: 'demo_comm_480v', circuitNumber: 8, poles: 1, breakerAmps: 20, loadVa: 3200, wireGauge: '12' },
+        { id: 'c5', type: 'electrical:device', name: 'Air Compressor 3P', panelId: 'demo_comm_480v', circuitNumber: 9, poles: 3, breakerAmps: 40, loadVa: 22000, wireGauge: '8' },
+        { id: 'c6', type: 'electrical:device', name: 'Exterior Wall Packs', panelId: 'demo_comm_480v', circuitNumber: 10, poles: 1, breakerAmps: 20, loadVa: 2400, wireGauge: '12' },
+      ]
+      return buildWiredPanelInteriorCad({
+        schedule: buildPanelSchedule(panel, devices),
         nemaRating: 'NEMA-1',
-        spaces: 42,
-        doorOpen: true,
-      }),
+        viewMode: 'cover-off',
+      })
+    },
   },
   {
     slug: 'panel-nema3r-outdoor',

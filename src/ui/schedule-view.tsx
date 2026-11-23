@@ -14,6 +14,7 @@ import {
 } from '../nec/panel-schedule'
 import { formatElectricalBomCsv } from '../nec/pricing'
 import { COMMERCIAL_LIGHTING_VA_PER_SQFT, type CommercialOccupancy } from '../nec/tables'
+import PanelInteriorView from './panel-interior-view'
 import { type ScheduleTab, useElectricalUi } from './store'
 
 export default function ElectricalScheduleView() {
@@ -115,6 +116,7 @@ export default function ElectricalScheduleView() {
 
   const tabs: { id: ScheduleTab; label: string }[] = [
     { id: 'schedule', label: 'Panel Schedule' },
+    { id: 'panel-interior', label: 'Panel Interior (3D)' },
     { id: 'load-calc', label: 'NEC 220 Load Calc' },
     { id: 'audit', label: `NEC Audit (${audit.errorCount}/${audit.warningCount})` },
     { id: 'takeoff', label: 'Takeoff & Cost' },
@@ -246,7 +248,49 @@ export default function ElectricalScheduleView() {
         </div>
       )}
 
-      {/* TAB 2: NEC 220 Load Calc */}
+      {/* TAB 2: Zoomed-In 3D Panel Interior (Cover Off — Live Wires, Breakers & Busbars) */}
+      {activeTab === 'panel-interior' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {!schedule || !activePanel ? (
+            <div style={{ opacity: 0.75 }}>
+              No electrical panels in the scene yet. Place a panelboard from the Electrical rail panel to inspect its live internal wiring.
+            </div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <select
+                    value={schedule.panelId}
+                    onChange={(e) => setSelectedPanelId(e.target.value)}
+                    style={selectStyle}
+                  >
+                    {panels.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {String(p.name ?? p.id)} ({String(p.voltageSystem ?? '120/240V-1P')})
+                      </option>
+                    ))}
+                  </select>
+                  <span>
+                    {schedule.voltageSystem} · {schedule.busRatingAmps}A Bus / {schedule.mainBreakerAmps}A{' '}
+                    {schedule.mainType.toUpperCase()} · {schedule.usedSpaces}/{schedule.spaces} breaker spaces wired
+                  </span>
+                </div>
+              </div>
+              <PanelInteriorView
+                schedule={schedule}
+                nemaRating={
+                  activePanel.nemaRating === 'NEMA-3R' || activePanel.nemaRating === 'NEMA-4X'
+                    ? activePanel.nemaRating
+                    : 'NEMA-1'
+                }
+                onSelectDeviceIds={(ids) => setSelection({ selectedIds: ids as never })}
+              />
+            </>
+          )}
+        </div>
+      )}
+
+      {/* TAB 3: NEC 220 Load Calc */}
       {activeTab === 'load-calc' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
