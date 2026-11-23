@@ -109,35 +109,52 @@ function phaseWireHex(
 }
 
 function buildFilletedWireTube(
-  points: Vector3[],
+  rawPoints: Vector3[],
   radius: number,
   mat: MeshStandardMaterial,
   bendRadius = 0.014,
-): Mesh {
-  const curve = new CurvePath<Vector3>()
-  let cursor = points[0]!.clone()
-  for (let i = 1; i < points.length - 1; i++) {
-    const prev = points[i - 1]!
-    const curr = points[i]!
-    const next = points[i + 1]!
-    const vIn = new Vector3().subVectors(curr, prev)
-    const vOut = new Vector3().subVectors(next, curr)
-    const lenIn = vIn.length()
-    const lenOut = vOut.length()
-    if (lenIn < 1e-4 || lenOut < 1e-4) continue
-    const r = Math.min(bendRadius, lenIn * 0.42, lenOut * 0.42)
-    const pStart = curr.clone().addScaledVector(vIn.normalize(), -r)
-    const pEnd = curr.clone().addScaledVector(vOut.normalize(), r)
-    if (cursor.distanceTo(pStart) > 1e-4) {
-      curve.add(new LineCurve3(cursor, pStart))
+): Mesh | null {
+  const points: Vector3[] = []
+  for (const p of rawPoints) {
+    const prev = points[points.length - 1]
+    if (!prev || prev.distanceTo(p) >= 1e-4) {
+      points.push(p)
     }
-    curve.add(new QuadraticBezierCurve3(pStart, curr.clone(), pEnd))
-    cursor = pEnd
   }
-  const last = points[points.length - 1]!
-  if (cursor.distanceTo(last) > 1e-4) {
-    curve.add(new LineCurve3(cursor, last))
+  if (points.length < 2 || !Number.isFinite(radius) || radius <= 0) return null
+
+  const curve = new CurvePath<Vector3>()
+  if (points.length === 2) {
+    curve.add(new LineCurve3(points[0]!, points[1]!))
+  } else {
+    let cursor = points[0]!.clone()
+    for (let i = 1; i < points.length - 1; i++) {
+      const prev = points[i - 1]!
+      const curr = points[i]!
+      const next = points[i + 1]!
+      const vIn = new Vector3().subVectors(curr, prev)
+      const vOut = new Vector3().subVectors(next, curr)
+      const lenIn = vIn.length()
+      const lenOut = vOut.length()
+      if (lenIn < 1e-4 || lenOut < 1e-4) continue
+      const r = Math.min(bendRadius, lenIn * 0.42, lenOut * 0.42)
+      const pStart = curr.clone().addScaledVector(vIn.normalize(), -r)
+      const pEnd = curr.clone().addScaledVector(vOut.normalize(), r)
+      if (cursor.distanceTo(pStart) > 1e-4) {
+        curve.add(new LineCurve3(cursor, pStart))
+      }
+      if (pStart.distanceTo(pEnd) > 1e-4) {
+        curve.add(new QuadraticBezierCurve3(pStart, curr.clone(), pEnd))
+        cursor = pEnd
+      }
+    }
+    const last = points[points.length - 1]!
+    if (cursor.distanceTo(last) > 1e-4) {
+      curve.add(new LineCurve3(cursor, last))
+    }
   }
+
+  if (curve.curves.length === 0) return null
   const segs = Math.max(18, points.length * 10)
   const geo = new TubeGeometry(curve, segs, radius, 8, false)
   const mesh = new Mesh(geo, mat)
@@ -348,12 +365,14 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
         new Vector3(lx, mainY + 0.05, zBack + 0.046),
       ]
       const fMesh = buildFilletedWireTube(fPts, 0.0085, fMat, 0.022)
-      fMesh.userData = {
-        kind: 'feeder',
-        description: `Service Entrance Feeder — ${ph.name}`,
-        conductorLabel: ph.name,
-      } satisfies PanelWireMetadata
-      group.add(fMesh)
+      if (fMesh) {
+        fMesh.userData = {
+          kind: 'feeder',
+          description: `Service Entrance Feeder — ${ph.name}`,
+          conductorLabel: ph.name,
+        } satisfies PanelWireMetadata
+        group.add(fMesh)
+      }
     }
   }
 
@@ -374,11 +393,13 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
       nFeederMat,
       0.026,
     )
-    nFeeder.userData = {
-      kind: 'feeder',
-      description: is480V ? 'Service Neutral Feeder (Gray)' : 'Service Neutral Feeder (White)',
-    } satisfies PanelWireMetadata
-    group.add(nFeeder)
+    if (nFeeder) {
+      nFeeder.userData = {
+        kind: 'feeder',
+        description: is480V ? 'Service Neutral Feeder (Gray)' : 'Service Neutral Feeder (White)',
+      } satisfies PanelWireMetadata
+      group.add(nFeeder)
+    }
 
     // Grounding Electrode Conductor (GEC) entering bottom-right to ground bar
     const gecMat = createWireMaterial(isCommercial ? 0x16a34a : 0xc87533, false)
@@ -391,11 +412,13 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
       gecMat,
       0.014,
     )
-    gec.userData = {
-      kind: 'feeder',
-      description: 'NEC 250.66 Grounding Electrode Conductor (GEC)',
-    } satisfies PanelWireMetadata
-    group.add(gec)
+    if (gec) {
+      gec.userData = {
+        kind: 'feeder',
+        description: 'NEC 250.66 Grounding Electrode Conductor (GEC)',
+      } satisfies PanelWireMetadata
+      group.add(gec)
+    }
   }
 
   // 5. Populate Branch Circuit Breakers & Route EVERY Individual Hot / Neutral / Ground Wire!
@@ -514,13 +537,15 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
           new Vector3(xLug + side * 0.004, py, zLug),
         ]
         const hotWire = buildFilletedWireTube(hotPts, wireR, hotMat, 0.016)
-        hotWire.userData = {
-          ...meta,
-          kind: 'wire-hot',
-          phaseLabel: rowPhase,
-          conductorLabel: `${ph.name} (#${slot.wireGauge} AWG)`,
-        } satisfies PanelWireMetadata
-        group.add(hotWire)
+        if (hotWire) {
+          hotWire.userData = {
+            ...meta,
+            kind: 'wire-hot',
+            phaseLabel: rowPhase,
+            conductorLabel: `${ph.name} (#${slot.wireGauge} AWG)`,
+          } satisfies PanelWireMetadata
+          group.add(hotWire)
+        }
       }
     }
 
@@ -538,12 +563,14 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
         new Vector3(side * neutralBarX, nTargetY, zBack + 0.025),
       ]
       const nWire = buildFilletedWireTube(nPts, wireR * 0.92, neutralMat, 0.014)
-      nWire.userData = {
-        ...meta,
-        kind: 'wire-neutral',
-        conductorLabel: `${is480V ? 'Gray' : 'White'} Neutral (#${slot.wireGauge} AWG)`,
-      } satisfies PanelWireMetadata
-      group.add(nWire)
+      if (nWire) {
+        nWire.userData = {
+          ...meta,
+          kind: 'wire-neutral',
+          conductorLabel: `${is480V ? 'Gray' : 'White'} Neutral (#${slot.wireGauge} AWG)`,
+        } satisfies PanelWireMetadata
+        group.add(nWire)
+      }
     }
 
     // Route Equipment Grounding Conductor (Bare Cu residential / Green THHN commercial) to outer ground bar
@@ -559,12 +586,14 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
         new Vector3(side * groundBarX, gTargetY, zBack + 0.011),
       ]
       const gWire = buildFilletedWireTube(gPts, Math.max(0.0019, wireR * 0.8), gMat, 0.012)
-      gWire.userData = {
-        ...meta,
-        kind: 'wire-ground',
-        conductorLabel: isCommercial ? 'Green Insulated EGC' : 'Bare Copper EGC',
-      } satisfies PanelWireMetadata
-      group.add(gWire)
+      if (gWire) {
+        gWire.userData = {
+          ...meta,
+          kind: 'wire-ground',
+          conductorLabel: isCommercial ? 'Green Insulated EGC' : 'Bare Copper EGC',
+        } satisfies PanelWireMetadata
+        group.add(gWire)
+      }
     }
   }
 

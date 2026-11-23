@@ -867,8 +867,20 @@ export type ConduitRunCadInput = {
 
 const UP = new Vector3(0, 1, 0)
 
-function buildFilletedCurvePath(points: Vector3[], bendRadius: number): CurvePath<Vector3> {
+function dedupeConsecutivePoints(points: Vector3[], eps = 1e-4): Vector3[] {
+  const out: Vector3[] = []
+  for (const p of points) {
+    const prev = out[out.length - 1]
+    if (!prev || prev.distanceTo(p) >= eps) {
+      out.push(p)
+    }
+  }
+  return out
+}
+
+function buildFilletedCurvePath(rawPoints: Vector3[], bendRadius: number): CurvePath<Vector3> {
   const curve = new CurvePath<Vector3>()
+  const points = dedupeConsecutivePoints(rawPoints)
   if (points.length < 2) return curve
   if (points.length === 2) {
     curve.add(new LineCurve3(points[0]!, points[1]!))
@@ -894,8 +906,10 @@ function buildFilletedCurvePath(points: Vector3[], bendRadius: number): CurvePat
     if (cursor.distanceTo(startBend) > 1e-4) {
       curve.add(new LineCurve3(cursor, startBend))
     }
-    curve.add(new QuadraticBezierCurve3(startBend, curr.clone(), endBend))
-    cursor = endBend
+    if (startBend.distanceTo(endBend) > 1e-4) {
+      curve.add(new QuadraticBezierCurve3(startBend, curr.clone(), endBend))
+      cursor = endBend
+    }
   }
 
   const last = points[points.length - 1]!
@@ -912,7 +926,7 @@ export function buildConduitRunCad(
   const group = new Group()
   group.name = `electrical-conduit-${node.id}`
 
-  const pts = node.path.map((p) => new Vector3(p[0], p[1], p[2]))
+  const pts = dedupeConsecutivePoints(node.path.map((p) => new Vector3(p[0], p[1], p[2])))
   if (pts.length < 2) return group
 
   const outerDiam =
@@ -941,6 +955,7 @@ export function buildConduitRunCad(
   }
 
   const curve = buildFilletedCurvePath(pts, bendRadius)
+  if (curve.curves.length === 0) return group
   const tubularSegments = Math.max(16, Math.min(220, pts.length * 14))
   const tubeGeo = new TubeGeometry(curve, tubularSegments, radius, 12, false)
   const tube = new Mesh(tubeGeo, runMat)

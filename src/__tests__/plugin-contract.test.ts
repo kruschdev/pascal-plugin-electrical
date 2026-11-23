@@ -329,5 +329,17 @@ describe('Pascal Plugin API v1 Conformance & Agent Operations (E-014 / E-016)', 
     expect(kinds.has('wire-hot')).toBe(true)
     expect(kinds.has('wire-neutral')).toBe(true)
     expect(kinds.has('wire-ground')).toBe(true)
+
+    // R2-BUG-02: Coincident / zero-length conduit path returns empty group safely without throwing NaN TubeGeometry
+    const degenerateRun = ElectricalConduitRunNode.parse({
+      id: 'eleccond_degen',
+      type: 'electrical:conduit-run',
+      path: [
+        [1, 1.5, 0],
+        [1, 1.5, 0],
+      ],
+    })
+    const degenGeo = buildElectricalConduitRunGeometry(degenerateRun, dummyCtx)
+    expect(degenGeo.children).toHaveLength(0)
   })
 })
