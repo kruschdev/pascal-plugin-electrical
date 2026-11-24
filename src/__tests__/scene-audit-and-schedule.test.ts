@@ -675,4 +675,21 @@ describe('Live Scene NEC Audit, Panel Schedule & Takeoff', () => {
     expect(report.findings.some((f) => f.codeRef === 'NEC 210.11(C)(3)' && f.nodeIds.includes('dev_bed_on_bath_ckt'))).toBe(true)
     expect(report.findings.some((f) => f.codeRef === 'NEC 210.11(C)(1)' && f.nodeIds.includes('dev_bed_on_kitchen_ckt'))).toBe(true)
   })
+
+  test('R3-OPT-01: formatElectricalBomCsv includes Material Sales Tax line and tax-inclusive grand total when salesTaxPct > 0', () => {
+    const takeoff = buildElectricalTakeoff({
+      p1: { id: 'p1', type: 'electrical:panel', name: 'MDP-1', busRatingAmps: 200 },
+      d1: { id: 'd1', type: 'electrical:device', name: 'Kitchen GFCI', deviceKind: 'gfci', panelId: 'p1', circuitNumber: 1, breakerAmps: 20 },
+    })
+    const csvNoTax = formatElectricalBomCsv(takeoff.pricing, 0)
+    expect(csvNoTax).not.toContain('TAX-MAT')
+
+    const csvWithTax = formatElectricalBomCsv(takeoff.pricing, 8.25)
+    expect(csvWithTax).toContain('TAX-MAT')
+    expect(csvWithTax).toContain('Material Sales Tax (8.25%)')
+    const expectedTax = Math.round(takeoff.pricing.materialSubtotalUsd * 0.0825 * 100) / 100
+    const expectedGrand = Math.round((takeoff.pricing.estimatedTotalUsd + expectedTax) * 100) / 100
+    expect(csvWithTax).toContain(expectedTax.toFixed(2))
+    expect(csvWithTax).toContain(expectedGrand.toFixed(2))
+  })
 })

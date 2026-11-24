@@ -112,7 +112,7 @@ export default function ElectricalScheduleView() {
   const copyBomCsv = async () => {
     if (typeof navigator === 'undefined' || !navigator.clipboard) return
     try {
-      await navigator.clipboard.writeText(formatElectricalBomCsv(takeoff.pricing))
+      await navigator.clipboard.writeText(formatElectricalBomCsv(takeoff.pricing, salesTaxPct))
       setCopiedBomCsv(true)
       if (bomCopyTimeoutRef.current !== null) {
         clearTimeout(bomCopyTimeoutRef.current)
@@ -152,7 +152,7 @@ export default function ElectricalScheduleView() {
         <div>
           <h2 style={{ margin: 0, fontSize: 15 }}>Electrical Engineering & NEC Schedule</h2>
           <div style={{ fontSize: 11, opacity: 0.7 }}>
-            Drafting aid — verify all load calculations and clearances with local AHJ before construction.
+            Drafting aid: verify all load calculations and clearances with local AHJ before construction.
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
@@ -354,7 +354,7 @@ export default function ElectricalScheduleView() {
         </div>
       )}
 
-      {/* TAB 3: NEC & Trade-Priority Audit */}
+      {/* TAB 4: NEC & Trade-Priority Audit */}
       {activeTab === 'audit' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {audit.findings.length === 0 ? (
@@ -392,7 +392,7 @@ export default function ElectricalScheduleView() {
         </div>
       )}
 
-      {/* TAB 4: Takeoff & Cost Estimate */}
+      {/* TAB 5: Takeoff & Cost Estimate */}
       {activeTab === 'takeoff' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {/* Live Editable Contractor Pricing Calculator Controls */}
@@ -405,7 +405,7 @@ export default function ElectricalScheduleView() {
                 max={500}
                 step={5}
                 value={laborRateUsd}
-                onChange={(e) => setLaborRateUsd(Math.max(0, Number(e.target.value) || 0))}
+                onChange={(e) => setLaborRateUsd(Math.min(500, Math.max(0, Number(e.target.value) || 0)))}
                 style={{ ...selectStyle, width: 72 }}
               />
             </label>
@@ -417,7 +417,7 @@ export default function ElectricalScheduleView() {
                 max={200}
                 step={1}
                 value={materialMarkupPct}
-                onChange={(e) => setMaterialMarkupPct(Math.max(0, Number(e.target.value) || 0))}
+                onChange={(e) => setMaterialMarkupPct(Math.min(200, Math.max(0, Number(e.target.value) || 0)))}
                 style={{ ...selectStyle, width: 64 }}
               />
             </label>
@@ -429,7 +429,7 @@ export default function ElectricalScheduleView() {
                 max={25}
                 step={0.25}
                 value={salesTaxPct}
-                onChange={(e) => setSalesTaxPct(Math.max(0, Number(e.target.value) || 0))}
+                onChange={(e) => setSalesTaxPct(Math.min(25, Math.max(0, Number(e.target.value) || 0)))}
                 style={{ ...selectStyle, width: 64 }}
               />
             </label>

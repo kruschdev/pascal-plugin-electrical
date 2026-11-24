@@ -209,7 +209,10 @@ export function estimateWireUnitPricePerFtUsd(wireKey: string): { usd: number; h
   return { usd: conductorBase, hrsPerFt: 0.008 }
 }
 
-export function formatElectricalBomCsv(pricing: ElectricalPricingSummary): string {
+export function formatElectricalBomCsv(
+  pricing: ElectricalPricingSummary,
+  salesTaxPct = 0,
+): string {
   const header =
     'Category,SKU,Description,CAD Model,Qty,Unit,Unit Material ($),Extended Material ($),Labor (hrs),Extended Labor ($),Line Total ($)'
   const esc = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s)
@@ -232,19 +235,39 @@ export function formatElectricalBomCsv(pricing: ElectricalPricingSummary): strin
       ].join(','),
     )
   }
+  const cleanTaxPct = Math.min(25, Math.max(0, Number.isFinite(salesTaxPct) ? salesTaxPct : 0))
+  const salesTaxUsd = cleanTaxPct > 0 ? round2(pricing.materialSubtotalUsd * (cleanTaxPct / 100)) : 0
+  if (salesTaxUsd > 0) {
+    lines.push(
+      [
+        'tax',
+        'TAX-MAT',
+        `Material Sales Tax (${cleanTaxPct}%)`,
+        '',
+        1,
+        'ea',
+        salesTaxUsd.toFixed(2),
+        salesTaxUsd.toFixed(2),
+        '0.00',
+        '0.00',
+        salesTaxUsd.toFixed(2),
+      ].join(','),
+    )
+  }
+  const grandTotalUsd = round2(pricing.estimatedTotalUsd + salesTaxUsd)
   lines.push(
     [
       'TOTAL',
       '',
-      'Estimated Material + Labor Subtotal',
+      salesTaxUsd > 0 ? 'Estimated Material + Tax + Labor Total' : 'Estimated Material + Labor Subtotal',
       '',
       '',
       '',
       '',
-      pricing.materialSubtotalUsd.toFixed(2),
+      round2(pricing.materialSubtotalUsd + salesTaxUsd).toFixed(2),
       pricing.laborHoursTotal.toFixed(2),
       pricing.laborSubtotalUsd.toFixed(2),
-      pricing.estimatedTotalUsd.toFixed(2),
+      grandTotalUsd.toFixed(2),
     ].join(','),
   )
   return lines.join('\n')
