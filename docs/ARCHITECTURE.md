@@ -60,7 +60,7 @@ Rotated panels and floor-mounted transformers cannot be checked accurately with 
 - Populated 1P, 2P, and 3P molded-case breakers with colored handles, AFCI/GFCI test buttons, neutral pigtails, and brass wire lugs.
 - Every individual Hot, Neutral, and Ground branch conductor routed down the side wiring gutters with 90-degree bends into its exact terminal, using NEC phase color coding (`Black/Red` for 120/240V, `Black/Red/Blue` for 120/208V, `Brown/Orange/Yellow` for 277/480V).
 
-`PanelInteriorView` mounts a single persistent `WebGLRenderer` with `ResizeObserver`, preserves camera orbit across toggle changes, supports **Cover Off / Deadfront On / Cover Closed** and **Hots / Neutrals / Grounds / Feeders** visibility filters, and raycasts clicks on any wire or breaker to highlight its circuit details.
+`PanelInteriorView` mounts a single persistent `WebGLRenderer` with `ResizeObserver`, preserves camera orbit across toggle changes, supports **Cover Off / Panel Cover On / Cover Closed** and **Hots / Neutrals / Grounds / Feeders** visibility filters, and raycasts clicks on any wire or breaker to highlight its circuit details.
 
 ## UI Store Isolation (`src/ui/store.ts`)
 

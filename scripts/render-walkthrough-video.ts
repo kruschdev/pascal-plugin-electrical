@@ -383,8 +383,8 @@ if (panelCanvasRect) {
   await dragOrbit(panelCanvasRect.x - 40, panelCanvasRect.y, 110, -25, 12, 'left', '05_panel_orbit')
 }
 
-await setBanner('3 / 5 · Toggle Deadfront On / Cover Off Live Inside Pascal Editor')
-await smoothClickButton('Deadfront On', true, 4, 12)
+await setBanner('3 / 5 · Toggle Panel Cover On / Cover Off Live Inside Pascal Editor')
+await smoothClickButton('Panel Cover On', true, 4, 12)
 await smoothClickButton('Cover Off (Wired)', true, 4, 14)
 
 // ─── CHAPTER 4: Live Panelboard Schedule & NEC 220 Load Calculation ─────────

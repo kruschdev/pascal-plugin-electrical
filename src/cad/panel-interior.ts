@@ -26,7 +26,7 @@ import type { PanelSchedule, PanelSlotEntry } from '../nec/panel-schedule'
 import type { VoltageSystem, WireGauge } from '../nec/tables'
 import { type CadMaterialPool, createCadMaterialPool, voltageAccentMaterial } from './materials'
 
-export type PanelInteriorViewMode = 'cover-off' | 'deadfront-on' | 'closed'
+export type PanelInteriorViewMode = 'cover-off' | 'panel-cover-on' | 'deadfront-on' | 'closed'
 
 export type PanelWireVisibility = {
   showHots?: boolean
@@ -251,9 +251,9 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
 
   // Top Service Entrance 2" Hub + Left/Right Branch Conduit Entry Connectors
   const serviceHub = new Mesh(new CylinderGeometry(0.03, 0.032, 0.034, 16), mats.castAluminum)
-  serviceHub.position.set(0, h / 2 + 0.014, zBack + 0.055)
+  serviceHub.position.set(0, h / 2 + 0.014, zBack + 0.046)
   const serviceBushing = new Mesh(new CylinderGeometry(0.026, 0.026, 0.012, 16), mats.accentBlue)
-  serviceBushing.position.set(0, h / 2 - 0.008, zBack + 0.055)
+  serviceBushing.position.set(0, h / 2 - 0.008, zBack + 0.046)
   group.add(serviceHub, serviceBushing)
 
   const branchEntryXs = [-w * 0.37, -w * 0.27, w * 0.27, w * 0.37]
@@ -348,7 +348,7 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
   const mainY = h / 2 - 0.125
   const mainW = isThreePhase ? 0.135 : 0.115
   const mainBody = new Mesh(new BoxGeometry(mainW, 0.082, 0.056), mats.blackPolymer)
-  mainBody.position.set(0, mainY, zBack + 0.036)
+  mainBody.position.set(0, mainY, zBack + 0.034)
   mainBody.castShadow = true
   mainBody.userData = {
     kind: 'breaker',
@@ -370,16 +370,16 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
   for (let i = 0; i < feederPoles.length; i++) {
     const lx = (i - (feederPoles.length - 1) / 2) * 0.036
     const lug = new Mesh(lugGeo, mats.stainlessSteel)
-    lug.position.set(lx, mainY + 0.044, zBack + 0.046)
+    lug.position.set(lx, mainY + 0.044, zBack + 0.044)
     group.add(lug)
 
     if (showFeeders) {
       const ph = phaseWireHex(schedule.voltageSystem, feederPoles[i]!)
       const fMat = getWireMat(ph.hex, false)
       const fPts = [
-        new Vector3(lx * 0.55, h / 2 + 0.02, zBack + 0.055),
-        new Vector3(lx * 0.85, h / 2 - 0.032, zBack + 0.055),
-        new Vector3(lx, mainY + 0.05, zBack + 0.046),
+        new Vector3(lx * 0.55, h / 2 + 0.02, zBack + 0.046),
+        new Vector3(lx * 0.85, h / 2 - 0.032, zBack + 0.046),
+        new Vector3(lx, mainY + 0.05, zBack + 0.044),
       ]
       const fMesh = buildFilletedWireTube(fPts, 0.0085, fMat, 0.022)
       if (fMesh) {
@@ -643,29 +643,166 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
     renderSlot(row.right, 1, r)
   }
 
-  // 6. Optional Deadfront / Closed Cover Layers
-  if (viewMode === 'deadfront-on' || viewMode === 'closed') {
-    const dfLeft = new Mesh(new BoxGeometry(w * 0.36, h * 0.96, 0.005), mats.darkSteel)
-    dfLeft.position.set(-w * 0.31, 0, d / 2 - 0.006)
-    const dfRight = new Mesh(new BoxGeometry(w * 0.36, h * 0.96, 0.005), mats.darkSteel)
-    dfRight.position.set(w * 0.31, 0, d / 2 - 0.006)
-    const dfTop = new Mesh(new BoxGeometry(w * 0.32, h * 0.14, 0.005), mats.darkSteel)
-    dfTop.position.set(0, h * 0.41, d / 2 - 0.006)
-    const dfBot = new Mesh(new BoxGeometry(w * 0.32, Math.max(0.08, h * 0.14), 0.005), mats.darkSteel)
-    dfBot.position.set(0, -h * 0.41, d / 2 - 0.006)
-    group.add(dfLeft, dfRight, dfTop, dfBot)
+  // 6. Optional Panel Cover (Deadfront) & Hinged Exterior Door Layers
+  const showPanelCover =
+    viewMode === 'panel-cover-on' || viewMode === 'deadfront-on' || viewMode === 'closed'
+  if (showPanelCover) {
+    // Seat the steel panel cover flush with the breaker molded faces (zBack + 0.062) so handles,
+    // multi-pole ties, and AFCI/GFCI test buttons protrude cleanly while ALL live busbars,
+    // lugs, service feeders, and gutter wiring are 100% shielded behind ANSI-61 gray steel.
+    const zCover = zBack + 0.062
+    const covT = 0.004
+    const xCutIn = 0.0155
+    const xCutOut = Math.min(bkrWidth + 0.01, 0.084)
+    const bankTopY = busTopY
+    const bankBotY = busTopY - visibleRows * rowPitch
+    const coverMat = mats.nemaGray
+
+    // Outer tub-flush front bezel + 4 recessed return flanges bridging zCover -> box rim (d/2)
+    const rimDepth = Math.max(0.01, d / 2 - zCover)
+    const zRimMid = zCover + rimDepth / 2
+    const rimTop = new Mesh(new BoxGeometry(w, 0.014, rimDepth), coverMat)
+    rimTop.position.set(0, h / 2 - 0.007, zRimMid)
+    const rimBot = new Mesh(new BoxGeometry(w, 0.014, rimDepth), coverMat)
+    rimBot.position.set(0, -h / 2 + 0.007, zRimMid)
+    const rimLeft = new Mesh(new BoxGeometry(0.014, h, rimDepth), coverMat)
+    rimLeft.position.set(-w / 2 + 0.007, 0, zRimMid)
+    const rimRight = new Mesh(new BoxGeometry(0.014, h, rimDepth), coverMat)
+    rimRight.position.set(w / 2 - 0.007, 0, zRimMid)
+    group.add(rimTop, rimBot, rimLeft, rimRight)
+
+    // Outer flush trim flange frame around the box rim (visible when door is open / Panel Cover On)
+    const trimOver = 0.016
+    const trimTop = new Mesh(new BoxGeometry(w + trimOver * 2, 0.022, 0.006), coverMat)
+    trimTop.position.set(0, h / 2 + trimOver / 2 - 0.003, d / 2 + 0.002)
+    const trimBot = new Mesh(new BoxGeometry(w + trimOver * 2, 0.022, 0.006), coverMat)
+    trimBot.position.set(0, -h / 2 - trimOver / 2 + 0.003, d / 2 + 0.002)
+    const trimLeft = new Mesh(new BoxGeometry(0.022, h + trimOver * 2, 0.006), coverMat)
+    trimLeft.position.set(-w / 2 - trimOver / 2 + 0.003, 0, d / 2 + 0.002)
+    const trimRight = new Mesh(new BoxGeometry(0.022, h + trimOver * 2, 0.006), coverMat)
+    trimRight.position.set(w / 2 + trimOver / 2 - 0.003, 0, d / 2 + 0.002)
+    group.add(trimTop, trimBot, trimLeft, trimRight)
+
+    // 4 stainless cover mounting screws on the panel cover corners
+    const screwGeo = new CylinderGeometry(0.005, 0.005, 0.004, 6)
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        const sc = new Mesh(screwGeo, mats.stainlessSteel)
+        sc.rotation.x = Math.PI / 2
+        sc.position.set(sx * (w / 2 - 0.028), sy * (h / 2 - 0.028), zCover + 0.003)
+        group.add(sc)
+      }
+    }
+
+    // Left & right full-height gutter shields (completely covering side wires, neutral/ground bars & breaker lugs)
+    const sideShieldW = Math.max(0.02, w / 2 - xCutOut)
+    const leftShield = new Mesh(new BoxGeometry(sideShieldW, h, covT), coverMat)
+    leftShield.position.set(-(xCutOut + sideShieldW / 2), 0, zCover)
+    const rightShield = new Mesh(new BoxGeometry(sideShieldW, h, covT), coverMat)
+    rightShield.position.set(xCutOut + sideShieldW / 2, 0, zCover)
+    group.add(leftShield, rightShield)
+
+    // Center vertical spine between odd & even breaker columns (100% covers bare copper busbars)
+    const spineH = Math.max(0.02, bankTopY - bankBotY)
+    const centerSpine = new Mesh(new BoxGeometry(xCutIn * 2, spineH, covT), coverMat)
+    centerSpine.position.set(0, (bankTopY + bankBotY) / 2, zCover)
+    group.add(centerSpine)
+
+    // Bottom solid skirt below the breaker bank (covers lower cavity completely)
+    const botSkirtH = Math.max(0.02, bankBotY - -h / 2)
+    const botSkirt = new Mesh(new BoxGeometry(xCutOut * 2, botSkirtH, covT), coverMat)
+    botSkirt.position.set(0, -h / 2 + botSkirtH / 2, zCover)
+    group.add(botSkirt)
+
+    // Upper feeder & main breaker compartment shield (covers all service entrance cables & top lugs)
+    const topZoneBot = bankTopY
+    const topZoneTop = h / 2
+    if (schedule.mainType === 'main-breaker') {
+      const mCutHalfW = 0.032
+      const mCutBot = Math.max(topZoneBot + 0.006, mainY - 0.02)
+      const mCutTop = Math.min(topZoneTop - 0.006, mainY + 0.02)
+      const upperAboveH = Math.max(0.01, topZoneTop - mCutTop)
+      const upperBelowH = Math.max(0.01, mCutBot - topZoneBot)
+      const upperSideW = Math.max(0.01, xCutOut - mCutHalfW)
+      const mCutH = Math.max(0.01, mCutTop - mCutBot)
+
+      const topAbove = new Mesh(new BoxGeometry(xCutOut * 2, upperAboveH, covT), coverMat)
+      topAbove.position.set(0, mCutTop + upperAboveH / 2, zCover)
+      const topBelow = new Mesh(new BoxGeometry(xCutOut * 2, upperBelowH, covT), coverMat)
+      topBelow.position.set(0, topZoneBot + upperBelowH / 2, zCover)
+      const topLeft = new Mesh(new BoxGeometry(upperSideW, mCutH, covT), coverMat)
+      topLeft.position.set(-(mCutHalfW + upperSideW / 2), (mCutBot + mCutTop) / 2, zCover)
+      const topRight = new Mesh(new BoxGeometry(upperSideW, mCutH, covT), coverMat)
+      topRight.position.set(mCutHalfW + upperSideW / 2, (mCutBot + mCutTop) / 2, zCover)
+
+      // Subtle dark recessed bezel framing the Main Breaker handle cutout
+      const mainBezel = new Mesh(new BoxGeometry(mCutHalfW * 2 + 0.008, mCutH + 0.008, 0.002), mats.darkSteel)
+      mainBezel.position.set(0, (mCutBot + mCutTop) / 2, zCover - 0.0025)
+      group.add(topAbove, topBelow, topLeft, topRight, mainBezel)
+    } else {
+      const solidTopH = Math.max(0.02, topZoneTop - topZoneBot)
+      const solidTop = new Mesh(new BoxGeometry(xCutOut * 2, solidTopH, covT), coverMat)
+      solidTop.position.set(0, topZoneBot + solidTopH / 2, zCover)
+      group.add(solidTop)
+    }
+
+    // NEC 408.7 / UL 67 Twist-Out Steel Blank Filler Plates on every SPARE (empty) breaker space!
+    // Guarantees zero exposed energized copper busbars or finger stabs with Panel Cover On.
+    const slotCutW = Math.max(0.02, xCutOut - xCutIn)
+    const blankGeo = new BoxGeometry(slotCutW - 0.001, rowPitch - 0.0018, 0.0032)
+    const seamGeo = new BoxGeometry(slotCutW, 0.0014, 0.002)
+    for (let r = 0; r < visibleRows; r++) {
+      const row = schedule.rows[r]
+      const ry = busTopY - (r + 0.5) * rowPitch
+      for (const [side, slot] of [
+        [-1, row?.left ?? null],
+        [1, row?.right ?? null],
+      ] as const) {
+        if (slot) continue
+        const cx = side * (xCutIn + slotCutW / 2)
+        const blank = new Mesh(blankGeo, mats.galvanizedSteel)
+        blank.position.set(cx, ry, zCover - 0.0005)
+        const seam = new Mesh(seamGeo, mats.darkSteel)
+        seam.position.set(cx, ry - rowPitch / 2 + 0.0007, zCover + 0.0012)
+        group.add(blank, seam)
+      }
+    }
+
+    // Subtle dark steel trim borders along the breaker bank opening + voltage header stripe & circuit index strips
+    const bankFrameH = spineH + 0.006
+    const bankBorderL = new Mesh(new BoxGeometry(0.003, bankFrameH, 0.002), mats.darkSteel)
+    bankBorderL.position.set(-xCutOut - 0.0015, (bankTopY + bankBotY) / 2, zCover + 0.002)
+    const bankBorderR = new Mesh(new BoxGeometry(0.003, bankFrameH, 0.002), mats.darkSteel)
+    bankBorderR.position.set(xCutOut + 0.0015, (bankTopY + bankBotY) / 2, zCover + 0.002)
+    const coverStripe = new Mesh(
+      new BoxGeometry(w * 0.72, 0.022, 0.002),
+      voltageAccentMaterial(mats, schedule.voltageSystem),
+    )
+    coverStripe.position.set(0, h / 2 - 0.042, zCover + 0.0025)
+    group.add(bankBorderL, bankBorderR, coverStripe)
+
+    // Left & right white printed circuit-number index label strips flanking the breaker columns
+    const idxStripW = Math.min(0.028, sideShieldW * 0.42)
+    if (idxStripW >= 0.012) {
+      const idxGeo = new BoxGeometry(idxStripW, spineH, 0.0015)
+      const idxL = new Mesh(idxGeo, mats.whiteNylon)
+      idxL.position.set(-(xCutOut + idxStripW / 2 + 0.01), (bankTopY + bankBotY) / 2, zCover + 0.0022)
+      const idxR = new Mesh(idxGeo, mats.whiteNylon)
+      idxR.position.set(xCutOut + idxStripW / 2 + 0.01, (bankTopY + bankBotY) / 2, zCover + 0.0022)
+      group.add(idxL, idxR)
+    }
   }
 
   if (viewMode === 'closed') {
     const door = new Mesh(new BoxGeometry(w + 0.02, h + 0.02, 0.01), mats.nemaGray)
-    door.position.set(0, 0, d / 2 + 0.006)
+    door.position.set(0, 0, d / 2 + 0.008)
     const stripe = new Mesh(
       new BoxGeometry(w * 0.86, 0.036, 0.005),
       voltageAccentMaterial(mats, schedule.voltageSystem),
     )
-    stripe.position.set(0, h * 0.43, d / 2 + 0.013)
+    stripe.position.set(0, h * 0.43, d / 2 + 0.015)
     const latch = new Mesh(new BoxGeometry(0.022, 0.068, 0.012), mats.darkSteel)
-    latch.position.set(w * 0.38, -h * 0.03, d / 2 + 0.014)
+    latch.position.set(w * 0.38, -h * 0.03, d / 2 + 0.016)
     group.add(door, stripe, latch)
   }
 

@@ -330,6 +330,10 @@ describe('Pascal Plugin API v1 Conformance & Agent Operations (E-014 / E-016)', 
     expect(kinds.has('wire-neutral')).toBe(true)
     expect(kinds.has('wire-ground')).toBe(true)
 
+    // Panel Cover On (deadfront) adds flush steel cover shields, trim, screws & spare twist-out blanks over cover-off interior
+    const coverOn = buildWiredPanelInteriorCad({ schedule: sched, viewMode: 'panel-cover-on' })
+    expect(coverOn.children.length).toBeGreaterThan(wired.children.length + 20)
+
     // R2-BUG-02: Coincident / zero-length conduit path returns empty group safely without throwing NaN TubeGeometry
     const degenerateRun = ElectricalConduitRunNode.parse({
       id: 'eleccond_degen',

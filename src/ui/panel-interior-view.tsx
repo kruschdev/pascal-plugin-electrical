@@ -347,7 +347,7 @@ export default function PanelInteriorView({
           {(
             [
               ['cover-off', 'Cover Off (Wired)'],
-              ['deadfront-on', 'Deadfront On'],
+              ['panel-cover-on', 'Panel Cover On'],
               ['closed', 'Cover Closed'],
             ] as const
           ).map(([mode, label]) => (
