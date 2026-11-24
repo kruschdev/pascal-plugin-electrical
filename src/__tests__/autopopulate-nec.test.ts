@@ -264,4 +264,40 @@ describe('NEC Minimum Auto-Populate (Outlets, GFCIs, Doors, Stairs, Circuits, Ho
     const audit = auditSceneElectrical(record)
     expect(audit.passed).toBe(true)
   })
+
+  test('R3-BUG-01..04: LPT phase balancing keeps imbalance <= 20% (0 NEC 220.61 warnings), stairway light uses 4-oct-2.125, and upsized wireGauge syncs to device boxes', () => {
+    const nodes = makeSampleHouseScene()
+    const outcome = electricalAgentOperations.electrical_autopopulate_nec(
+      nodes,
+      { occupancy: 'residential', protectionMode: 'hybrid', includeLighting: true, includeWiring: true },
+      { activeLevelId: 'level_0' },
+    )
+    for (const c of outcome.changes?.create ?? []) {
+      nodes[c.node.id] = c.node
+    }
+    const record = nodes as unknown as Readonly<Record<string, SceneNodeLike>>
+    const panels = Object.values(record).filter((n) => n.type === 'electrical:panel')
+    const devices = Object.values(record).filter((n) => n.type === 'electrical:device')
+    const runs = Object.values(record).filter((n) => n.type === 'electrical:conduit-run')
+
+    // R3-BUG-01: LPT greedy phase balancer keeps phase imbalance <= 20% (zero NEC 220.61 warnings)
+    const sched = buildPanelSchedule(panels[0]!, devices, runs)
+    expect(sched.imbalancePct).toBeLessThanOrEqual(20)
+    const audit = auditSceneElectrical(record)
+    expect(audit.errorCount).toBe(0)
+    expect(audit.findings.filter((f) => f.codeRef === 'NEC 220.61')).toHaveLength(0)
+
+    // R3-BUG-02: Stairway Overhead Light uses 4-oct-2.125 (21.5 cu in)
+    const stairLight = devices.find((d) => String(d.name).includes('Stairway Overhead Light'))
+    expect(stairLight?.boxType).toBe('4-oct-2.125')
+
+    // R3-BUG-03 & R3-BUG-04: Every device's wireGauge matches its circuit's home-run wireGauge & passes NEC 314.16 box fill
+    for (const hr of runs.filter((r) => (r.metadata as { runKind?: string })?.runKind === 'home-run')) {
+      const cktDevs = devices.filter((d) => d.circuitNumber === hr.circuitNumber && d.panelId === hr.panelId)
+      for (const dev of cktDevs) {
+        expect(dev.wireGauge).toBe(hr.wireGauge)
+      }
+    }
+    expect(audit.findings.filter((f) => f.category === 'box-fill')).toHaveLength(0)
+  })
 })

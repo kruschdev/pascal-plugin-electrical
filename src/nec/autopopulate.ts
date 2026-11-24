@@ -20,8 +20,9 @@
 import type { SceneNodeLike } from './load-calc'
 import { findNextFreePanelCircuit } from './panel-schedule'
 import { extractTradeObstacles, routeElectricalRun, type Vec3 } from './routing'
-import { calculateConduitFill, calculateVoltageDrop, recommendWireGauge } from './sizing'
+import { calculateBoxFill, calculateConduitFill, calculateVoltageDrop, recommendWireGauge } from './sizing'
 import {
+  type BoxFillGauge,
   type BoxType,
   type ConduitTradeSize,
   METERS_TO_FEET,
@@ -963,7 +964,7 @@ export function planNecAutoPopulate(
         requiresAfci: occupancy === 'residential',
         breakerAmps: occupancy === 'commercial' ? 20 : 15,
         loadVa: 60,
-        boxType: '4-oct-1.5',
+        boxType: occupancy === 'commercial' ? '4-sq-2.125' : '4-oct-2.125',
         wireGauge: occupancy === 'commercial' ? '12' : '14',
       })
     }
@@ -1017,19 +1018,74 @@ export function planNecAutoPopulate(
   const virtualDeviceList: SceneNodeLike[] = [...existingDevices]
   const panelTopPt: Vec3 = [panelPos[0], panelPos[1] + panelHeight / 2, panelPos[2]]
   const vLN = getVoltageLineToNeutral(panelVoltageSystem)
+  const isThreePhasePanel = panelVoltageSystem !== '120/240V-1P'
+  const phaseCount = isThreePhasePanel ? 3 : 2
+  const maxPanelSpaces = Math.min(
+    84,
+    Math.max(4, Math.ceil((typeof panelNode.spaces === 'number' ? panelNode.spaces : 40) / 2) * 2),
+  )
+
+  // Seed phase load accumulator from existing devices on this panel so new circuits balance cleanly (NEC 220.61)
+  const phaseLoadVa = new Array<number>(phaseCount).fill(0)
+  for (const d of existingDevices) {
+    if (d.panelId !== panelNode.id) continue
+    const ckt = typeof d.circuitNumber === 'number' && d.circuitNumber >= 1 ? Math.floor(d.circuitNumber) : 0
+    if (ckt <= 0) continue
+    const poles = d.poles === 3 ? 3 : d.poles === 2 ? 2 : 1
+    const vaPerPole = (typeof d.loadVa === 'number' ? d.loadVa : 180) / poles
+    for (let p = 0; p < poles; p++) {
+      const rowIdx = Math.floor((ckt + p * 2 - 1) / 2)
+      phaseLoadVa[rowIdx % phaseCount] = (phaseLoadVa[rowIdx % phaseCount] ?? 0) + vaPerPole
+    }
+  }
+
+  const pickBalancedFreeCircuit = (loadVa: number): number => {
+    const occupied = new Set<number>()
+    for (const d of virtualDeviceList) {
+      if (d.panelId !== panelNode!.id) continue
+      const c = typeof d.circuitNumber === 'number' && d.circuitNumber >= 1 ? Math.floor(d.circuitNumber) : 0
+      if (c <= 0) continue
+      const poles = d.poles === 3 ? 3 : d.poles === 2 ? 2 : 1
+      for (let p = 0; p < poles; p++) occupied.add(c + p * 2)
+    }
+    // Order phases lightest-first
+    const phaseOrder = Array.from({ length: phaseCount }, (_, i) => i).sort(
+      (a, b) => (phaseLoadVa[a] ?? 0) - (phaseLoadVa[b] ?? 0),
+    )
+    for (const targetPhase of phaseOrder) {
+      for (let slot = 1; slot <= maxPanelSpaces; slot++) {
+        if (occupied.has(slot)) continue
+        const rowIdx = Math.floor((slot - 1) / 2)
+        if (rowIdx % phaseCount === targetPhase) {
+          phaseLoadVa[targetPhase] = (phaseLoadVa[targetPhase] ?? 0) + loadVa
+          return slot
+        }
+      }
+    }
+    const fallback = findNextFreePanelCircuit(panelNode, virtualDeviceList, 1)
+    const fbPhase = Math.floor((fallback - 1) / 2) % phaseCount
+    phaseLoadVa[fbPhase] = (phaseLoadVa[fbPhase] ?? 0) + loadVa
+    return fallback
+  }
+
+  // Sort buckets descending by VA (LPT heuristic) for tight phase balance across L1/L2 or A/B/C
+  circuitBuckets.sort(
+    (a, b) =>
+      b.items.reduce((s, d) => s + d.loadVa, 0) - a.items.reduce((s, d) => s + d.loadVa, 0),
+  )
+
   let runSeq = 1
   let totalAvoided = 0
 
   for (const bucket of circuitBuckets) {
     if (bucket.items.length === 0) continue
 
-    // Assign next free panel circuit slot (balancing across odd/even slots)
-    const ckt = findNextFreePanelCircuit(panelNode, virtualDeviceList, 1)
     const breakerAmps = Math.max(...bucket.items.map((d) => d.breakerAmps))
     const anyGfci = bucket.items.some((d) => d.requiresGfci)
     const anyAfci = bucket.items.some((d) => d.requiresAfci)
     const totalLoadVa = bucket.items.reduce((s, d) => s + d.loadVa, 0)
     const circuitLoadAmps = Math.max(1, Math.round((totalLoadVa / vLN) * 100) / 100)
+    const ckt = pickBalancedFreeCircuit(totalLoadVa)
 
     // Order chain: start with device closest to panel, then greedy nearest-neighbor outlet-to-outlet!
     const remaining = [...bucket.items]
@@ -1049,7 +1105,76 @@ export function planNecAutoPopulate(
       ordered.push(remaining.splice(bestIdx, 1)[0]!)
     }
 
-    // Materialize finalized PlannedDeviceSpecs for this circuit
+    // Pre-route Home Run & Daisy-Chain Hops so final voltage-drop / ampacity wireGauge propagates to EVERY device box!
+    const anyContinuous = ordered.some((d) => d.continuous)
+    const voltage = vLN
+    const phases: 1 | 3 = 1
+    let circuitWireGauge: WireGauge = breakerAmps >= 20 ? '12' : '14'
+    let tradeSize: ConduitTradeSize = '3/4"'
+
+    const hrRoute =
+      includeWiring && ordered.length > 0
+        ? routeElectricalRun(panelTopPt, ordered[0]!.position, obstacles, {
+            preferredChaseY,
+            clearanceM: 0.05,
+          })
+        : null
+    const hopRoutes: Array<ReturnType<typeof routeElectricalRun>> = []
+    if (includeWiring && ordered.length > 1) {
+      for (let i = 0; i < ordered.length - 1; i++) {
+        const fromDev = ordered[i]!
+        const toDev = ordered[i + 1]!
+        const horizDist = Math.hypot(toDev.position[0] - fromDev.position[0], toDev.position[2] - fromDev.position[2])
+        const sameBand = Math.abs(toDev.position[1] - fromDev.position[1]) < 0.25 && horizDist <= 4.0
+        const chaseY = sameBand ? fromDev.position[1] : preferredChaseY
+        hopRoutes.push(
+          routeElectricalRun(fromDev.position, toDev.position, obstacles, {
+            preferredChaseY: chaseY,
+            clearanceM: 0.05,
+          }),
+        )
+      }
+    }
+
+    if (hrRoute) {
+      const totalChainFt =
+        hrRoute.routedLengthFt + hopRoutes.reduce((sum, r) => sum + r.routedLengthFt, 0)
+      const ampGauge = recommendWireGauge({
+        material: 'cu',
+        insulationRating: '90C',
+        racewayType,
+        ambientTempC: 30,
+        currentCarryingCount: 2,
+        loadAmps: circuitLoadAmps,
+        continuousLoad: anyContinuous,
+        breakerAmps,
+      })
+      const vdCheck = calculateVoltageDrop({
+        wireGauge: ampGauge,
+        material: 'cu',
+        loadAmps: circuitLoadAmps,
+        oneWayLengthFt: totalChainFt,
+        voltage,
+        phases,
+        maxDropPct: 3.0,
+      })
+      circuitWireGauge = largerGauge(ampGauge, vdCheck.recommendedGauge)
+
+      if (racewayType === 'emt' || racewayType === 'pvc-40' || racewayType === 'rmc') {
+        const fill = calculateConduitFill({
+          conduitType: racewayType,
+          tradeSize: '3/4"',
+          conductors: [{ gauge: circuitWireGauge, count: 3 }],
+          lengthInches: hrRoute.routedLengthM * METERS_TO_FEET * 12,
+        })
+        if (!fill.compliant) tradeSize = fill.recommendedTradeSize
+      }
+    }
+
+    // Materialize finalized PlannedDeviceSpecs using final circuitWireGauge & NEC 314.16 box-fill check
+    const boxFillGauge: BoxFillGauge = (
+      ['18', '16', '14', '12', '10', '8', '6'].includes(circuitWireGauge) ? circuitWireGauge : '12'
+    ) as BoxFillGauge
     const circuitDevices: PlannedDeviceSpec[] = ordered.map((item, idx) => {
       const isFirstInChain = idx === 0
       const isLastInChain = idx === ordered.length - 1
@@ -1060,19 +1185,31 @@ export function planNecAutoPopulate(
         (protectionMode === 'gfci-receptacles' || (protectionMode === 'hybrid' && isFirstInChain))
       const deviceKind = makePhysicalGfci ? 'gfci' : item.deviceKind
       const conductorCount = isLastInChain ? 2 : 4 // 2 wires (end-of-line) vs 4 wires (feed-in + feed-thru)
-      const wireGauge: WireGauge = breakerAmps >= 20 ? '12' : '14'
-      const boxType: BoxType =
-        conductorCount >= 4 && item.boxType === 'single-gang-shallow'
-          ? 'single-gang-standard'
-          : makePhysicalGfci && item.boxType === 'single-gang-standard'
-            ? 'single-gang-deep'
-            : item.boxType
+      let boxType: BoxType = item.boxType
+      if (
+        makePhysicalGfci &&
+        (boxType === 'single-gang-shallow' || boxType === 'single-gang-standard')
+      ) {
+        boxType = 'single-gang-deep'
+      } else if (conductorCount >= 4 && boxType === 'single-gang-shallow') {
+        boxType = 'single-gang-standard'
+      }
+      const boxCheck = calculateBoxFill({
+        boxType,
+        conductors: [{ gauge: boxFillGauge, count: conductorCount }],
+        deviceYokeCount: deviceKind === 'luminaire' ? 0 : 1,
+        internalClampCount: 1,
+        equipmentGroundCount: 1,
+      })
+      if (!boxCheck.compliant) {
+        boxType = boxCheck.recommendedBoxType
+      }
 
       const spec: PlannedDeviceSpec = {
         ...item,
         deviceKind,
         breakerAmps,
-        wireGauge,
+        wireGauge: circuitWireGauge,
         boxType,
         conductorCount,
         panelId: panelNode!.id,
@@ -1095,53 +1232,12 @@ export function planNecAutoPopulate(
 
     let homeRunCount = 0
     let daisyChainCount = 0
-    let circuitWireGauge: WireGauge = breakerAmps >= 20 ? '12' : '14'
 
-    if (includeWiring && circuitDevices.length > 0) {
+    if (includeWiring && hrRoute && circuitDevices.length > 0) {
       const firstDev = circuitDevices[0]!
-      const anyContinuous = circuitDevices.some((d) => d.continuous)
-      const voltage = vLN
-      const phases: 1 | 3 = 1
-
-      // A. HOME RUN: Panel -> First Device on circuit (yielding around all Plumbing, HVAC, Structural)
-      const hrRoute = routeElectricalRun(panelTopPt, firstDev.position, obstacles, {
-        preferredChaseY,
-        clearanceM: 0.05,
-      })
       totalAvoided += hrRoute.avoidedObstacles.length
 
-      const ampGauge = recommendWireGauge({
-        material: 'cu',
-        insulationRating: '90C',
-        racewayType,
-        ambientTempC: 30,
-        currentCarryingCount: 2,
-        loadAmps: circuitLoadAmps,
-        continuousLoad: anyContinuous,
-        breakerAmps,
-      })
-      const vdCheck = calculateVoltageDrop({
-        wireGauge: ampGauge,
-        material: 'cu',
-        loadAmps: circuitLoadAmps,
-        oneWayLengthFt: hrRoute.routedLengthFt,
-        voltage,
-        phases,
-        maxDropPct: 3.0,
-      })
-      circuitWireGauge = largerGauge(ampGauge, vdCheck.recommendedGauge)
-
-      let tradeSize: ConduitTradeSize = '3/4"'
-      if (racewayType === 'emt' || racewayType === 'pvc-40' || racewayType === 'rmc') {
-        const fill = calculateConduitFill({
-          conduitType: racewayType,
-          tradeSize: '3/4"',
-          conductors: [{ gauge: circuitWireGauge, count: 3 }],
-          lengthInches: hrRoute.routedLengthM * METERS_TO_FEET * 12,
-        })
-        if (!fill.compliant) tradeSize = fill.recommendedTradeSize
-      }
-
+      // A. HOME RUN: Panel -> First Device on circuit (yielding around all Plumbing, HVAC, Structural)
       plannedRuns.push({
         tempId: `auto_run_${runSeq++}`,
         name: `CKT-${ckt} Home Run (${bucket.groupName})`,
@@ -1169,14 +1265,7 @@ export function planNecAutoPopulate(
       for (let i = 0; i < circuitDevices.length - 1; i++) {
         const fromDev = circuitDevices[i]!
         const toDev = circuitDevices[i + 1]!
-        // Same-height nearby wall outlets stay cleanly at wall chase height; cross-room jumps go overhead
-        const horizDist = Math.hypot(toDev.position[0] - fromDev.position[0], toDev.position[2] - fromDev.position[2])
-        const sameBand = Math.abs(toDev.position[1] - fromDev.position[1]) < 0.25 && horizDist <= 4.0
-        const chaseY = sameBand ? fromDev.position[1] : preferredChaseY
-        const hopRoute = routeElectricalRun(fromDev.position, toDev.position, obstacles, {
-          preferredChaseY: chaseY,
-          clearanceM: 0.05,
-        })
+        const hopRoute = hopRoutes[i]!
         totalAvoided += hopRoute.avoidedObstacles.length
 
         plannedRuns.push({
