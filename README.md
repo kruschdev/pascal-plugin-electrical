@@ -9,18 +9,17 @@ An open-source, MIT-licensed **Residential and Commercial NEC Electrical** plugi
 
 I built this as a standalone external plugin implementing Pascal's full Plugin API v1 contract (`E-014`, `E-016`, `E-017`) so it installs cleanly alongside any Pascal host without requiring upstream core merges.
 
-## Walkthrough Video
+## Walkthrough Video (Recorded Live in Pascal Editor)
 
-![Full Walkthrough: One-Click NEC Auto-Populate, Trade-Priority Routing Around Plumbing & HVAC, Live Prohibited-Location NOT TO CODE Alerts, Zoom-In Cover-Off 3D Panel Interior Wiring, Live Priced BOM Estimator, and 30-Model MIT 3D CAD Library](./assets/demo-walkthrough.gif)
+![Live Pascal Editor Walkthrough: One-Click NEC Minimum Auto-Populate on Pascal's Built-In Two-Bedroom House, 3D Trade-Priority Routing Around Plumbing & HVAC, Cover-Off 3D Panel Interior Wiring View, Live Panelboard Schedule, NEC 220 Load Calc, and Live Priced BOM Calculator](./assets/demo-walkthrough.gif)
 
-**[Watch Full 720p HD Walkthrough Video (`assets/demo-walkthrough.mp4`)](./assets/demo-walkthrough.mp4)**
+**[Watch Full 720p HD Walkthrough Video Recorded in Pascal Editor (`assets/demo-walkthrough.mp4`)](./assets/demo-walkthrough.mp4)**
 
-1. **NEC Minimum Auto-Populate**: One click scans Pascal walls, exterior doors, stairways, and room zones to place 6 ft / 12 ft wall outlets, 2x 20A kitchen countertop GFCI circuits, bathroom/garage/outdoor WR GFCIs, front-door and stairway 3-way switches and lights, balanced panel circuits, Home Runs (`Panel -> First Device`), and Outlet-to-Outlet Daisy-Chain runs.
-2. **Trade-Priority Routing**: Conduit and cable runs automatically yield around higher-priority Structural, Plumbing (`pipe-*`), and HVAC (`duct-*`, `hvac-equipment`) trunks while tracking NEC 358.26 bend totals and real detoured lengths.
-3. **Live NEC Prohibited-Location Guard**: Placing a panel in a bathroom/closet/over stairs or an outlet inside a 3 ft x 8 ft bathtub zone immediately flags **NOT TO CODE** inside both the selected-node Inspector card and the clickable Left-Rail violation list.
-4. **Zoom-In Cover-Off 3D Panel Interior View**: Pop the cover off any residential (`120/240V 1P`) or commercial (`120/208V` / `277/480V 3P`) panel to inspect exposed copper busbars, main and branch breakers, neutral/ground bars, AFCI/GFCI pigtails, and every individual NEC phase-colored conductor landed on its lug.
-5. **Panel Schedules and Live Price Calculator**: Auto-generated L1/L2 and 3-phase A/B/C schedules plus a priced Bill of Materials with live editable Labor Rate, Markup, Tax, and CSV export.
-6. **30 Clean-Room MIT 3D CAD Models**: Panels, breakers, transformers, NEC 314.16 boxes, receptacles, switches, EVSE, 3-phase motors, 7 residential and commercial light fixtures, and conduit fittings shipped as live Three.js builders and binary `.glb` assets.
+1. **NEC Minimum Auto-Populate**: One click inside Pascal Editor scans the built-in two-bedroom house (walls, exterior doors, and rooms) to place a 200A panelboard (`MDP-1`), 6 ft / 12 ft wall outlets, kitchen GFCIs, bathroom vanity GFCI, front-door entry and outdoor WR GFCIs, room ceiling lights and switches, balanced circuits, Home Runs, and Outlet-to-Outlet Daisy-Chain runs with `0` NEC errors.
+2. **3D Orbit and Trade-Priority Routing**: Zooming inside the live Pascal 3D apartment shows ceiling light drums, blue PVC outlet boxes, and color-coded runs automatically routing clear of the overhead plumbing pipe and HVAC supply trunk.
+3. **Zoom-In Cover-Off 3D Panel Interior View**: Opens inside Pascal's split-pane `Electrical Schedule` view to show the live open 200A load center with copper busbar stabs, AFCI/GFCI breakers, neutral/ground bars, and every 90-degree-bent conductor landing on its lug, with live *Full Open Panel*, *Zoom: Breakers & Lugs*, and *Deadfront On / Cover Off* toggles.
+4. **Live Panelboard Schedule and NEC 220 Load Calc**: Inspects populated Odd/Even `L1/L2` breaker circuits, wire gauges, phase balance, and Residential Standard / Optional (`220.82`) service load calculations.
+5. **Takeoff and Cost Live Price Calculator plus NEC Audit**: Adjusts live Labor (`$/hr`), Material Markup (`%`), and Material Tax (`%`) right inside Pascal Editor to recalculate BOM totals and CSV exports alongside the live NEC compliance audit.
 
 ## Showcase Gallery
 

@@ -381,31 +381,86 @@ export function planNecAutoPopulate(
   )
   const obstacles = extractTradeObstacles(nodes, levelId)
 
-  // 1. Resolve or plan Panelboard
+  // Extract bathtub/shower fixture footprints so auto-populate keeps outlets >= 3 ft (0.95 m) clear (NEC 406.9(C))
+  const tubBoxes: Array<{ minX: number; maxX: number; minZ: number; maxZ: number }> = []
+  for (const n of all) {
+    if (n.type !== 'item' && n.type !== 'procedural-item') continue
+    const asset = n.asset && typeof n.asset === 'object' ? (n.asset as Record<string, unknown>) : null
+    const txt = [n.name, n.category, asset?.id, asset?.name, asset?.category]
+      .filter((s): s is string => typeof s === 'string')
+      .join(' ')
+      .toLowerCase()
+    if (!/bath.?tub|\btub\b|shower/.test(txt)) continue
+    if (!Array.isArray(n.position) || n.position.length < 3) continue
+    const [px, , pz] = n.position as number[]
+    const dims = Array.isArray(asset?.dimensions)
+      ? (asset.dimensions as number[])
+      : Array.isArray(n.dimensions)
+        ? (n.dimensions as number[])
+        : [1.6, 0.6, 0.8]
+    const hw = (dims[0] ?? 1.6) / 2
+    const hd = (dims[2] ?? 0.8) / 2
+    tubBoxes.push({ minX: px! - hw, maxX: px! + hw, minZ: pz! - hd, maxZ: pz! + hd })
+  }
+  const distToNearestTub = (x: number, z: number): number => {
+    let best = Number.POSITIVE_INFINITY
+    for (const b of tubBoxes) {
+      const dx = x < b.minX ? b.minX - x : x > b.maxX ? x - b.maxX : 0
+      const dz = z < b.minZ ? b.minZ - z : z > b.maxZ ? z - b.maxZ : 0
+      const d = Math.hypot(dx, dz)
+      if (d < best) best = d
+    }
+    return best
+  }
+
+  // 1. Resolve or plan Panelboard (strictly respecting NEC 240.24(D)/(E) — never inside bathrooms, closets, or outdoors)
   let panelNode: SceneNodeLike | null = existingPanels[0] ?? null
   let createdPanel: AutoPopulatePlan['createdPanel'] = null
   if (!panelNode) {
     const voltageSystem: VoltageSystem = occupancy === 'commercial' ? '120/208V-3P' : '120/240V-1P'
-    // Prefer garage/utility wall, otherwise first wall midpoint
-    const preferredWall =
-      walls.find((w) => {
-        const zA = zoneAtPoint(zones, (w.start[0] + w.end[0]) / 2 + w.nx * 0.4, (w.start[1] + w.end[1]) / 2 + w.nz * 0.4)
-        const zB = zoneAtPoint(zones, (w.start[0] + w.end[0]) / 2 - w.nx * 0.4, (w.start[1] + w.end[1]) / 2 - w.nz * 0.4)
-        return (zA && (isGarage(zA.category) || isBasementOrUtility(zA.category))) ||
-          (zB && (isGarage(zB.category) || isBasementOrUtility(zB.category)))
-      }) ?? walls[0]
-
     let panelPos: Vec3 = [0.5, 1.52, 0.1]
     let panelRot = 0
-    if (preferredWall) {
-      const mx = (preferredWall.start[0] + preferredWall.end[0]) / 2
-      const mz = (preferredWall.start[1] + preferredWall.end[1]) / 2
-      panelPos = [
-        round3(mx + preferredWall.nx * (preferredWall.thickness / 2 + 0.08)),
-        1.52,
-        round3(mz + preferredWall.nz * (preferredWall.thickness / 2 + 0.08)),
-      ]
-      panelRot = preferredWall.yaw
+    let bestPanelScore = -Infinity
+
+    for (const w of walls) {
+      for (const frac of [0.5, 0.25, 0.75]) {
+        const px = w.start[0] + (w.end[0] - w.start[0]) * frac
+        const pz = w.start[1] + (w.end[1] - w.start[1]) * frac
+        for (const side of [1, -1] as const) {
+          const nx = w.nx * side
+          const nz = w.nz * side
+          const probeX = px + nx * 0.45
+          const probeZ = pz + nz * 0.45
+          const zProbe = zoneAtPoint(zones, probeX, probeZ)
+          if (!zProbe) continue
+          const cat = zProbe.category
+          if (isBathroom(cat) || /closet|wardrobe/.test(cat) || isOutdoorCategory(cat)) continue
+          const score =
+            isGarage(cat) || isBasementOrUtility(cat)
+              ? 100
+              : isHallway(cat)
+                ? 80
+                : /living|family|dining|bed|office|study|den/.test(cat)
+                  ? 65
+                  : 40
+          if (score > bestPanelScore) {
+            bestPanelScore = score
+            panelPos = [
+              round3(px + nx * (w.thickness / 2 + 0.08)),
+              1.52,
+              round3(pz + nz * (w.thickness / 2 + 0.08)),
+            ]
+            panelRot = side === 1 ? w.yaw : w.yaw + Math.PI
+          }
+        }
+      }
+    }
+    if (bestPanelScore === -Infinity && walls[0]) {
+      const w = walls[0]
+      const mx = (w.start[0] + w.end[0]) / 2
+      const mz = (w.start[1] + w.end[1]) / 2
+      panelPos = [round3(mx + w.nx * (w.thickness / 2 + 0.08)), 1.52, round3(mz + w.nz * (w.thickness / 2 + 0.08))]
+      panelRot = w.yaw
     }
 
     const panelId = 'elecpanel_auto_1'
@@ -466,12 +521,56 @@ export function planNecAutoPopulate(
     ) {
       return
     }
+    const resolved = { ...spec }
+    const isRecept =
+      resolved.deviceKind === 'duplex' ||
+      resolved.deviceKind === 'gfci' ||
+      resolved.deviceKind === 'afci'
+    if (isRecept && !resolved.isExterior) {
+      const actualZone = zoneAtPoint(zones, resolved.position[0], resolved.position[2])
+      if (actualZone && isKitchen(actualZone.category)) {
+        resolved.requiresGfci = true
+        resolved.breakerAmps = 20
+        resolved.wireGauge = '12'
+        resolved.boxType = occupancy === 'commercial' ? '4-sq-2.125' : 'single-gang-deep'
+        if (protectionMode !== 'gfci-breakers') resolved.deviceKind = 'gfci'
+        if (!resolved.circuitGroup.startsWith('Kitchen SAB')) {
+          resolved.circuitGroup = 'Kitchen SAB-1 (20A)'
+        }
+      } else if (actualZone && isBathroom(actualZone.category)) {
+        resolved.requiresGfci = true
+        resolved.requiresAfci = false
+        resolved.breakerAmps = 20
+        resolved.wireGauge = '12'
+        resolved.boxType = occupancy === 'commercial' ? '4-sq-2.125' : 'single-gang-deep'
+        if (protectionMode !== 'gfci-breakers') resolved.deviceKind = 'gfci'
+        resolved.circuitGroup = 'Bathroom GFCI (20A)'
+      } else if (actualZone && resolved.circuitGroup.startsWith('Kitchen SAB')) {
+        const wet =
+          isGarage(actualZone.category) ||
+          isLaundry(actualZone.category) ||
+          isBasementOrUtility(actualZone.category) ||
+          isOutdoorCategory(actualZone.category)
+        resolved.circuitGroup = 'General Receptacles'
+        resolved.requiresGfci = wet
+        if (!wet) resolved.deviceKind = 'duplex'
+      } else if (
+        actualZone &&
+        (isGarage(actualZone.category) ||
+          isLaundry(actualZone.category) ||
+          isBasementOrUtility(actualZone.category) ||
+          isOutdoorCategory(actualZone.category))
+      ) {
+        resolved.requiresGfci = true
+        if (protectionMode !== 'gfci-breakers') resolved.deviceKind = 'gfci'
+      }
+    }
     planned.push({
       tempId: `auto_dev_${devSeq++}`,
       occupancy,
       poles: 1,
-      continuous: spec.deviceKind === 'luminaire' && occupancy === 'commercial',
-      ...spec,
+      continuous: resolved.deviceKind === 'luminaire' && occupancy === 'commercial',
+      ...resolved,
     })
   }
 
@@ -695,10 +794,29 @@ export function planNecAutoPopulate(
     }
 
     if (isBathroom(cat)) {
-      // NEC 210.52(D) & 210.11(C)(3): Dedicated 20A Bathroom GFCI receptacle
+      // NEC 210.52(D) & 210.11(C)(3): Dedicated 20A Bathroom GFCI receptacle (>= 3 ft clear of tub/shower per NEC 406.9(C))
+      const dxOff = Math.min(0.65, z.widthM * 0.36)
+      const dzOff = Math.min(0.65, z.depthM * 0.36)
+      const candidates: [number, number][] = [
+        [cx, cz - dzOff],
+        [cx, cz + dzOff],
+        [cx - dxOff, cz + dzOff],
+        [cx + dxOff, cz + dzOff],
+        [cx - dxOff, cz - dzOff],
+        [cx + dxOff, cz - dzOff],
+      ]
+      let bestSpot: [number, number] = candidates[0]!
+      let bestDist = -1
+      for (const c of candidates) {
+        const d = distToNearestTub(c[0], c[1])
+        if (d > bestDist) {
+          bestDist = d
+          bestSpot = c
+        }
+      }
       addPlanned({
         name: `${z.name} Vanity GFCI`,
-        position: [round3(cx), 1.12, round3(cz - Math.min(0.6, z.depthM * 0.35))],
+        position: [round3(bestSpot[0]), 1.12, round3(bestSpot[1])],
         rotation: 0,
         deviceKind: protectionMode === 'gfci-breakers' ? 'duplex' : 'gfci',
         circuitGroup: 'Bathroom GFCI (20A)',

@@ -687,7 +687,14 @@ export function auditSceneElectrical(
       const isLuminaire = dev.deviceKind === 'luminaire'
 
       // NEC 406.9(C), 404.4(C), 410.10(D), & 406.5 Fixture-Proximity Prohibited Zones
+      // Only enforce within the same room zone (solid partition walls separate adjacent rooms)
       for (const fix of wetFixtures) {
+        const fixZone = getZoneAt(
+          nodes,
+          (fix.box.min[0] + fix.box.max[0]) / 2,
+          (fix.box.min[2] + fix.box.max[2]) / 2,
+        )
+        if (zone && fixZone && zone.id !== fixZone.id) continue
         const horizDist = horizontalDistToAabbXZ(x, z, fix.box)
         const devY = devPos[1]
         if (fix.kind === 'tub-shower') {
