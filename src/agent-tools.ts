@@ -183,7 +183,7 @@ export const electricalAgentTools: PluginAgentTools = {
       name: 'electrical_audit_nec',
       title: 'Audit scene for NEC & trade-clash compliance',
       description:
-        'Audit all electrical panels, devices, and runs against NEC 110.26(A)/(E) working & dedicated space, plumbing/HVAC/structural trade clashes, 358.26 bend limits, 310.16 ampacity, Ch. 9 conduit fill, 314.16 box fill, 210.19 voltage drop, GFCI/AFCI, and 705.12 solar busbar limits.',
+        'Audit all electrical panels, transformers, devices, and runs against NEC 110.26(A)/(E) working & dedicated space, prohibited locations & restricted zones (NEC 240.24(A)/(D)/(E)/(F) panels in bathrooms/closets/stairways or >6\'-7", NEC 312.2 / 450.22 outdoor NEMA rating, NEC 406.9(C) / 404.4(C) / 410.10(D) tub & shower zones, NEC 210.52(C) stove & 406.5(E) sink hazards, NEC 410.16(C) closet lighting, NEC 210.11(C)(1)/(3) dedicated bath/kitchen circuit isolation), plumbing/HVAC/structural trade clashes, 358.26 bend limits, 310.16 ampacity, 240.4(D) small-conductor OCPD caps, Ch. 9 conduit fill, 314.16 box fill, 210.19 voltage drop, GFCI/AFCI, and 705.12 solar busbar limits.',
       runsIn: 'operation',
       input: {},
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },

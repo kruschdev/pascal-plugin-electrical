@@ -254,18 +254,26 @@ export default function ElectricalRailPanel() {
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <strong style={{ fontSize: 13 }}>Electrical (NEC)</strong>
-        <span
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab('audit')
+            openEditorView(ELECTRICAL_SCHEDULE_VIEW_ID, { beside: true })
+          }}
+          title="Open full NEC Compliance Audit"
           style={{
             padding: '2px 7px',
             borderRadius: 999,
+            border: 'none',
             fontSize: 11,
             fontWeight: 600,
+            cursor: 'pointer',
             background: audit.passed ? 'rgba(16,185,129,0.18)' : 'rgba(239,68,68,0.2)',
             color: audit.passed ? '#34d399' : '#f87171',
           }}
         >
           {audit.passed ? 'NEC PASS' : `${audit.errorCount} ERR / ${audit.warningCount} WARN`}
-        </span>
+        </button>
       </div>
 
       {/* Residential / Commercial Mode Toggle */}
@@ -435,6 +443,89 @@ export default function ElectricalRailPanel() {
         <StatCard label="Devices" value={devices.length} />
         <StatCard label="Runs" value={runs.length} />
       </div>
+
+      {/* Live NEC Code Violations (clickable to jump to offending node in 3D viewport) */}
+      {audit.findings.length > 0 && (
+        <div
+          style={{
+            padding: 9,
+            borderRadius: 8,
+            border: `1px solid ${audit.errorCount > 0 ? 'rgba(239,68,68,0.48)' : 'rgba(245,158,11,0.45)'}`,
+            background: audit.errorCount > 0 ? 'rgba(239,68,68,0.1)' : 'rgba(245,158,11,0.08)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 5,
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span
+              style={{
+                fontWeight: 700,
+                fontSize: 11,
+                color: audit.errorCount > 0 ? '#f87171' : '#fbbf24',
+              }}
+            >
+              Live NEC Flags ({audit.findings.length})
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('audit')
+                openEditorView(ELECTRICAL_SCHEDULE_VIEW_ID, { beside: true })
+              }}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#38bdf8',
+                fontSize: 10,
+                fontWeight: 600,
+                cursor: 'pointer',
+                textDecoration: 'underline',
+                padding: 0,
+              }}
+            >
+              View All in NEC Audit
+            </button>
+          </div>
+          {audit.findings.slice(0, 4).map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              onClick={() => {
+                if (f.nodeIds.length > 0) {
+                  useViewer.getState().setSelection({ selectedIds: f.nodeIds.slice(0, 1) as never })
+                }
+              }}
+              title={f.suggestedFix ? `${f.message} Fix: ${f.suggestedFix}` : f.message}
+              style={{
+                textAlign: 'left',
+                padding: '5px 7px',
+                borderRadius: 6,
+                border: `1px solid ${f.severity === 'error' ? 'rgba(239,68,68,0.35)' : 'rgba(245,158,11,0.3)'}`,
+                background: 'rgba(15,23,42,0.45)',
+                color: 'inherit',
+                cursor: 'pointer',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 2,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: f.severity === 'error' ? '#fca5a5' : '#fde68a',
+                }}
+              >
+                [{f.codeRef}] {f.title}
+              </span>
+              {f.suggestedFix && (
+                <span style={{ fontSize: 10, opacity: 0.78 }}>{f.suggestedFix}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
 
       {statusMsg && (
         <div style={{ fontSize: 11, opacity: 0.85, padding: '6px 8px', borderRadius: 6, background: 'rgba(255,255,255,0.06)' }}>

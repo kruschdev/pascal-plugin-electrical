@@ -407,4 +407,272 @@ describe('Live Scene NEC Audit, Panel Schedule & Takeoff', () => {
     expect(alWire.description).toContain('Aluminum')
     expect(alWire.unitPriceUsd).toBeLessThan(cuWire.unitPriceUsd * 0.6)
   })
+
+  test('NEC Prohibited-Location Restrictions: flags panels in bathrooms, closets, over stairs, too high, and indoor NEMA outdoors', () => {
+    const scene = {
+      zone_bath: {
+        id: 'zone_bath',
+        type: 'zone',
+        name: 'Master Bathroom',
+        category: 'bathroom',
+        polygon: [
+          [0, 0],
+          [3, 0],
+          [3, 3],
+          [0, 3],
+        ],
+      },
+      zone_closet: {
+        id: 'zone_closet',
+        type: 'zone',
+        name: 'Walk-in Closet',
+        category: 'closet',
+        polygon: [
+          [4, 0],
+          [7, 0],
+          [7, 3],
+          [4, 3],
+        ],
+      },
+      zone_patio: {
+        id: 'zone_patio',
+        type: 'zone',
+        name: 'Back Patio',
+        category: 'outdoor',
+        polygon: [
+          [8, 0],
+          [12, 0],
+          [12, 4],
+          [8, 4],
+        ],
+      },
+      stair_1: {
+        id: 'stair_1',
+        type: 'stair',
+        position: [14, 0, 1],
+        rotation: 0,
+        width: 1.1,
+        length: 2.8,
+      },
+      panel_bath: {
+        id: 'panel_bath',
+        type: 'electrical:panel',
+        name: 'MDP-BATH',
+        position: [1.5, 1.5, 1.5], // inside bathroom -> NEC 240.24(E)
+        height: 0.92,
+      },
+      panel_closet: {
+        id: 'panel_closet',
+        type: 'electrical:panel',
+        name: 'SUB-CLOSET',
+        position: [5.5, 1.5, 1.5], // inside closet -> NEC 240.24(D)
+        height: 0.92,
+      },
+      panel_outdoor_high: {
+        id: 'panel_outdoor_high',
+        type: 'electrical:panel',
+        name: 'MDP-OUTDOOR',
+        position: [10, 1.85, 2], // top breaker = 1.85 + 0.92*0.35 = 2.172 m > 2.007 m -> 240.24(A) AND NEMA-1 outdoors -> 312.2
+        height: 0.92,
+        nemaRating: 'NEMA-1',
+      },
+      panel_stairs: {
+        id: 'panel_stairs',
+        type: 'electrical:panel',
+        name: 'SUB-STAIR',
+        position: [14, 1.5, 2.0], // directly over stair steps -> NEC 240.24(F)
+        height: 0.92,
+      },
+      tx_outdoor: {
+        id: 'tx_outdoor',
+        type: 'electrical:transformer',
+        name: 'TX-OUT',
+        position: [11, 0, 2],
+        nemaRating: 'NEMA-2', // indoor dry-type outdoors -> NEC 312.2 / 450.22
+      },
+    }
+
+    const report = auditSceneElectrical(scene)
+    expect(report.passed).toBe(false)
+    expect(report.findings.some((f) => f.codeRef === 'NEC 240.24(E)' && f.nodeIds.includes('panel_bath'))).toBe(true)
+    expect(report.findings.some((f) => f.codeRef === 'NEC 240.24(D)' && f.nodeIds.includes('panel_closet'))).toBe(true)
+    expect(report.findings.some((f) => f.codeRef === 'NEC 240.24(A)' && f.nodeIds.includes('panel_outdoor_high'))).toBe(true)
+    expect(report.findings.some((f) => f.codeRef === 'NEC 312.2' && f.nodeIds.includes('panel_outdoor_high'))).toBe(true)
+    expect(report.findings.some((f) => f.codeRef === 'NEC 240.24(F)' && f.nodeIds.includes('panel_stairs'))).toBe(true)
+    expect(report.findings.some((f) => f.codeRef === 'NEC 312.2 / 450.22' && f.nodeIds.includes('tx_outdoor'))).toBe(true)
+    expect(
+      report.findings.filter((f) => f.category === 'prohibited-location').length,
+    ).toBeGreaterThanOrEqual(6)
+  })
+
+  test('NEC Prohibited-Location Restrictions: flags tub/shower zone, stove, sink, low closet light, and mixed bath/kitchen circuits', () => {
+    const scene = {
+      zone_bath: {
+        id: 'zone_bath',
+        type: 'zone',
+        name: 'Hall Bath',
+        category: 'bathroom',
+        polygon: [
+          [0, 0],
+          [4, 0],
+          [4, 4],
+          [0, 4],
+        ],
+      },
+      zone_kitchen: {
+        id: 'zone_kitchen',
+        type: 'zone',
+        name: 'Kitchen',
+        category: 'kitchen',
+        polygon: [
+          [4, 0],
+          [9, 0],
+          [9, 4],
+          [4, 4],
+        ],
+      },
+      zone_bedroom: {
+        id: 'zone_bedroom',
+        type: 'zone',
+        name: 'Bedroom 1',
+        category: 'bedroom',
+        polygon: [
+          [9, 0],
+          [14, 0],
+          [14, 4],
+          [9, 4],
+        ],
+      },
+      zone_closet: {
+        id: 'zone_closet',
+        type: 'zone',
+        name: 'Bedroom Closet',
+        category: 'closet',
+        polygon: [
+          [14, 0],
+          [16, 0],
+          [16, 2],
+          [14, 2],
+        ],
+      },
+      // Real Pascal ItemNode shape with nested asset metadata & dimensions
+      item_bathtub: {
+        id: 'item_bathtub',
+        type: 'item',
+        position: [1.0, 0, 1.0],
+        asset: {
+          id: 'bathtub',
+          name: 'Bathtub',
+          category: 'bathroom',
+          dimensions: [1.6, 0.6, 0.8],
+        },
+      },
+      item_stove: {
+        id: 'item_stove',
+        type: 'item',
+        position: [6.0, 0, 1.0],
+        asset: {
+          id: 'stove',
+          name: 'Gas Range Stove',
+          category: 'kitchen',
+          dimensions: [0.76, 0.9, 0.7],
+        },
+      },
+      item_sink: {
+        id: 'item_sink',
+        type: 'item',
+        position: [7.5, 0, 1.0],
+        asset: {
+          id: 'sink-cabinet',
+          name: 'Kitchen Sink',
+          category: 'kitchen',
+          dimensions: [0.9, 0.9, 0.6],
+        },
+      },
+      dev_tub_outlet: {
+        id: 'dev_tub_outlet',
+        type: 'electrical:device',
+        name: 'Tub-Side GFCI',
+        deviceKind: 'gfci',
+        position: [2.2, 1.1, 1.0], // 0.4 m (< 3 ft) from tub rim and < 8 ft -> NEC 406.9(C)
+        gfciProtected: true,
+        panelId: 'mdp',
+        circuitNumber: 1,
+      },
+      dev_tub_switch: {
+        id: 'dev_tub_switch',
+        type: 'electrical:device',
+        name: 'Shower Switch',
+        deviceKind: 'switch-1p',
+        position: [1.85, 1.2, 1.0], // 0.05 m (<= 0.15 m) inside shower rim -> NEC 404.4(C)
+      },
+      dev_tub_light: {
+        id: 'dev_tub_light',
+        type: 'electrical:device',
+        name: 'Low Pendant Over Tub',
+        deviceKind: 'luminaire',
+        position: [1.0, 2.0, 1.0], // 6.56 ft (< 8 ft) inside tub zone -> NEC 410.10(D)
+      },
+      dev_stove_outlet: {
+        id: 'dev_stove_outlet',
+        type: 'electrical:device',
+        name: 'Behind-Stove GFCI',
+        deviceKind: 'gfci',
+        position: [6.0, 1.12, 1.0], // directly over stove at countertop height -> NEC 210.52(C) / 110.11
+        gfciProtected: true,
+        panelId: 'mdp',
+        circuitNumber: 3,
+      },
+      dev_sink_outlet: {
+        id: 'dev_sink_outlet',
+        type: 'electrical:device',
+        name: 'In-Sink Outlet',
+        deviceKind: 'gfci',
+        position: [7.5, 0.95, 1.0], // inside sink basin footprint -> NEC 406.5(E)
+        gfciProtected: true,
+        panelId: 'mdp',
+        circuitNumber: 5,
+      },
+      dev_closet_light: {
+        id: 'dev_closet_light',
+        type: 'electrical:device',
+        name: 'Low Closet Sconce',
+        deviceKind: 'luminaire',
+        position: [15.0, 1.75, 1.0], // < 2.1 m inside closet -> NEC 410.16(C)
+      },
+      // Bedroom outlet mistakenly wired onto CKT-1 (same circuit as Bathroom) -> NEC 210.11(C)(3)
+      dev_bed_on_bath_ckt: {
+        id: 'dev_bed_on_bath_ckt',
+        type: 'electrical:device',
+        name: 'Bedroom Outlet on Bath CKT',
+        deviceKind: 'duplex',
+        position: [10.5, 0.4, 1.0],
+        afciProtected: true,
+        panelId: 'mdp',
+        circuitNumber: 1,
+      },
+      // Bedroom outlet mistakenly wired onto CKT-3 (same circuit as Kitchen SAB) -> NEC 210.11(C)(1)
+      dev_bed_on_kitchen_ckt: {
+        id: 'dev_bed_on_kitchen_ckt',
+        type: 'electrical:device',
+        name: 'Bedroom Outlet on Kitchen SAB',
+        deviceKind: 'duplex',
+        position: [12.0, 0.4, 1.0],
+        afciProtected: true,
+        panelId: 'mdp',
+        circuitNumber: 3,
+      },
+    }
+
+    const report = auditSceneElectrical(scene)
+    expect(report.passed).toBe(false)
+    expect(report.findings.some((f) => f.codeRef === 'NEC 406.9(C)' && f.nodeIds.includes('dev_tub_outlet'))).toBe(true)
+    expect(report.findings.some((f) => f.codeRef === 'NEC 404.4(C)' && f.nodeIds.includes('dev_tub_switch'))).toBe(true)
+    expect(report.findings.some((f) => f.codeRef === 'NEC 410.10(D)' && f.nodeIds.includes('dev_tub_light'))).toBe(true)
+    expect(report.findings.some((f) => f.codeRef === 'NEC 210.52(C) / 110.11' && f.nodeIds.includes('dev_stove_outlet'))).toBe(true)
+    expect(report.findings.some((f) => f.codeRef === 'NEC 406.5(E)' && f.nodeIds.includes('dev_sink_outlet'))).toBe(true)
+    expect(report.findings.some((f) => f.codeRef === 'NEC 410.16(C)' && f.nodeIds.includes('dev_closet_light'))).toBe(true)
+    expect(report.findings.some((f) => f.codeRef === 'NEC 210.11(C)(3)' && f.nodeIds.includes('dev_bed_on_bath_ckt'))).toBe(true)
+    expect(report.findings.some((f) => f.codeRef === 'NEC 210.11(C)(1)' && f.nodeIds.includes('dev_bed_on_kitchen_ckt'))).toBe(true)
+  })
 })

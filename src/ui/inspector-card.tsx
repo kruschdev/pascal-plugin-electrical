@@ -6,6 +6,8 @@
 
 import type { AnyNode } from '@pascal-app/core'
 import { openEditorView, useScene } from '@pascal-app/editor'
+import { useMemo } from 'react'
+import { auditSceneElectrical, type NecAuditFinding } from '../nec/audit'
 import type { SceneNodeLike } from '../nec/load-calc'
 import { ELECTRICAL_SCHEDULE_VIEW_ID } from './electrical-panel'
 import { useElectricalUi } from './store'
@@ -43,8 +45,18 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
   const nodes = useScene((s) => s.nodes) as unknown as Readonly<Record<string, SceneNodeLike>>
   const setActiveTab = useElectricalUi((s) => s.setActiveTab)
   const setSelectedPanelId = useElectricalUi((s) => s.setSelectedPanelId)
-  if (!node) return null
-  const raw = node as unknown as SceneNodeLike
+  const audit = useMemo(() => auditSceneElectrical(nodes), [nodes])
+  const raw = node as unknown as SceneNodeLike | undefined
+  const nodeFindings = useMemo(
+    () => (raw ? audit.findings.filter((f) => f.nodeIds.includes(raw.id)) : []),
+    [audit, raw],
+  )
+  if (!raw) return null
+
+  const openFullAudit = () => {
+    setActiveTab('audit')
+    openEditorView(ELECTRICAL_SCHEDULE_VIEW_ID, { beside: true })
+  }
 
   if (raw.type === 'electrical:panel') {
     const all = Object.values(nodes)
@@ -59,6 +71,7 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
     )
     return (
       <div style={cardStyle}>
+        <NodeViolationBanner findings={nodeFindings} onOpenAudit={openFullAudit} />
         <Row label="NEC 110.26 Working Space" value={`30"W × ${clear.depthIn}"D × 78"H`} />
         <Row label="Connected Load" value={`${schedule.totalConnectedVa} VA (${schedule.totalLineAmps} A)`} />
         <Row label="Utilization" value={`${schedule.utilizationPct}%`} warn={schedule.utilizationPct > 80} />
@@ -101,6 +114,7 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
     })
     return (
       <div style={cardStyle}>
+        <NodeViolationBanner findings={nodeFindings} onOpenAudit={openFullAudit} />
         <Row
           label="NEC 314.16 Box Fill"
           value={`${fill.totalRequiredCuIn} / ${fill.boxVolumeCuIn} cu in (${fill.utilizationPct}%)`}
@@ -151,6 +165,7 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
 
     return (
       <div style={cardStyle}>
+        <NodeViolationBanner findings={nodeFindings} onOpenAudit={openFullAudit} />
         <Row label="Routed Length" value={`${lenFt} ft`} />
         <Row label="Total Bends (358.26)" value={`${totalBendDegrees}° / 360°`} warn={totalBendDegrees > 360} />
         <Row label="Derated Ampacity" value={`${amp.finalAllowableAmpacity} A`} warn={!amp.compliant} />
@@ -168,6 +183,7 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
     const tx = calculateTransformerSizing(kva, primV, secV)
     return (
       <div style={cardStyle}>
+        <NodeViolationBanner findings={nodeFindings} onOpenAudit={openFullAudit} />
         <Row label={`Primary (${primV}V 3Φ)`} value={`${tx.primaryFla}A FLA · ${tx.maxPrimaryOcpdAmps}A OCPD (#${tx.recommendedPrimaryCuGauge})`} />
         <Row label={`Secondary (${secV}V 3Φ)`} value={`${tx.secondaryFla}A FLA · ${tx.maxSecondaryOcpdAmps}A OCPD (#${tx.recommendedSecondaryCuGauge})`} />
       </div>
@@ -175,6 +191,98 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
   }
 
   return null
+}
+
+function NodeViolationBanner({
+  findings,
+  onOpenAudit,
+}: {
+  findings: NecAuditFinding[]
+  onOpenAudit: () => void
+}) {
+  if (findings.length === 0) {
+    return (
+      <div
+        style={{
+          padding: '4px 7px',
+          borderRadius: 6,
+          background: 'rgba(16,185,129,0.14)',
+          border: '1px solid rgba(16,185,129,0.35)',
+          color: '#34d399',
+          fontSize: 10,
+          fontWeight: 600,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
+        <span>NEC Code Check: Compliant</span>
+        <span>PASS</span>
+      </div>
+    )
+  }
+
+  const hasError = findings.some((f) => f.severity === 'error')
+  return (
+    <div
+      style={{
+        padding: 7,
+        borderRadius: 6,
+        background: hasError ? 'rgba(239,68,68,0.14)' : 'rgba(245,158,11,0.14)',
+        border: `1px solid ${hasError ? 'rgba(239,68,68,0.48)' : 'rgba(245,158,11,0.48)'}`,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 5,
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          color: hasError ? '#f87171' : '#fbbf24',
+          fontWeight: 700,
+          fontSize: 10,
+        }}
+      >
+        <span>{hasError ? 'NOT TO CODE' : 'NEC WARNING'} ({findings.length})</span>
+        <button
+          type="button"
+          onClick={onOpenAudit}
+          style={{
+            background: 'transparent',
+            border: 'none',
+            color: 'inherit',
+            textDecoration: 'underline',
+            cursor: 'pointer',
+            fontSize: 10,
+            padding: 0,
+          }}
+        >
+          Full Audit
+        </button>
+      </div>
+      {findings.map((f) => (
+        <div
+          key={f.id}
+          style={{
+            borderTop: '1px solid rgba(255,255,255,0.1)',
+            paddingTop: 4,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+          }}
+        >
+          <div style={{ fontWeight: 600, color: f.severity === 'error' ? '#fca5a5' : '#fde68a' }}>
+            [{f.codeRef}] {f.title}
+          </div>
+          {f.suggestedFix && (
+            <div style={{ fontSize: 10, opacity: 0.85 }}>Fix: {f.suggestedFix}</div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function Row({ label, value, warn = false }: { label: string; value: string; warn?: boolean }) {
