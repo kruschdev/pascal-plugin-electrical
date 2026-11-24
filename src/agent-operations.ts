@@ -427,7 +427,7 @@ export const electricalAgentOperations = {
     const obstacles = extractTradeObstacles(record, parentId)
     const walls = extractRoutingWalls(record, parentId)
     const levelHeight = resolveLevelHeightM(record, parentId)
-    const defaultChaseY = Math.round(Math.min(2.55, levelHeight + 0.012) * 1000) / 1000
+    const defaultChaseY = Math.round(Math.min(2.55, levelHeight - 0.06) * 1000) / 1000
     const route = routeElectricalRun(startPt, endPt, obstacles, {
       preferredChaseY: input.preferredChaseY ?? defaultChaseY,
       clearanceM: input.clearanceM ?? 0.05,

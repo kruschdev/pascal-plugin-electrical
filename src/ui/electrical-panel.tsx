@@ -35,6 +35,10 @@ export default function ElectricalRailPanel() {
   const updateNode = useScene((s) => s.updateNode)
   const selectedLevelId = useViewer((s) => s.selection.levelId)
   const selectedIds = useViewer((s) => s.selection.selectedIds)
+  const wallMode = useViewer((s) => s.wallMode)
+  const setWallMode = useViewer((s) => s.setWallMode)
+  const xrayFamily = useViewer((s) => s.xrayFamily)
+  const setXrayFamily = useViewer((s) => s.setXrayFamily)
   const { occupancy, setOccupancy, setActiveTab, setSelectedPanelId } = useElectricalUi()
   const [protectionMode, setProtectionMode] = useState<ProtectionMode>('hybrid')
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
@@ -227,7 +231,7 @@ export default function ElectricalRailPanel() {
     runAsSingleSceneHistoryStep(useScene, () => {
       const walls = extractRoutingWalls(record, levelId)
       const levelHeight = resolveLevelHeightM(record, levelId)
-      const defaultChaseY = Math.round(Math.min(2.55, levelHeight + 0.012) * 1000) / 1000
+      const defaultChaseY = Math.round(Math.min(2.55, levelHeight - 0.06) * 1000) / 1000
       // 1. Reroute any existing clashing runs around higher-priority trades (strictly following walls)
       for (const run of runs) {
         const path = Array.isArray(run.path) ? (run.path as Vec3[]) : []
@@ -442,6 +446,94 @@ export default function ElectricalRailPanel() {
         >
           Auto-Populate NEC Layout &amp; Wiring
         </button>
+      </div>
+
+      {/* Native Pascal useViewer In-Wall Inspection Controls */}
+      <div
+        style={{
+          padding: 10,
+          borderRadius: 8,
+          border: '1px solid var(--border, rgba(255,255,255,0.12))',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 6,
+        }}
+      >
+        <div style={{ fontWeight: 600 }}>In-Wall Wiring View</div>
+        <div style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.35 }}>
+          Cables route concealed inside wall cavities. Use Pascal&apos;s native viewer modes to inspect in-wall runs:
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+          <button
+            type="button"
+            onClick={() => {
+              setXrayFamily(null)
+              setWallMode('up')
+            }}
+            style={{
+              ...btnStyle,
+              background: xrayFamily === null && wallMode === 'up' ? 'rgba(245,158,11,0.2)' : 'transparent',
+              borderColor:
+                xrayFamily === null && wallMode === 'up'
+                  ? 'rgba(245,158,11,0.5)'
+                  : 'var(--border, rgba(255,255,255,0.16))',
+              fontWeight: xrayFamily === null && wallMode === 'up' ? 600 : 400,
+            }}
+          >
+            Full Walls
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setXrayFamily(null)
+              setWallMode('cutaway')
+            }}
+            style={{
+              ...btnStyle,
+              background: xrayFamily === null && wallMode === 'cutaway' ? 'rgba(56,189,248,0.2)' : 'transparent',
+              borderColor:
+                xrayFamily === null && wallMode === 'cutaway'
+                  ? 'rgba(56,189,248,0.55)'
+                  : 'var(--border, rgba(255,255,255,0.16))',
+              fontWeight: xrayFamily === null && wallMode === 'cutaway' ? 600 : 400,
+            }}
+          >
+            Cutaway
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setXrayFamily(null)
+              setWallMode('down')
+            }}
+            style={{
+              ...btnStyle,
+              background: xrayFamily === null && wallMode === 'down' ? 'rgba(56,189,248,0.2)' : 'transparent',
+              borderColor:
+                xrayFamily === null && wallMode === 'down'
+                  ? 'rgba(56,189,248,0.55)'
+                  : 'var(--border, rgba(255,255,255,0.16))',
+              fontWeight: xrayFamily === null && wallMode === 'down' ? 600 : 400,
+            }}
+          >
+            Low Walls
+          </button>
+          <button
+            type="button"
+            onClick={() => setXrayFamily(xrayFamily === 'other' ? null : 'other')}
+            style={{
+              ...btnStyle,
+              background: xrayFamily === 'other' ? 'rgba(16,185,129,0.22)' : 'transparent',
+              borderColor:
+                xrayFamily === 'other'
+                  ? 'rgba(16,185,129,0.55)'
+                  : 'var(--border, rgba(255,255,255,0.16))',
+              fontWeight: xrayFamily === 'other' ? 600 : 400,
+            }}
+          >
+            X-Ray Wiring
+          </button>
+        </div>
       </div>
 
       {/* Trade-Priority Routing Action */}

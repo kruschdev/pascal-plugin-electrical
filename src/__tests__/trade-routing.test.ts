@@ -136,22 +136,23 @@ describe('Trade-Priority Obstacle-Aware Electrical Routing', () => {
       { id: 'w_south', start: [0, 0], end: [6, 0], thickness: 0.12, height: 2.5, doorSpans: [[2.5, 3.5]] },
     ]
 
-    // Two outlets on the same wall with NO door between them -> horizontal stud chase at y = 0.38 (zero ceiling drop!)
+    // Two outlets on the same wall with NO door between them -> concealed horizontal stud chase inside wall centerline (z=0, y=0.38)
     const horiz = routeElectricalRun([0.6, 0.38, 0.07], [2.1, 0.38, 0.07], [], {
       preferredChaseY: 2.55,
       walls,
     })
     expect(horiz.path.every((pt) => Math.abs(pt[1] - 0.38) < 0.01)).toBe(true)
+    expect(horiz.path.every((pt) => Math.abs(pt[2]) <= 0.01)).toBe(true)
     expect(horiz.totalBendDegrees).toBe(0)
 
-    // Two outlets on the same wall with a DOOR between them -> climbs over door header at top plate (2.512 m)
+    // Two outlets on the same wall with a DOOR between them -> climbs over door header inside wall top plate (2.44 m)
     const overDoor = routeElectricalRun([1.2, 0.38, 0.07], [4.8, 0.38, 0.07], [], {
       preferredChaseY: 2.55,
       walls,
     })
-    expect(overDoor.path.some((pt) => pt[1] >= 2.4 && pt[1] <= 2.52)).toBe(true)
-    // Every waypoint stays flush on the south wall plane (z ~ 0.07)
-    expect(overDoor.path.every((pt) => Math.abs(pt[2] - 0.07) <= 0.12)).toBe(true)
+    expect(overDoor.path.some((pt) => pt[1] >= 2.35 && pt[1] <= 2.46)).toBe(true)
+    // Every waypoint stays strictly dead-center inside the wall (z = 0, between the drywall faces)
+    expect(overDoor.path.every((pt) => Math.abs(pt[2]) <= 0.01)).toBe(true)
   })
 
   test('Wall-guided Manhattan routing follows wall corners around open rooms and still yields to plumbing', () => {
@@ -161,15 +162,15 @@ describe('Trade-Priority Obstacle-Aware Electrical Routing', () => {
       w_e: { id: 'w_e', type: 'wall', parentId: 'level_0', start: [6, 0], end: [6, 4], thickness: 0.1 },
       w_s: { id: 'w_s', type: 'wall', parentId: 'level_0', start: [6, 4], end: [0, 4], thickness: 0.1 },
       w_w: { id: 'w_w', type: 'wall', parentId: 'level_0', start: [0, 4], end: [0, 0], thickness: 0.1 },
-      // Plumbing pipe crossing the north wall top plate at x = 3
+      // Plumbing pipe crossing the north wall top plate cavity at x = 3, y = 2.44
       pipe_1: {
         id: 'pipe_1',
         type: 'pipe-segment',
         parentId: 'level_0',
         diameter: 4,
         path: [
-          [3.0, 2.51, -0.8],
-          [3.0, 2.51, 0.8],
+          [3.0, 2.44, -0.8],
+          [3.0, 2.44, 0.8],
         ],
       },
     }

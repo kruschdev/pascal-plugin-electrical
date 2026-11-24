@@ -78,6 +78,11 @@ export type RouteElectricalOptions = {
   maxBendDegrees?: number
   /** Optional building walls so conduit/cable follows wall Manhattan geometry instead of cutting across open rooms. */
   walls?: readonly RoutingWallSegment[]
+  /**
+   * Whether wall-following runs route concealed inside the wall centerline ('in-wall', default)
+   * or surface-mounted on the exterior drywall face ('surface').
+   */
+  wallPlacement?: 'in-wall' | 'surface'
 }
 
 export type ElectricalRouteResult = {
@@ -677,6 +682,7 @@ function buildWallGuidedManhattanPath(
   end: Vec3,
   chaseY: number,
   walls: readonly RoutingWallSegment[],
+  wallPlacement: 'in-wall' | 'surface' = 'in-wall',
 ): Vec3[] | null {
   if (walls.length === 0) return null
   const sProj = projectPointToWalls(start[0], start[2], walls)
@@ -685,8 +691,16 @@ function buildWallGuidedManhattanPath(
 
   const isStartWall = isEndpointWallMounted(start, sProj)
   const isEndWall = isEndpointWallMounted(end, eProj)
+  const concealed = wallPlacement === 'in-wall'
 
-  // Fast path A: Same wall, same mounting height band, no door in between -> horizontal wall chase (no ceiling drop!)
+  // In concealed ('in-wall') mode, wall-mounted boxes terminate inside the stud cavity on the wall centerline
+  // (where the rough-in box rear/top knockouts sit between the two drywall faces).
+  const startPt: Vec3 =
+    concealed && isStartWall ? [round3(sProj.x), start[1], round3(sProj.z)] : start
+  const endPt: Vec3 =
+    concealed && isEndWall ? [round3(eProj.x), end[1], round3(eProj.z)] : end
+
+  // Fast path A: Same wall, same mounting height band, no door in between -> horizontal stud-bored wall chase!
   if (
     isStartWall &&
     isEndWall &&
@@ -695,8 +709,16 @@ function buildWallGuidedManhattanPath(
     Math.max(start[1], end[1]) < chaseY - 0.35 &&
     !hasInterveningDoor(sProj.wall, sProj.t, eProj.t)
   ) {
-    const sameSide = sProj.signedDist * eProj.signedDist >= -1e-4
     const midY = round3((start[1] + end[1]) / 2)
+    if (concealed) {
+      return simplifyOrthogonalPath([
+        startPt,
+        [round3(sProj.x), midY, round3(sProj.z)],
+        [round3(eProj.x), midY, round3(eProj.z)],
+        endPt,
+      ])
+    }
+    const sameSide = sProj.signedDist * eProj.signedDist >= -1e-4
     if (sameSide) {
       return simplifyOrthogonalPath([
         start,
@@ -705,7 +727,6 @@ function buildWallGuidedManhattanPath(
         end,
       ])
     }
-    // Opposite faces of the same interior partition wall -> bore cleanly through stud cavity
     return simplifyOrthogonalPath([
       start,
       [sProj.x, midY, sProj.z],
@@ -716,6 +737,14 @@ function buildWallGuidedManhattanPath(
 
   // Fast path B: Same wall (e.g. climbing over a door header, or panel -> outlet on the same wall)
   if (isStartWall && isEndWall && sProj.wallIdx === eProj.wallIdx) {
+    if (concealed) {
+      return simplifyOrthogonalPath([
+        startPt,
+        [round3(sProj.x), chaseY, round3(sProj.z)],
+        [round3(eProj.x), chaseY, round3(eProj.z)],
+        endPt,
+      ])
+    }
     const sameSide = sProj.signedDist * eProj.signedDist >= -1e-4
     if (sameSide) {
       return simplifyOrthogonalPath([
@@ -977,10 +1006,11 @@ function buildWallGuidedManhattanPath(
     pts2D.push(pt)
   }
 
-  // Corner-align flush wall offsets at start & end to eliminate tiny 6cm micro-jogs at 90° wall corners
-  if (isStartWall && pts2D.length >= 3 && edgeWall[0] && edgeWall[1]) {
-    const offX = start[0] - pts2D[0]![0]
-    const offZ = start[2] - pts2D[0]![1]
+  // In surface-mounted mode, corner-align flush wall offsets at start & end to eliminate 6cm micro-jogs.
+  // In concealed ('in-wall') mode, keep every vertex dead-center on the 2D wall centerline between drywall faces!
+  if (!concealed && isStartWall && pts2D.length >= 3 && edgeWall[0] && edgeWall[1]) {
+    const offX = startPt[0] - pts2D[0]![0]
+    const offZ = startPt[2] - pts2D[0]![1]
     if (Math.hypot(offX, offZ) <= 0.16) {
       const u0x = pts2D[1]![0] - pts2D[0]![0]
       const u0z = pts2D[1]![1] - pts2D[0]![1]
@@ -989,16 +1019,16 @@ function buildWallGuidedManhattanPath(
       const l0 = Math.hypot(u0x, u0z)
       const l1 = Math.hypot(u1x, u1z)
       if (l0 > 0.05 && l1 > 0.05 && Math.abs((u0x * u1x + u0z * u1z) / (l0 * l1)) < 0.2) {
-        pts2D[0] = [start[0], start[2]]
+        pts2D[0] = [startPt[0], startPt[2]]
         pts2D[1] = [pts2D[1]![0] + offX, pts2D[1]![1] + offZ]
       }
     }
   }
-  if (isEndWall && pts2D.length >= 3) {
+  if (!concealed && isEndWall && pts2D.length >= 3) {
     const last = pts2D.length - 1
     if (edgeWall[last - 1] && edgeWall[last - 2]) {
-      const offX = end[0] - pts2D[last]![0]
-      const offZ = end[2] - pts2D[last]![1]
+      const offX = endPt[0] - pts2D[last]![0]
+      const offZ = endPt[2] - pts2D[last]![1]
       if (Math.hypot(offX, offZ) <= 0.16) {
         const uPx = pts2D[last - 1]![0] - pts2D[last - 2]![0]
         const uPz = pts2D[last - 1]![1] - pts2D[last - 2]![1]
@@ -1007,22 +1037,22 @@ function buildWallGuidedManhattanPath(
         const lP = Math.hypot(uPx, uPz)
         const lL = Math.hypot(uLx, uLz)
         if (lP > 0.05 && lL > 0.05 && Math.abs((uPx * uLx + uPz * uLz) / (lP * lL)) < 0.2) {
-          pts2D[last] = [end[0], end[2]]
+          pts2D[last] = [endPt[0], endPt[2]]
           pts2D[last - 1] = [pts2D[last - 1]![0] + offX, pts2D[last - 1]![1] + offZ]
         }
       }
     }
   }
 
-  // Assemble clean 3D Manhattan polyline along wall top plates with orthogonal ceiling branches for luminaires
-  const pts3D: Vec3[] = [start, [start[0], chaseY, start[2]]]
+  // Assemble clean 3D Manhattan polyline inside wall top plates (or along wall surface) with orthogonal ceiling branches
+  const pts3D: Vec3[] = [startPt, [startPt[0], chaseY, startPt[2]]]
   const first2D = pts2D[0]!
   if (!isStartWall) {
-    if (Math.abs(start[0] - first2D[0]) > 0.01 && Math.abs(start[2] - first2D[1]) > 0.01) {
-      pts3D.push([first2D[0], chaseY, start[2]])
+    if (Math.abs(startPt[0] - first2D[0]) > 0.01 && Math.abs(startPt[2] - first2D[1]) > 0.01) {
+      pts3D.push([first2D[0], chaseY, startPt[2]])
     }
     pts3D.push([first2D[0], chaseY, first2D[1]])
-  } else if (Math.hypot(start[0] - first2D[0], start[2] - first2D[1]) > 0.01) {
+  } else if (Math.hypot(startPt[0] - first2D[0], startPt[2] - first2D[1]) > 0.01) {
     pts3D.push([first2D[0], chaseY, first2D[1]])
   }
 
@@ -1037,14 +1067,14 @@ function buildWallGuidedManhattanPath(
 
   const last2D = pts2D[pts2D.length - 1]!
   if (!isEndWall) {
-    if (Math.abs(end[0] - last2D[0]) > 0.01 && Math.abs(end[2] - last2D[1]) > 0.01) {
-      pts3D.push([last2D[0], chaseY, end[2]])
+    if (Math.abs(endPt[0] - last2D[0]) > 0.01 && Math.abs(endPt[2] - last2D[1]) > 0.01) {
+      pts3D.push([last2D[0], chaseY, endPt[2]])
     }
-    pts3D.push([end[0], chaseY, end[2]])
-  } else if (Math.hypot(end[0] - last2D[0], end[2] - last2D[1]) > 0.01) {
-    pts3D.push([end[0], chaseY, end[2]])
+    pts3D.push([endPt[0], chaseY, endPt[2]])
+  } else if (Math.hypot(endPt[0] - last2D[0], endPt[2] - last2D[1]) > 0.01) {
+    pts3D.push([endPt[0], chaseY, endPt[2]])
   }
-  pts3D.push(end)
+  pts3D.push(endPt)
 
   return simplifyOrthogonalPath(pts3D)
 }
@@ -1132,11 +1162,17 @@ export function routeElectricalRun(
   options: RouteElectricalOptions = {},
 ): ElectricalRouteResult {
   const walls = options.walls && options.walls.length > 0 ? options.walls : null
+  const wallPlacement = options.wallPlacement ?? 'in-wall'
   const maxWallH = walls ? Math.max(...walls.map((w) => w.height)) : 0
   const rawPreferredChaseY = options.preferredChaseY ?? 2.55
   const preferredChaseY =
     walls && maxWallH > 0
-      ? round3(Math.min(rawPreferredChaseY, maxWallH + 0.012))
+      ? round3(
+          Math.min(
+            rawPreferredChaseY,
+            wallPlacement === 'in-wall' ? maxWallH - 0.06 : maxWallH + 0.012,
+          ),
+        )
       : rawPreferredChaseY
   const clearanceM = options.clearanceM ?? DEFAULT_CLEARANCE_M
   const conduitRadiusM = options.conduitRadiusM ?? 0.015
@@ -1150,7 +1186,7 @@ export function routeElectricalRun(
   const fallbackManhattan =
     polylineLengthM(fallbackXZ) <= polylineLengthM(fallbackZX) ? fallbackXZ : fallbackZX
   const baseline =
-    (walls ? buildWallGuidedManhattanPath(start, end, preferredChaseY, walls) : null) ??
+    (walls ? buildWallGuidedManhattanPath(start, end, preferredChaseY, walls, wallPlacement) : null) ??
     fallbackManhattan
   const directLengthM = polylineLengthM(baseline)
   const baselineClashes = detectRunTradeClashes(baseline, obstacles, clearanceM, conduitRadiusM)
@@ -1181,7 +1217,7 @@ export function routeElectricalRun(
   if (walls) {
     for (const y of candidateElevations) {
       const candidate =
-        buildWallGuidedManhattanPath(start, end, y, walls) ??
+        buildWallGuidedManhattanPath(start, end, y, walls, wallPlacement) ??
         buildManhattanCandidate(start, end, y, 'xz')
       const { score, clashes } = scorePath(candidate)
       if (score < bestScore) {

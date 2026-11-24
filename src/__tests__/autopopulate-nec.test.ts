@@ -419,7 +419,9 @@ describe('NEC Minimum Auto-Populate (Outlets, GFCIs, Doors, Stairs, Circuits, Ho
         continue
       }
       for (const pt of path) {
-        expect(distToNearestWall(pt[0], pt[2])).toBeLessThanOrEqual(0.18)
+        // Concealed in-wall mode: every waypoint sits dead-center inside a wall cavity (<= 0.02 m from centerline) and below wall top cap (<= 2.46 m)
+        expect(distToNearestWall(pt[0], pt[2])).toBeLessThanOrEqual(0.02)
+        expect(pt[1]).toBeLessThanOrEqual(2.46)
       }
     }
 

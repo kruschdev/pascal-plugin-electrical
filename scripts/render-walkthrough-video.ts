@@ -322,17 +322,25 @@ await smoothClickButton('Auto-Populate NEC Layout', false, 6, 26, '02_after_auto
 await setBanner('1 / 5 · Add Outlet -> Snaps to Wall & Auto-Joins Existing Room Circuit Run')
 await smoothClickButton('+ Receptacle', true, 5, 18, '02b_add_outlet')
 
-// ─── CHAPTER 2: Orbit & Zoom Real 3D Pascal House + Wall-Following Manhattan Routing ──
-console.log('Recording Chapter 2: Orbit & Zoom 3D Auto-Populated House...')
-await setBanner('2 / 5 · Wall-Following 3D Manhattan Routing & Flush Wall Devices (0 Errors · NEC PASS)')
+// ─── CHAPTER 2: Inspect Concealed In-Wall Wiring via Native Pascal useViewer Modes ──
+console.log('Recording Chapter 2: Native Pascal useViewer Low Walls & X-Ray In-Wall Inspection...')
+await setBanner('2 / 5 · Full Walls: Concealed In-Wall Wiring & Flush Wall Faceplates (0 Errors · NEC PASS)')
+await captureFrames(10, 90, '03a_full_walls', true)
+
+await setBanner('2 / 5 · Pascal Native Low Walls Mode: Inspect Concealed Wiring Running Inside Wall Centerlines')
+await smoothClickButton('Low Walls', true, 5, 16, '03_orbit_3d')
+
 await page.mouse.move(960, 440)
 await moveCursor(960, 440)
-for (let i = 0; i < 5; i++) {
+for (let i = 0; i < 4; i++) {
   await page.mouse.wheel({ deltaY: -150 })
   await captureFrames(2, 70)
 }
-await dragOrbit(980, 440, -180, -35, 14, 'right', '03_orbit_3d')
-await captureFrames(10, 90, undefined, true)
+await dragOrbit(980, 440, -160, -30, 10, 'right', '03b_low_walls_orbit')
+
+await setBanner('2 / 5 · Pascal Native X-Ray Wiring Mode: Full 3D Electrical System Isolation')
+await smoothClickButton('X-Ray Wiring', true, 5, 16, '03c_xray_wiring')
+await smoothClickButton('Full Walls', true, 4, 8)
 
 // ─── CHAPTER 3: Zoom-In Cover-Off 3D Panel Interior Wiring View ─────────────
 console.log('Recording Chapter 3: Cover-Off 3D Panel Interior Wiring View...')

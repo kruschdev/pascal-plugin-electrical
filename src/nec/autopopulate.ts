@@ -424,7 +424,7 @@ export function planNecAutoPopulate(
   const levelHeight = resolveLevelHeightM(nodes, levelId)
   const ceilingLightY = round3(Math.max(2.1, levelHeight - 0.04))
   const preferredChaseY = options.preferredChaseY ?? 2.55
-  const effectiveChaseY = round3(Math.min(preferredChaseY, levelHeight + 0.012))
+  const effectiveChaseY = round3(Math.min(preferredChaseY, levelHeight - 0.06))
 
   const zones = extractZones(nodes, levelId)
   const walls = extractWalls(nodes, levelId)
@@ -1848,7 +1848,7 @@ export function planDeviceAutoConnection(
   const routingWalls = extractRoutingWalls(nodes, levelId)
   const obstacles = extractTradeObstacles(nodes, levelId)
   const levelHeight = resolveLevelHeightM(nodes, levelId)
-  const effectiveChaseY = round3(Math.min(options.preferredChaseY ?? 2.55, levelHeight + 0.012))
+  const effectiveChaseY = round3(Math.min(options.preferredChaseY ?? 2.55, levelHeight - 0.06))
 
   const existingDevices = all.filter((n) => n.type === 'electrical:device')
   const panelDevices = existingDevices.filter((d) => d.panelId === panelNode.id)
