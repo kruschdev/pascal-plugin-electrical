@@ -202,5 +202,24 @@ export const electricalAgentTools: PluginAgentTools = {
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
     },
+    {
+      name: 'electrical_autopopulate_nec',
+      title: 'Auto-populate NEC minimum layout, circuits, home runs & daisy-chain wiring',
+      description:
+        'Analyze Pascal walls, doors, stairs, and room zones to auto-populate NEC minimum receptacles (6ft/12ft wall rule, 4ft kitchen countertops on 2x 20A SAB circuits, bathroom/laundry/garage/outdoor WR GFCIs, front-door & stairway outlets/3-way switches/lights), group into balanced panel circuits (with GFCI outlets or GFCI/AFCI breakers), and route home runs plus outlet-to-outlet daisy-chain branch wiring around plumbing, HVAC, and structural obstacles.',
+      runsIn: 'operation',
+      input: {
+        levelId: z.string().optional(),
+        occupancy: z.enum(['residential', 'commercial']).optional(),
+        protectionMode: z
+          .enum(['hybrid', 'gfci-breakers', 'gfci-receptacles'])
+          .default('hybrid'),
+        racewayType: z.enum(['nm-b', 'mc', 'emt', 'pvc-40', 'rmc']).optional(),
+        preferredChaseY: z.number().min(0.4).max(6).default(2.55),
+        includeLighting: z.boolean().default(true),
+        includeWiring: z.boolean().default(true),
+      },
+      annotations: { destructiveHint: false, idempotentHint: false },
+    },
   ],
 }

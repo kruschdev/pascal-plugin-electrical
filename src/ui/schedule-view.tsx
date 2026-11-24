@@ -35,6 +35,9 @@ export default function ElectricalScheduleView() {
 
   const [copiedCsv, setCopiedCsv] = useState(false)
   const [copiedBomCsv, setCopiedBomCsv] = useState(false)
+  const [laborRateUsd, setLaborRateUsd] = useState(115)
+  const [materialMarkupPct, setMaterialMarkupPct] = useState(0)
+  const [salesTaxPct, setSalesTaxPct] = useState(0)
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const bomCopyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const record = nodes as unknown as Readonly<Record<string, SceneNodeLike>>
@@ -78,7 +81,16 @@ export default function ElectricalScheduleView() {
     [record, occupancy, residentialMethod, commercialBuildingType],
   )
   const audit = useMemo(() => auditSceneElectrical(record), [record])
-  const takeoff = useMemo(() => buildElectricalTakeoff(record), [record])
+  const takeoff = useMemo(
+    () =>
+      buildElectricalTakeoff(record, {
+        laborRatePerHourUsd: laborRateUsd,
+        materialMarkupPct,
+      }),
+    [record, laborRateUsd, materialMarkupPct],
+  )
+  const salesTaxUsd = Math.round(takeoff.pricing.materialSubtotalUsd * (salesTaxPct / 100) * 100) / 100
+  const grandTotalWithTaxUsd = Math.round((takeoff.pricing.estimatedTotalUsd + salesTaxUsd) * 100) / 100
 
   const copyCsv = async () => {
     if (!schedule || typeof navigator === 'undefined' || !navigator.clipboard) return
@@ -383,11 +395,56 @@ export default function ElectricalScheduleView() {
       {/* TAB 4: Takeoff & Cost Estimate */}
       {activeTab === 'takeoff' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* Live Editable Contractor Pricing Calculator Controls */}
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', fontSize: 11 }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              Labor ($/hr):
+              <input
+                type="number"
+                min={0}
+                max={500}
+                step={5}
+                value={laborRateUsd}
+                onChange={(e) => setLaborRateUsd(Math.max(0, Number(e.target.value) || 0))}
+                style={{ ...selectStyle, width: 72 }}
+              />
+            </label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              Markup (%):
+              <input
+                type="number"
+                min={0}
+                max={200}
+                step={1}
+                value={materialMarkupPct}
+                onChange={(e) => setMaterialMarkupPct(Math.max(0, Number(e.target.value) || 0))}
+                style={{ ...selectStyle, width: 64 }}
+              />
+            </label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              Material Tax (%):
+              <input
+                type="number"
+                min={0}
+                max={25}
+                step={0.25}
+                value={salesTaxPct}
+                onChange={(e) => setSalesTaxPct(Math.max(0, Number(e.target.value) || 0))}
+                style={{ ...selectStyle, width: 64 }}
+              />
+            </label>
+          </div>
+
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12 }}>
               <span>
                 Materials: <strong>${takeoff.pricing.materialSubtotalUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong>
               </span>
+              {salesTaxPct > 0 && (
+                <span>
+                  Tax ({salesTaxPct}%): <strong>${salesTaxUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong>
+                </span>
+              )}
               <span>
                 Est. Labor ({takeoff.pricing.laborHoursTotal} hrs @ ${takeoff.pricing.laborRatePerHourUsd}/hr):{' '}
                 <strong>${takeoff.pricing.laborSubtotalUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}</strong>
@@ -395,7 +452,7 @@ export default function ElectricalScheduleView() {
               <span>
                 Est. Total:{' '}
                 <strong style={{ color: '#34d399' }}>
-                  ${takeoff.pricing.estimatedTotalUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                  ${grandTotalWithTaxUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                 </strong>
               </span>
             </div>

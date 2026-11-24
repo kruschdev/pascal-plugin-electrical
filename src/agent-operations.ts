@@ -8,6 +8,7 @@ import type { AnyNode } from '@pascal-app/core'
 import type { AgentContext, AgentOperations, SceneNodes } from '@pascal-app/core/agent-operations'
 import { refuse } from '@pascal-app/core/agent-tools'
 import { auditSceneElectrical } from './nec/audit'
+import { planNecAutoPopulate, type ProtectionMode } from './nec/autopopulate'
 import { calculateSceneLoad, type SceneNodeLike } from './nec/load-calc'
 import {
   buildElectricalTakeoff,
@@ -503,6 +504,164 @@ export const electricalAgentOperations = {
         takeoff,
         takeoffCsv: formatElectricalBomCsv(takeoff.pricing),
       },
+    }
+  },
+
+  electrical_autopopulate_nec: (
+    nodes: SceneNodes,
+    input: {
+      levelId?: string
+      occupancy?: OccupancyType
+      protectionMode?: ProtectionMode
+      racewayType?: RacewayType
+      preferredChaseY?: number
+      includeLighting?: boolean
+      includeWiring?: boolean
+    },
+    context: AgentContext,
+  ) => {
+    const parentId = resolveLevelId(nodes, input.levelId, context)
+    const plan = planNecAutoPopulate(asRecord(nodes), {
+      levelId: parentId,
+      occupancy: input.occupancy,
+      protectionMode: input.protectionMode ?? 'hybrid',
+      racewayType: input.racewayType,
+      preferredChaseY: input.preferredChaseY ?? 2.55,
+      includeLighting: input.includeLighting ?? true,
+      includeWiring: input.includeWiring ?? true,
+    })
+
+    const creates: Array<{ node: AnyNode; parentId?: string }> = []
+    const virtualMap: Record<string, AnyNode> = { ...nodes }
+    const idRemap = new Map<string, string>()
+
+    const nextId = (prefix: string): string => {
+      let idx = 1
+      while (virtualMap[`${prefix}_${idx}`]) idx += 1
+      const id = `${prefix}_${idx}`
+      virtualMap[id] = { id } as unknown as AnyNode
+      return id
+    }
+
+    let realPanelId = plan.panelId
+    if (plan.createdPanel) {
+      realPanelId = nextId('elecpanel')
+      idRemap.set(plan.createdPanel.id, realPanelId)
+      const pNode = {
+        object: 'node',
+        id: realPanelId,
+        type: 'electrical:panel',
+        name: plan.createdPanel.name,
+        parentId,
+        visible: true,
+        metadata: { autoPopulated: true },
+        position: plan.createdPanel.position,
+        rotation: plan.createdPanel.rotation,
+        occupancy: plan.createdPanel.occupancy,
+        voltageSystem: plan.createdPanel.voltageSystem,
+        busRatingAmps: plan.createdPanel.busRatingAmps,
+        mainBreakerAmps: plan.createdPanel.mainBreakerAmps,
+        mainType: 'main-breaker',
+        spaces: plan.createdPanel.spaces,
+        nemaRating: 'NEMA-1',
+        condition110_26: 2,
+        solarBackfeedAmps: 0,
+        showClearanceZone: true,
+        coverRemoved: false,
+        width: plan.createdPanel.occupancy === 'commercial' ? 0.51 : 0.38,
+        depth: 0.14,
+        height: plan.createdPanel.occupancy === 'commercial' ? 1.2 : 0.92,
+      } as unknown as AnyNode
+      creates.push({ node: pNode, parentId: parentId ?? undefined })
+    }
+
+    for (const dev of plan.devices) {
+      const realDevId = nextId('elecdev')
+      idRemap.set(dev.tempId, realDevId)
+      const dNode = {
+        object: 'node',
+        id: realDevId,
+        type: 'electrical:device',
+        name: dev.name,
+        parentId,
+        visible: true,
+        metadata: {
+          autoPopulated: true,
+          necRef: dev.necRef,
+          circuitGroup: dev.circuitGroup,
+          isExterior: dev.isExterior === true,
+        },
+        position: dev.position,
+        rotation: dev.rotation,
+        deviceKind: dev.deviceKind,
+        occupancy: dev.occupancy,
+        panelId: realPanelId,
+        circuitNumber: dev.circuitNumber,
+        poles: dev.poles,
+        breakerAmps: dev.breakerAmps,
+        loadVa: dev.loadVa,
+        continuous: dev.continuous,
+        isMotor: false,
+        gfciProtected: dev.gfciProtected,
+        afciProtected: dev.afciProtected,
+        boxType: dev.boxType,
+        wireGauge: dev.wireGauge,
+        conductorCount: dev.conductorCount,
+        clampCount: 1,
+        yokeCount: dev.deviceKind === 'luminaire' ? 0 : 1,
+      } as unknown as AnyNode
+      creates.push({ node: dNode, parentId: parentId ?? undefined })
+    }
+
+    for (const run of plan.runs) {
+      const realRunId = nextId('eleccond')
+      const resolvedTargetId = idRemap.get(run.targetDeviceId) ?? run.targetDeviceId
+      const resolvedFromId = idRemap.get(run.fromNodeId) ?? run.fromNodeId
+      const rNode = {
+        object: 'node',
+        id: realRunId,
+        type: 'electrical:conduit-run',
+        name: run.name,
+        parentId,
+        visible: true,
+        metadata: {
+          autoPopulated: true,
+          runKind: run.runKind,
+          fromNodeId: resolvedFromId,
+          avoidedObstaclesCount: run.avoidedObstaclesCount,
+        },
+        path: run.path,
+        occupancy: run.occupancy,
+        racewayType: run.racewayType,
+        tradeSize: run.tradeSize,
+        conductorMaterial: 'cu',
+        insulationRating: '90C',
+        wireGauge: run.wireGauge,
+        currentCarryingCount: run.currentCarryingCount,
+        totalConductorCount: run.totalConductorCount,
+        ambientTempC: 30,
+        rooftopExposed: false,
+        inPlenum: false,
+        panelId: realPanelId,
+        targetDeviceId: resolvedTargetId,
+        circuitNumber: run.circuitNumber,
+        loadAmps: run.loadAmps,
+        continuous: run.continuous,
+        voltage: run.voltage,
+        phases: run.phases,
+      } as unknown as AnyNode
+      creates.push({ node: rNode, parentId: parentId ?? undefined })
+    }
+
+    return {
+      result: {
+        panelId: realPanelId,
+        levelId: parentId,
+        protectionMode: input.protectionMode ?? 'hybrid',
+        ...plan.summary,
+        circuits: plan.circuitSummary,
+      },
+      changes: creates.length > 0 ? { create: creates } : undefined,
     }
   },
 } satisfies AgentOperations

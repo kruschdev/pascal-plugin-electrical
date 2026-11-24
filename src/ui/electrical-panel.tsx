@@ -8,6 +8,7 @@ import { openEditorView, useScene, useViewer } from '@pascal-app/editor'
 import { useMemo, useState } from 'react'
 import { electricalAgentOperations } from '../agent-operations'
 import { auditSceneElectrical } from '../nec/audit'
+import type { ProtectionMode } from '../nec/autopopulate'
 import type { SceneNodeLike } from '../nec/load-calc'
 import { findNextFreePanelCircuit } from '../nec/panel-schedule'
 import { extractTradeObstacles, routeElectricalRun, type Vec3 } from '../nec/routing'
@@ -29,6 +30,7 @@ export default function ElectricalRailPanel() {
   const updateNode = useScene((s) => s.updateNode)
   const selectedLevelId = useViewer((s) => s.selection.levelId)
   const { occupancy, setOccupancy, setActiveTab, setSelectedPanelId } = useElectricalUi()
+  const [protectionMode, setProtectionMode] = useState<ProtectionMode>('hybrid')
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
 
   const record = nodes as unknown as Readonly<Record<string, SceneNodeLike>>
@@ -141,6 +143,38 @@ export default function ElectricalRailPanel() {
       createNode(created.node, created.parentId as never)
       setStatusMsg(`Placed ${deviceKind} on CKT-${outcome.result.circuitNumber}.`)
     }
+  }
+
+  const autoPopulateNec = () => {
+    const levelId = activeLevelOf(nodes, selectedLevelId)
+    if (!levelId) {
+      setStatusMsg('Create a building level with walls/rooms first before auto-populating NEC electrical.')
+      return
+    }
+    const outcome = electricalAgentOperations.electrical_autopopulate_nec(
+      nodes,
+      {
+        levelId,
+        occupancy,
+        protectionMode,
+        includeLighting: true,
+        includeWiring: true,
+      },
+      { activeLevelId: levelId },
+    )
+    const created = outcome.changes?.create ?? []
+    if (created.length === 0) {
+      setStatusMsg('No additional NEC minimum outlets or circuits needed for the current walls/zones.')
+      return
+    }
+    runAsSingleSceneHistoryStep(useScene, () => {
+      for (const item of created) {
+        createNode(item.node, item.parentId as never)
+      }
+    })
+    setStatusMsg(
+      `NEC Auto-Populated ${outcome.result.devicesPlanned} devices across ${outcome.result.circuitsCreated} circuits (${outcome.result.homeRunsPlanned} home runs + ${outcome.result.daisyChainRunsPlanned} outlet-to-outlet runs).`,
+    )
   }
 
   const autoRouteAll = () => {
@@ -316,6 +350,52 @@ export default function ElectricalRailPanel() {
             Inspect Panel Wiring (3D Cover Off)
           </button>
         </div>
+      </div>
+
+      {/* One-Click NEC Minimum Auto-Populate (Outlets, GFCIs, Stairway/Door/Outdoor, Circuits, Home Runs & Daisy Chains) */}
+      <div
+        style={{
+          padding: 10,
+          borderRadius: 8,
+          border: '1px solid rgba(245,158,11,0.35)',
+          background: 'rgba(245,158,11,0.06)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 6,
+        }}
+      >
+        <div style={{ fontWeight: 600 }}>NEC Minimum Auto-Populate</div>
+        <div style={{ fontSize: 11, opacity: 0.78, lineHeight: 1.35 }}>
+          Places 6ft/12ft wall outlets, 2x20A kitchen GFCIs, bath/garage/outdoor WR GFCIs, front-door &amp; stairway 3-way lights/outlets, balanced circuits, home runs &amp; daisy-chain runs.
+        </div>
+        <select
+          value={protectionMode}
+          onChange={(e) => setProtectionMode(e.target.value as ProtectionMode)}
+          style={{
+            padding: '5px 7px',
+            borderRadius: 6,
+            background: 'rgba(255,255,255,0.06)',
+            color: 'inherit',
+            border: '1px solid var(--border, rgba(255,255,255,0.18))',
+            fontSize: 11,
+          }}
+        >
+          <option value="hybrid">Hybrid: GFCI Outlets + AFCI Breakers</option>
+          <option value="gfci-breakers">Panel Breakers: GFCI / AFCI Breakers</option>
+          <option value="gfci-receptacles">Point-of-Use: GFCI Outlets Everywhere</option>
+        </select>
+        <button
+          type="button"
+          onClick={autoPopulateNec}
+          style={{
+            ...btnStyle,
+            background: 'rgba(245,158,11,0.22)',
+            borderColor: 'rgba(245,158,11,0.55)',
+            fontWeight: 600,
+          }}
+        >
+          Auto-Populate NEC Layout &amp; Wiring
+        </button>
       </div>
 
       {/* Trade-Priority Routing Action */}
