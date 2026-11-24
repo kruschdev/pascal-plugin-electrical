@@ -7,7 +7,7 @@ Ready-to-share video, high-resolution screenshots, 3D CAD contact sheet, OpenGra
 | Asset | Resolution / Format | Best Use |
 |---|---|---|
 | [`assets/social-preview.png`](../assets/social-preview.png) | `1280 x 640` PNG | GitHub Social Preview, OpenGraph card, LinkedIn/X link banner |
-| [`assets/demo-walkthrough.mp4`](../assets/demo-walkthrough.mp4) | `1280 x 720` H.264 MP4 (`+faststart`) | X video post, LinkedIn native video, YouTube, GitHub Release |
+| [`assets/demo-walkthrough.mp4`](../assets/demo-walkthrough.mp4) | `1280 x 720` H.264 MP4 (`59.7s`, narrated AAC + `+faststart`) | X video post, LinkedIn native video, YouTube, GitHub Release |
 | [`assets/demo-walkthrough.gif`](../assets/demo-walkthrough.gif) | `640px` palette-optimized GIF | README preview, Reddit, Discord, Slack |
 | [`assets/demo-3d-trade-routing.png`](../assets/demo-3d-trade-routing.png) | `1440 x 810` PNG | Live Pascal Editor Low Walls view showing concealed in-wall Manhattan routing & Catalog Equipment rail |
 | [`assets/demo-panel-wired-interior.png`](../assets/demo-panel-wired-interior.png) | `1920 x 760` PNG | 4-panel 3D Panel Interior showcase (Cover Off, Zoom Breakers & Lugs, Panel Cover On, 400A 3-Phase) |

@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # Synthesizes studio voiceover for assets/demo-walkthrough.mp4 using Gemini 3.8 Flash TTS
-# (`gemini-api tts`) and muxes it cleanly into assets/demo-walkthrough-narrated.mp4.
+# (`gemini-api tts`) and proportionally syncs + muxes broadcast-normalized AAC audio cleanly
+# into assets/demo-walkthrough-narrated.mp4.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VOICE="${VOICE:-Charon}"
 MODEL="${MODEL:-gemini-3.8-flash-tts}"
 DRY_RUN=0
+REUSE_WAV=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --voice) VOICE="$2"; shift 2 ;;
     --model) MODEL="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --reuse-wav) REUSE_WAV=1; shift ;;
     *) echo "Unknown flag: $1" >&2; exit 1 ;;
   esac
 done
@@ -33,7 +36,7 @@ fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "Dry-run preview (zero API cost):"
-  gemini-api tts -f "$SCRIPT_TMP" -m "$MODEL" --voice "$VOICE" --out "$OUT_WAV" --dry-run --output-format json
+  gemini-api tts -f "$SCRIPT_TMP" -m "$MODEL" --voice "$VOICE" --language en-US --out "$OUT_WAV" --dry-run --output-format json
   exit 0
 fi
 
@@ -42,19 +45,33 @@ if [[ ! -f "$IN_MP4" ]]; then
   exit 1
 fi
 
-echo "Synthesizing narration via $MODEL (voice=$VOICE)..."
-WAV_PATH="$(gemini-api tts -f "$SCRIPT_TMP" -m "$MODEL" --voice "$VOICE" --out "$OUT_WAV")"
-echo "Generated voiceover WAV: $WAV_PATH"
+if [[ "$REUSE_WAV" == "1" && -f "$OUT_WAV" ]]; then
+  WAV_PATH="$OUT_WAV"
+  echo "Reusing existing voiceover WAV: $WAV_PATH"
+else
+  echo "Synthesizing narration via $MODEL (voice=$VOICE)..."
+  WAV_PATH="$(gemini-api tts -f "$SCRIPT_TMP" -m "$MODEL" --voice "$VOICE" --language en-US --out "$OUT_WAV")"
+  echo "Generated voiceover WAV: $WAV_PATH"
+fi
 
-echo "Muxing voiceover into $OUT_MP4..."
+VID_DUR="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$IN_MP4")"
+AUD_DUR="$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$WAV_PATH")"
+echo "Video duration: ${VID_DUR}s | Audio duration: ${AUD_DUR}s"
+
+# Proportionally align video pacing to voiceover length (with +0.4s clean outro hold)
+TARGET_DUR="$(python3 -c "v=float('$VID_DUR'); a=float('$AUD_DUR'); print(f'{max(v, a + 0.4):.2f}')")"
+PTS_SCALE="$(python3 -c "v=float('$VID_DUR'); t=float('$TARGET_DUR'); print(f'{max(1.0, t / v):.4f}')")"
+echo "Muxing proportionally synced video (setpts=${PTS_SCALE}*PTS, dur=${TARGET_DUR}s) + loudnorm AAC audio into $OUT_MP4..."
+
 ffmpeg -y \
   -i "$IN_MP4" \
   -i "$WAV_PATH" \
-  -map 0:v:0 -map 1:a:0 \
-  -c:v copy \
-  -c:a aac -b:a 192k \
+  -filter_complex "[0:v]setpts=${PTS_SCALE}*PTS,fps=24[v];[1:a]loudnorm=I=-16:TP=-1.5:LRA=11[a]" \
+  -map "[v]" -map "[a]" \
+  -c:v libx264 -preset medium -crf 19 -pix_fmt yuv420p \
+  -c:a aac -b:a 192k -ar 48000 \
+  -t "$TARGET_DUR" \
   -movflags +faststart \
-  -shortest \
   "$OUT_MP4"
 
 echo "Ready: $OUT_MP4 ($(du -h "$OUT_MP4" | cut -f1))"
