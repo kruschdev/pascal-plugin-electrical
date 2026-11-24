@@ -3,6 +3,7 @@ import type { AnyNode } from '@pascal-app/core'
 import { electricalAgentOperations } from '../agent-operations'
 import { buildWiredPanelInteriorCad } from '../cad/panel-interior'
 import { auditSceneElectrical } from '../nec/audit'
+import { findNextWallPlacement, planDeviceAutoConnection } from '../nec/autopopulate'
 import type { SceneNodeLike } from '../nec/load-calc'
 import { buildElectricalTakeoff, buildPanelSchedule } from '../nec/panel-schedule'
 
@@ -506,5 +507,158 @@ describe('NEC Minimum Auto-Populate (Outlets, GFCIs, Doors, Stairs, Circuits, Ho
     const audit = auditSceneElectrical(nodes as unknown as Readonly<Record<string, SceneNodeLike>>)
     expect(audit.errorCount).toBe(0)
     expect(audit.warningCount).toBe(0)
+  })
+
+  test('R4-BUG-02/03 & R4-OPT-02 & R4-CON-01: 3rd outlet splice increments anchor box to 6 conductors + upsizes box, tub exclusion + motor floor mount + multi-level isolation + VD sizing + explicit bath circuit isolation', () => {
+    const nodes: Record<string, AnyNode> = {
+      level_0: { id: 'level_0', type: 'level', name: 'Ground Floor', parentId: null, height: 2.5 } as unknown as AnyNode,
+      level_1: { id: 'level_1', type: 'level', name: 'Upper Floor', parentId: null, height: 2.5 } as unknown as AnyNode,
+      wall_n: { id: 'wall_n', type: 'wall', parentId: 'level_0', start: [0, 0], end: [6, 0], thickness: 0.14 } as unknown as AnyNode,
+      wall_e: { id: 'wall_e', type: 'wall', parentId: 'level_0', start: [6, 0], end: [6, 4], thickness: 0.14 } as unknown as AnyNode,
+      wall_s: { id: 'wall_s', type: 'wall', parentId: 'level_0', start: [6, 4], end: [0, 4], thickness: 0.14 } as unknown as AnyNode,
+      wall_w: { id: 'wall_w', type: 'wall', parentId: 'level_0', start: [0, 4], end: [0, 0], thickness: 0.14 } as unknown as AnyNode,
+      wall_mid: { id: 'wall_mid', type: 'wall', parentId: 'level_0', start: [3, 0], end: [3, 4], thickness: 0.14 } as unknown as AnyNode,
+      zone_bed: { id: 'zone_bed', type: 'zone', name: 'Bedroom', parentId: 'level_0', polygon: [[0, 0], [3, 0], [3, 4], [0, 4]] } as unknown as AnyNode,
+      zone_bath: { id: 'zone_bath', type: 'zone', name: 'Bathroom', parentId: 'level_0', polygon: [[3, 0], [6, 0], [6, 4], [3, 4]] } as unknown as AnyNode,
+      tub_1: { id: 'tub_1', type: 'item', name: 'Bathtub', parentId: 'level_0', position: [5.1, 0, 0.5], dimensions: [1.6, 0.6, 0.8] } as unknown as AnyNode,
+      // Upper floor identical wall (to verify level_0 outlets never block level_1 placement)
+      wall_l1_n: { id: 'wall_l1_n', type: 'wall', parentId: 'level_1', start: [0, 0], end: [3, 0], thickness: 0.14 } as unknown as AnyNode,
+      zone_l1_bed: { id: 'zone_l1_bed', type: 'zone', name: 'Upper Bed', parentId: 'level_1', polygon: [[0, 0], [3, 0], [3, 4], [0, 4]] } as unknown as AnyNode,
+    }
+    const ctx = { activeLevelId: 'level_0' }
+    const apply = (out: { changes?: { create?: Array<{ node: AnyNode }>; update?: Array<{ id: string; data: Partial<AnyNode> }> } }) => {
+      for (const c of out.changes?.create ?? []) nodes[c.node.id] = c.node
+      for (const u of out.changes?.update ?? []) {
+        if (nodes[u.id]) nodes[u.id] = { ...nodes[u.id], ...u.data } as AnyNode
+      }
+    }
+
+    const pOut = electricalAgentOperations.electrical_place_panel(
+      nodes,
+      { name: 'MDP-1', position: [0.08, 1.52, 2.0], rotation: Math.PI / 2, occupancy: 'residential' },
+      ctx,
+    )
+    apply(pOut)
+    const panelId = pOut.result.panelId
+
+    // R4-BUG-02: Place 3 outlets where #2 and #3 both splice from #1 (at x=1.5, z=0.08) -> #1 jumps 2 -> 4 -> 6 + upsizes box!
+    const o1 = electricalAgentOperations.electrical_place_device(
+      nodes,
+      { name: 'Bed Center', position: [1.5, 0.38, 0.08], rotation: 0, deviceKind: 'duplex', panelId, breakerAmps: 20 },
+      ctx,
+    )
+    apply(o1)
+    const o2 = electricalAgentOperations.electrical_place_device(
+      nodes,
+      { name: 'Bed Left', position: [0.7, 0.38, 0.08], rotation: 0, deviceKind: 'duplex', panelId, breakerAmps: 20 },
+      ctx,
+    )
+    apply(o2)
+    expect((nodes[o1.result.deviceId] as unknown as SceneNodeLike).conductorCount).toBe(4)
+
+    const o3 = electricalAgentOperations.electrical_place_device(
+      nodes,
+      { name: 'Bed Right', position: [2.3, 0.38, 0.08], rotation: 0, deviceKind: 'duplex', panelId, breakerAmps: 20 },
+      ctx,
+    )
+    apply(o3)
+    expect(o3.result.connectedFromNodeId).toBe(o1.result.deviceId)
+    const o1After = nodes[o1.result.deviceId] as unknown as SceneNodeLike
+    expect(o1After.conductorCount).toBe(6)
+    expect(o1After.boxType).not.toBe('single-gang-standard') // Must auto-upsize past 18 cu in for 6x#12 + yoke + clamp + EGC!
+
+    // R4-BUG-03A: findNextWallPlacement in Bathroom respects NEC 406.9(C) >= 0.96 m clearance from tub_1
+    const bathPlace = findNextWallPlacement(nodes as unknown as Readonly<Record<string, SceneNodeLike>>, 'level_0', {
+      deviceKind: 'gfci',
+      preferredZoneId: 'zone_bath',
+    })
+    const dxTub = bathPlace.position[0] < 4.3 ? 4.3 - bathPlace.position[0] : bathPlace.position[0] > 5.9 ? bathPlace.position[0] - 5.9 : 0
+    const dzTub = bathPlace.position[2] < 0.1 ? 0.1 - bathPlace.position[2] : bathPlace.position[2] > 0.9 ? bathPlace.position[2] - 0.9 : 0
+    expect(Math.hypot(dxTub, dzTub)).toBeGreaterThanOrEqual(0.95)
+
+    // R4-BUG-03B: motor-load places on floor (y = 0), never wall outlet height (0.38)
+    const motorPlace = findNextWallPlacement(nodes as unknown as Readonly<Record<string, SceneNodeLike>>, 'level_0', {
+      deviceKind: 'motor-load',
+    })
+    expect(motorPlace.position[1]).toBe(0)
+
+    // R4-BUG-03C: Level 0 outlets at (0.7/1.5/2.3, 0.38, 0.08) do NOT block Level 1 wall placement!
+    const upperPlace = findNextWallPlacement(nodes as unknown as Readonly<Record<string, SceneNodeLike>>, 'level_1', {
+      deviceKind: 'duplex',
+      preferredZoneId: 'zone_l1_bed',
+    })
+    expect(upperPlace.zoneName).toBe('Upper Bed')
+    expect(upperPlace.position[2]).toBeCloseTo(0.078, 2)
+
+    // R4-CON-01: Place a Bathroom GFCI on its dedicated 20A circuit, then try passing its explicit circuitNumber for a Bedroom outlet -> rejected & isolated!
+    const bathOut = electricalAgentOperations.electrical_place_device(
+      nodes,
+      { name: 'Bath GFCI', position: [...bathPlace.position] as [number, number, number], rotation: bathPlace.rotation, deviceKind: 'gfci', panelId, breakerAmps: 20 },
+      ctx,
+    )
+    apply(bathOut)
+    const bedCross = electricalAgentOperations.electrical_place_device(
+      nodes,
+      {
+        name: 'Bed Isolated',
+        position: [1.5, 0.38, 3.92],
+        rotation: Math.PI,
+        deviceKind: 'duplex',
+        panelId,
+        circuitNumber: bathOut.result.circuitNumber,
+        breakerAmps: 20,
+      },
+      ctx,
+    )
+    expect(bedCross.result.circuitNumber).not.toBe(bathOut.result.circuitNumber)
+
+    // R4-OPT-02: Long daisy-chain hop (~30 m / ~98 ft) at high circuit load upsizes wireGauge for <= 3% VD
+    const longNodes: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level', parentId: null, height: 3.0 },
+      wall_long: { id: 'wall_long', type: 'wall', parentId: 'level_0', start: [0, 0], end: [40, 0], thickness: 0.14 },
+      zone_shop: { id: 'zone_shop', type: 'zone', name: 'Shop', parentId: 'level_0', polygon: [[0, 0], [40, 0], [40, 6], [0, 6]] },
+      panel_shop: { id: 'panel_shop', type: 'electrical:panel', parentId: 'level_0', name: 'LP-1', position: [0.2, 1.52, 0.08], voltageSystem: '120/240V-1P', spaces: 24 },
+      dev_start: {
+        id: 'dev_start',
+        type: 'electrical:device',
+        parentId: 'level_0',
+        name: 'Shop 1',
+        deviceKind: 'duplex',
+        panelId: 'panel_shop',
+        circuitNumber: 1,
+        poles: 1,
+        breakerAmps: 20,
+        loadVa: 1440,
+        wireGauge: '12',
+        conductorCount: 2,
+        position: [2, 0.38, 0.08],
+        rotation: 0,
+      },
+    }
+    const longPlan = planDeviceAutoConnection(
+      longNodes,
+      {
+        id: 'dev_far',
+        name: 'Shop Far',
+        position: [34, 0.38, 0.08],
+        rotation: 0,
+        deviceKind: 'duplex',
+        occupancy: 'residential',
+        panelId: 'panel_shop',
+        poles: 1,
+        breakerAmps: 20,
+        loadVa: 360,
+        continuous: false,
+        gfciProtected: false,
+        afciProtected: false,
+        boxType: 'single-gang-standard',
+        wireGauge: '12',
+        conductorCount: 2,
+      },
+      { levelId: 'level_0' },
+    )
+    expect(longPlan.mode).toBe('joined-existing-run')
+    // ~105 ft one-way at 15A -> #12 is 5.2% VD, #10 is 3.26% (> 3%), so NEC 210.19(A) upsizes to #8 AWG (2.04% <= 3%)!
+    expect(longPlan.wireGauge).toBe('8')
   })
 })

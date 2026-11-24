@@ -22,6 +22,7 @@ import { findNextFreePanelCircuit } from './panel-schedule'
 import {
   extractRoutingWalls,
   extractTradeObstacles,
+  polylineLengthM,
   resolveLevelHeightM,
   routeElectricalRun,
   type Vec3,
@@ -266,6 +267,63 @@ function round3(n: number): number {
   return Math.round(n * 1000) / 1000
 }
 
+function belongsToLevel(
+  nodes: Readonly<Record<string, SceneNodeLike>>,
+  node: SceneNodeLike,
+  levelId: string | null,
+): boolean {
+  if (!levelId) return true
+  let cur: SceneNodeLike | undefined = node
+  const seen = new Set<string>()
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id)
+    if (cur.id === levelId || cur.parentId === levelId) return true
+    cur = cur.parentId ? nodes[cur.parentId] : undefined
+  }
+  return node.parentId == null
+}
+
+type TubBox = { minX: number; maxX: number; minZ: number; maxZ: number }
+
+function extractTubBoxes(
+  nodes: Readonly<Record<string, SceneNodeLike>>,
+  levelId: string | null,
+): TubBox[] {
+  const tubBoxes: TubBox[] = []
+  for (const n of Object.values(nodes)) {
+    if (n.type !== 'item' && n.type !== 'procedural-item') continue
+    if (!belongsToLevel(nodes, n, levelId)) continue
+    const asset = n.asset && typeof n.asset === 'object' ? (n.asset as Record<string, unknown>) : null
+    const txt = [n.name, n.category, asset?.id, asset?.name, asset?.category]
+      .filter((s): s is string => typeof s === 'string')
+      .join(' ')
+      .toLowerCase()
+    if (!/bath.?tub|\btub\b|shower/.test(txt)) continue
+    if (!Array.isArray(n.position) || n.position.length < 3) continue
+    const [px, , pz] = n.position as number[]
+    const dims = Array.isArray(asset?.dimensions)
+      ? (asset.dimensions as number[])
+      : Array.isArray(n.dimensions)
+        ? (n.dimensions as number[])
+        : [1.6, 0.6, 0.8]
+    const hw = (dims[0] ?? 1.6) / 2
+    const hd = (dims[2] ?? 0.8) / 2
+    tubBoxes.push({ minX: px! - hw, maxX: px! + hw, minZ: pz! - hd, maxZ: pz! + hd })
+  }
+  return tubBoxes
+}
+
+function minDistToTubBoxes(tubBoxes: readonly TubBox[], x: number, z: number): number {
+  let best = Number.POSITIVE_INFINITY
+  for (const b of tubBoxes) {
+    const dx = x < b.minX ? b.minX - x : x > b.maxX ? x - b.maxX : 0
+    const dz = z < b.minZ ? b.minZ - z : z > b.maxZ ? z - b.maxZ : 0
+    const d = Math.hypot(dx, dz)
+    if (d < best) best = d
+  }
+  return best
+}
+
 function extractZones(nodes: Readonly<Record<string, SceneNodeLike>>, levelId: string | null): ZoneInfo[] {
   const zones: ZoneInfo[] = []
   for (const n of Object.values(nodes)) {
@@ -411,8 +469,12 @@ export function planNecAutoPopulate(
     options.levelId ??
     all.find((n) => n.type === 'level')?.id ??
     null
-  const existingPanels = all.filter((n) => n.type === 'electrical:panel')
-  const existingDevices = all.filter((n) => n.type === 'electrical:device')
+  const allPanels = all.filter((n) => n.type === 'electrical:panel')
+  const levelPanels = allPanels.filter((n) => belongsToLevel(nodes, n, levelId))
+  const existingPanels = levelPanels.length > 0 ? levelPanels : allPanels
+  const existingDevices = all.filter(
+    (n) => n.type === 'electrical:device' && belongsToLevel(nodes, n, levelId),
+  )
   const occupancy: OccupancyType =
     options.occupancy ??
     (existingPanels[0]?.occupancy === 'commercial' ? 'commercial' : 'residential')
@@ -430,41 +492,13 @@ export function planNecAutoPopulate(
   const walls = extractWalls(nodes, levelId)
   const routingWalls = extractRoutingWalls(nodes, levelId)
   const stairs = all.filter(
-    (n) => n.type === 'stair' && (!levelId || !n.parentId || n.parentId === levelId),
+    (n) => n.type === 'stair' && belongsToLevel(nodes, n, levelId),
   )
   const obstacles = extractTradeObstacles(nodes, levelId)
 
-  // Extract bathtub/shower fixture footprints so auto-populate keeps outlets >= 3 ft (0.95 m) clear (NEC 406.9(C))
-  const tubBoxes: Array<{ minX: number; maxX: number; minZ: number; maxZ: number }> = []
-  for (const n of all) {
-    if (n.type !== 'item' && n.type !== 'procedural-item') continue
-    const asset = n.asset && typeof n.asset === 'object' ? (n.asset as Record<string, unknown>) : null
-    const txt = [n.name, n.category, asset?.id, asset?.name, asset?.category]
-      .filter((s): s is string => typeof s === 'string')
-      .join(' ')
-      .toLowerCase()
-    if (!/bath.?tub|\btub\b|shower/.test(txt)) continue
-    if (!Array.isArray(n.position) || n.position.length < 3) continue
-    const [px, , pz] = n.position as number[]
-    const dims = Array.isArray(asset?.dimensions)
-      ? (asset.dimensions as number[])
-      : Array.isArray(n.dimensions)
-        ? (n.dimensions as number[])
-        : [1.6, 0.6, 0.8]
-    const hw = (dims[0] ?? 1.6) / 2
-    const hd = (dims[2] ?? 0.8) / 2
-    tubBoxes.push({ minX: px! - hw, maxX: px! + hw, minZ: pz! - hd, maxZ: pz! + hd })
-  }
-  const distToNearestTub = (x: number, z: number): number => {
-    let best = Number.POSITIVE_INFINITY
-    for (const b of tubBoxes) {
-      const dx = x < b.minX ? b.minX - x : x > b.maxX ? x - b.maxX : 0
-      const dz = z < b.minZ ? b.minZ - z : z > b.maxZ ? z - b.maxZ : 0
-      const d = Math.hypot(dx, dz)
-      if (d < best) best = d
-    }
-    return best
-  }
+  // Extract bathtub/shower fixture footprints on this level so auto-populate keeps outlets >= 3 ft (0.95 m) clear (NEC 406.9(C))
+  const tubBoxes = extractTubBoxes(nodes, levelId)
+  const distToNearestTub = (x: number, z: number): number => minDistToTubBoxes(tubBoxes, x, z)
 
   // 1. Resolve or plan Panelboard (strictly respecting NEC 240.24(D)/(E) — never inside bathrooms, closets, or outdoors)
   let panelNode: SceneNodeLike | null = existingPanels[0] ?? null
@@ -1724,17 +1758,26 @@ export function findNextWallPlacement(
   const all = Object.values(nodes)
   const walls = extractWalls(nodes, levelId)
   const zones = extractZones(nodes, levelId)
-  const existingDevices = all.filter((n) => n.type === 'electrical:device')
-  const levelHeight = resolveLevelHeightM(nodes, levelId)
+  const tubBoxes = extractTubBoxes(nodes, levelId)
+  const existingDevices = all.filter(
+    (n) => n.type === 'electrical:device' && belongsToLevel(nodes, n, levelId),
+  )
+  const rawLevelHeight = resolveLevelHeightM(nodes, levelId)
+  const safeLevelHeight = Number.isFinite(rawLevelHeight) && rawLevelHeight > 0.5 ? rawLevelHeight : 2.5
   const kind = options.deviceKind ?? 'duplex'
   const mountY =
-    kind === 'junction-box'
-      ? round3(Math.min(2.45, levelHeight - 0.1))
-      : kind === 'evse' || kind === 'gfci'
-        ? 1.12
-        : kind === 'switch-1p' || kind === 'switch-3way'
-          ? 1.22
-          : 0.38
+    kind === 'motor-load'
+      ? 0
+      : kind === 'luminaire'
+        ? round3(Math.max(2.1, safeLevelHeight - 0.04))
+        : kind === 'junction-box'
+          ? round3(Math.max(1.2, Math.min(2.45, safeLevelHeight - 0.1)))
+          : kind === 'evse' || kind === 'gfci'
+            ? 1.12
+            : kind === 'switch-1p' || kind === 'switch-3way'
+              ? 1.22
+              : 0.38
+  const enforceTubClearance = kind !== 'luminaire' && kind !== 'junction-box'
 
   const isOccupied = (pos: Vec3, rot: number): boolean => {
     for (const d of existingDevices) {
@@ -1763,6 +1806,8 @@ export function findNextWallPlacement(
           if (!z || isOutdoorCategory(z.category)) continue
           const wx = round3(cx + wall.nx * sign * faceOff)
           const wz = round3(cz + wall.nz * sign * faceOff)
+          // NEC 406.9(C): Keep receptacles/switches >= 3 ft (0.96 m) clear of bathtub & shower footprints
+          if (enforceTubClearance && minDistToTubBoxes(tubBoxes, wx, wz) < 0.96) continue
           const rot = sign === 1 ? wall.yaw : wall.yaw + Math.PI
           const pos: Vec3 = [wx, mountY, wz]
           if (isOccupied(pos, rot)) continue
@@ -1782,6 +1827,13 @@ export function findNextWallPlacement(
 
   if (best) {
     return { position: best.pos, rotation: best.rot, zoneName: best.zoneName }
+  }
+  for (let step = 0; step < 32; step++) {
+    const idx = existingDevices.length + 1 + step
+    const fallbackPos: Vec3 = [round3(1.5 + idx * 0.6), mountY, 1.5]
+    if (!isOccupied(fallbackPos, 0)) {
+      return { position: fallbackPos, rotation: 0, zoneName: null }
+    }
   }
   const idx = existingDevices.length + 1
   return { position: [round3(1.5 + idx * 0.6), mountY, 1.5], rotation: 0, zoneName: null }
@@ -1885,6 +1937,43 @@ export function planDeviceAutoConnection(
   const isDedicated =
     family === 'dedicated' || draft.poles >= 2 || draft.breakerAmps >= 30
 
+  const isCircuitCompatible = (dCkt: number, peerBreakerHint: number): boolean => {
+    const cktPeers = panelDevices.filter((p) => p.circuitNumber === dCkt)
+    if (cktPeers.length >= 10) return false
+    const cktBreakerAmps = Math.max(
+      peerBreakerHint,
+      ...cktPeers.map((p) => (typeof p.breakerAmps === 'number' ? p.breakerAmps : 15)),
+    )
+    const cktTotalVa = cktPeers.reduce(
+      (sum, p) => sum + (typeof p.loadVa === 'number' ? p.loadVa : 180),
+      0,
+    )
+    if (cktTotalVa + draft.loadVa > cktBreakerAmps * vLN * 0.85) return false
+
+    // NEC 210.11(C)(1)/(3) circuit isolation: never mix bath/kitchen circuits with other rooms
+    const cktHasBath = cktPeers.some((p) => {
+      if (!Array.isArray(p.position)) return false
+      const pz = resolveZoneNearPoint(
+        zones,
+        [Number(p.position[0]), Number(p.position[1]), Number(p.position[2])],
+        typeof p.rotation === 'number' ? p.rotation : 0,
+      )
+      return Boolean(pz && isBathroom(pz.category))
+    })
+    const cktHasKitchen = cktPeers.some((p) => {
+      if (!Array.isArray(p.position)) return false
+      const pz = resolveZoneNearPoint(
+        zones,
+        [Number(p.position[0]), Number(p.position[1]), Number(p.position[2])],
+        typeof p.rotation === 'number' ? p.rotation : 0,
+      )
+      return Boolean(pz && isKitchen(pz.category))
+    })
+    if (cktPeers.length > 0 && targetIsBath !== cktHasBath) return false
+    if (cktPeers.length > 0 && targetIsKitchen !== cktHasKitchen) return false
+    return true
+  }
+
   // Try to join an existing compatible circuit run in the SAME room (or explicitly specified circuitNumber)
   let anchorDevice: SceneNodeLike | null = null
   if (!isDedicated) {
@@ -1896,8 +1985,10 @@ export function planDeviceAutoConnection(
       const dPoles = d.poles === 3 ? 3 : d.poles === 2 ? 2 : 1
       if (dPoles !== 1) continue
 
+      const peerBreakerHint = typeof d.breakerAmps === 'number' ? d.breakerAmps : 15
       if (draft.circuitNumber !== undefined) {
         if (dCkt !== draft.circuitNumber) continue
+        if (!isCircuitCompatible(dCkt, peerBreakerHint)) continue
       } else {
         // Must be in the SAME room zone to join an existing run; a new room triggers a Home Run!
         if (!targetZone) continue
@@ -1910,39 +2001,7 @@ export function planDeviceAutoConnection(
         const dFamily = deviceFamilyOf(String(d.deviceKind ?? 'duplex'))
         if (family !== 'junction' && dFamily !== 'junction' && dFamily !== family) continue
 
-        // NEC 210.11(C)(1)/(3) circuit isolation: never mix bath/kitchen circuits with other rooms
-        const cktPeers = panelDevices.filter((p) => p.circuitNumber === dCkt)
-        if (cktPeers.length >= 10) continue
-        const cktBreakerAmps = Math.max(
-          typeof d.breakerAmps === 'number' ? d.breakerAmps : 15,
-          ...cktPeers.map((p) => (typeof p.breakerAmps === 'number' ? p.breakerAmps : 15)),
-        )
-        const cktTotalVa = cktPeers.reduce(
-          (sum, p) => sum + (typeof p.loadVa === 'number' ? p.loadVa : 180),
-          0,
-        )
-        if (cktTotalVa + draft.loadVa > cktBreakerAmps * vLN * 0.85) continue
-
-        const cktHasBath = cktPeers.some((p) => {
-          if (!Array.isArray(p.position)) return false
-          const pz = resolveZoneNearPoint(
-            zones,
-            [Number(p.position[0]), Number(p.position[1]), Number(p.position[2])],
-            typeof p.rotation === 'number' ? p.rotation : 0,
-          )
-          return Boolean(pz && isBathroom(pz.category))
-        })
-        const cktHasKitchen = cktPeers.some((p) => {
-          if (!Array.isArray(p.position)) return false
-          const pz = resolveZoneNearPoint(
-            zones,
-            [Number(p.position[0]), Number(p.position[1]), Number(p.position[2])],
-            typeof p.rotation === 'number' ? p.rotation : 0,
-          )
-          return Boolean(pz && isKitchen(pz.category))
-        })
-        if (targetIsBath !== cktHasBath) continue
-        if (targetIsKitchen !== cktHasKitchen) continue
+        if (!isCircuitCompatible(dCkt, peerBreakerHint)) continue
       }
 
       const dPos: Vec3 = [Number(d.position[0]), Number(d.position[1]), Number(d.position[2])]
@@ -1961,6 +2020,7 @@ export function planDeviceAutoConnection(
       Number(anchorDevice.position[2]),
     ]
     const ckt = Math.floor(Number(anchorDevice.circuitNumber ?? 1))
+    const cktPeers = panelDevices.filter((p) => p.circuitNumber === ckt)
     const cktBreakerAmps = Math.max(
       typeof anchorDevice.breakerAmps === 'number' ? anchorDevice.breakerAmps : draft.breakerAmps,
       targetIsBath || targetIsKitchen ? 20 : 15,
@@ -1973,12 +2033,39 @@ export function planDeviceAutoConnection(
           : '14'
     ) as WireGauge
     const minAmpGauge: WireGauge = cktBreakerAmps >= 20 ? '12' : '14'
-    const wireGauge = largerGauge(anchorGauge, minAmpGauge)
+    const baseWireGauge = largerGauge(anchorGauge, minAmpGauge)
     const route = routeElectricalRun(anchorPos, draft.position, obstacles, {
       preferredChaseY: effectiveChaseY,
       clearanceM: 0.05,
       walls: routingWalls,
     })
+
+    // Check NEC 210.19(A) branch voltage drop across existing circuit upstream run + new daisy-chain hop
+    const existingCircuitRuns = all.filter(
+      (n) =>
+        n.type === 'electrical:conduit-run' &&
+        n.panelId === panelNode.id &&
+        n.circuitNumber === ckt &&
+        Array.isArray(n.path),
+    )
+    const existingCktLengthFt = existingCircuitRuns.reduce(
+      (sum, r) => sum + polylineLengthM(r.path as Vec3[]) * METERS_TO_FEET,
+      0,
+    )
+    const cktTotalVa =
+      cktPeers.reduce((sum, p) => sum + (typeof p.loadVa === 'number' ? p.loadVa : 180), 0) +
+      draft.loadVa
+    const cktLoadAmps = Math.max(1, Math.round((cktTotalVa / voltage) * 100) / 100)
+    const vdCheck = calculateVoltageDrop({
+      wireGauge: baseWireGauge,
+      material: 'cu',
+      loadAmps: cktLoadAmps,
+      oneWayLengthFt: existingCktLengthFt + route.routedLengthFt,
+      voltage,
+      phases: 1,
+      maxDropPct: 3.0,
+    })
+    const wireGauge = largerGauge(baseWireGauge, vdCheck.recommendedGauge)
 
     const boxFillGauge: BoxFillGauge = (
       ['18', '16', '14', '12', '10', '8', '6'].includes(wireGauge) ? wireGauge : '12'
@@ -1994,27 +2081,24 @@ export function planDeviceAutoConnection(
     })
     if (!newBoxCheck.compliant) newBoxType = newBoxCheck.recommendedBoxType
 
-    // If anchor device was end-of-line (< 4 conductors), bump it to 4 (feed-in + feed-thru) and check NEC 314.16 box fill
-    let anchorDevicePatch: DeviceAutoConnectionPlan['anchorDevicePatch'] = null
-    const prevAnchorCond = typeof anchorDevice.conductorCount === 'number' ? anchorDevice.conductorCount : 4
-    if (prevAnchorCond < 4) {
-      const nextCond = 4
-      let nextAnchorBox = (typeof anchorDevice.boxType === 'string'
-        ? anchorDevice.boxType
-        : 'single-gang-standard') as BoxType
-      const anchorBoxCheck = calculateBoxFill({
-        boxType: nextAnchorBox,
-        conductors: [{ gauge: boxFillGauge, count: nextCond }],
-        deviceYokeCount:
-          anchorDevice.deviceKind === 'junction-box' || anchorDevice.deviceKind === 'luminaire' ? 0 : 1,
-        internalClampCount: typeof anchorDevice.clampCount === 'number' ? anchorDevice.clampCount : 1,
-        equipmentGroundCount: 1,
-      })
-      if (!anchorBoxCheck.compliant) nextAnchorBox = anchorBoxCheck.recommendedBoxType
-      anchorDevicePatch = {
-        id: anchorDevice.id,
-        patch: { conductorCount: nextCond, boxType: nextAnchorBox },
-      }
+    // NEC 314.16: Each newly tapped outgoing branch cable adds +2 current-carrying conductors to the anchor box!
+    const prevAnchorCond = typeof anchorDevice.conductorCount === 'number' ? anchorDevice.conductorCount : 2
+    const nextCond = Math.max(4, prevAnchorCond + 2)
+    let nextAnchorBox = (typeof anchorDevice.boxType === 'string'
+      ? anchorDevice.boxType
+      : 'single-gang-standard') as BoxType
+    const anchorBoxCheck = calculateBoxFill({
+      boxType: nextAnchorBox,
+      conductors: [{ gauge: boxFillGauge, count: nextCond }],
+      deviceYokeCount:
+        anchorDevice.deviceKind === 'junction-box' || anchorDevice.deviceKind === 'luminaire' ? 0 : 1,
+      internalClampCount: typeof anchorDevice.clampCount === 'number' ? anchorDevice.clampCount : 1,
+      equipmentGroundCount: 1,
+    })
+    if (!anchorBoxCheck.compliant) nextAnchorBox = anchorBoxCheck.recommendedBoxType
+    const anchorDevicePatch: DeviceAutoConnectionPlan['anchorDevicePatch'] = {
+      id: anchorDevice.id,
+      patch: { conductorCount: nextCond, boxType: nextAnchorBox },
     }
 
     let tradeSize: ConduitTradeSize = '3/4"'
@@ -2071,10 +2155,12 @@ export function planDeviceAutoConnection(
     draft.breakerAmps,
     targetIsBath || targetIsKitchen || occupancy === 'commercial' ? 20 : 15,
   )
-  const ckt =
-    draft.circuitNumber !== undefined
-      ? draft.circuitNumber
-      : pickPhaseBalancedCircuit(panelNode, panelDevices, draft.poles, draft.loadVa)
+  const explicitCktSafe =
+    draft.circuitNumber !== undefined &&
+    !panelDevices.some((p) => p.circuitNumber === draft.circuitNumber)
+  const ckt = explicitCktSafe
+    ? draft.circuitNumber!
+    : pickPhaseBalancedCircuit(panelNode, panelDevices, draft.poles, draft.loadVa)
 
   const panelPos: Vec3 = Array.isArray(panelNode.position)
     ? [Number(panelNode.position[0]), Number(panelNode.position[1]), Number(panelNode.position[2])]

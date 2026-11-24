@@ -6,7 +6,7 @@
  * drives real clicks and 3D camera orbits across:
  *   1. One-Click NEC Minimum Auto-Populate (6ft/12ft outlets, GFCIs, lights, circuits, home runs & daisy chains)
  *   2. 3D Trade-Priority Routing orbit & zoom (yielding around plumbing pipe & HVAC duct)
- *   3. Cover-Off 3D Panel Interior Wiring View (Full Open Panel, Zoom: Breakers & Lugs, Deadfront toggle, Main & Busbars)
+ *   3. Cover-Off 3D Panel Interior Wiring View (Full Open Panel, Zoom: Breakers & Lugs, Panel Cover On toggle, Main & Busbars)
  *   4. Panelboard Schedule & NEC Article 220 Load Calculation
  *   5. Live Priced BOM Takeoff Calculator (Labor/Markup/Tax) & NEC Compliance Audit
  *

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import type { SceneNodeLike } from '../nec/load-calc'
 import {
   countPathBendDegrees,
   detectRunTradeClashes,
@@ -193,5 +194,40 @@ describe('Trade-Priority Obstacle-Aware Electrical Routing', () => {
       (pt) => pt[0] > 0.5 && pt[0] < 5.5 && pt[2] > 0.4 && pt[2] < 3.6,
     )
     expect(middleInteriorPts).toHaveLength(0)
+  })
+
+  test('R4-BUG-05: In-wall obstacle detours stay inside the wall cavity (never climbing above top plate even if a taller feature wall exists)', () => {
+    const scene: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level', parentId: null, height: 2.5 },
+      wall_n: { id: 'wall_n', type: 'wall', parentId: 'level_0', start: [0, 0], end: [6, 0], height: 2.5, thickness: 0.14 },
+      wall_e: { id: 'wall_e', type: 'wall', parentId: 'level_0', start: [6, 0], end: [6, 4], height: 2.5, thickness: 0.14 },
+      wall_s: { id: 'wall_s', type: 'wall', parentId: 'level_0', start: [6, 4], end: [0, 4], height: 3.6, thickness: 0.14 },
+      wall_w: { id: 'wall_w', type: 'wall', parentId: 'level_0', start: [0, 4], end: [0, 0], height: 2.5, thickness: 0.14 },
+      pipe_top: {
+        id: 'pipe_top',
+        type: 'pipe-segment',
+        parentId: 'level_0',
+        diameter: 4,
+        path: [
+          [3.0, 2.44, -0.5],
+          [3.0, 2.44, 0.5],
+        ],
+      },
+    }
+
+    const walls = extractRoutingWalls(scene, 'level_0')
+    const obstacles = extractTradeObstacles(scene, 'level_0')
+    const route = routeElectricalRun([0.07, 0.38, 1.2], [5.93, 0.38, 1.2], obstacles, {
+      preferredChaseY: 2.55,
+      walls,
+      wallPlacement: 'in-wall',
+    })
+
+    expect(route.remainingClashes).toHaveLength(0)
+    expect(route.avoidedObstacles.some((o) => o.nodeId === 'pipe_top')).toBe(true)
+    // Every single waypoint MUST stay inside the 2.5 m standard wall height (<= 2.46 m), never floating into empty air!
+    for (const pt of route.path) {
+      expect(pt[1]).toBeLessThanOrEqual(2.46)
+    }
   })
 })

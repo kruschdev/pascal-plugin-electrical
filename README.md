@@ -29,7 +29,7 @@ I built this as a standalone external plugin implementing Pascal's full Plugin A
 
 ![Split 3D Viewport, Electrical Rail Panel, and Full-Pane 3-Phase Panelboard Schedule View](./assets/demo-panel-schedule.png)
 
-![30 Clean-Room MIT Electrical CAD Material Models (.glb): Load Centers, Open-Deadfront Panels, Circuit Breakers, Dry-Type Transformers, NEC 314.16 Boxes, Wiring Devices, Residential & Commercial Light Fixtures, and Conduit Fittings](./assets/cad-material-catalog.png)
+![30 Clean-Room MIT Electrical CAD Material Models (.glb): Load Centers, Open-Cover Panels, Circuit Breakers, Dry-Type Transformers, NEC 314.16 Boxes, Wiring Devices, Residential & Commercial Light Fixtures, and Conduit Fittings](./assets/cad-material-catalog.png)
 
 > **Drafting and engineering aid, not stamped engineering.** Always verify calculations, conductor sizing, and local AHJ amendments with a licensed electrical engineer or inspector before construction.
 

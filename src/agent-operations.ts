@@ -230,16 +230,19 @@ export const electricalAgentOperations = {
     const poles: 1 | 2 | 3 = input.poles ?? 1
     const loadVa = input.loadVa ?? 180
     const continuous = input.continuous ?? false
-    const autoWireGauge: WireGauge =
-      initialBreakerAmps >= 50
-        ? '6'
-        : initialBreakerAmps >= 40
-          ? '8'
-          : initialBreakerAmps >= 30
-            ? '10'
-            : initialBreakerAmps <= 15
-              ? '14'
-              : '12'
+    const nominalVoltage = poles === 1 ? 120 : 240
+    const actualLoadAmps =
+      poles === 3 ? loadVa / (nominalVoltage * Math.sqrt(3)) : loadVa / nominalVoltage
+    const autoWireGauge: WireGauge = recommendWireGauge({
+      material: 'cu',
+      insulationRating: '90C',
+      racewayType: occupancy === 'commercial' ? 'emt' : 'nm-b',
+      ambientTempC: 30,
+      currentCarryingCount: poles === 3 ? 3 : 2,
+      loadAmps: Math.max(1, Math.round(Math.max(initialBreakerAmps * 0.8, actualLoadAmps) * 100) / 100),
+      continuousLoad: continuous,
+      breakerAmps: initialBreakerAmps,
+    })
     const autoBoxType = (
       deviceKind === 'junction-box'
         ? '4-sq-2.125'
@@ -403,6 +406,7 @@ export const electricalAgentOperations = {
       wireGauge?: WireGauge
       preferredChaseY?: number
       clearanceM?: number
+      wallPlacement?: 'in-wall' | 'surface'
     },
     context: AgentContext,
   ) => {
@@ -432,6 +436,7 @@ export const electricalAgentOperations = {
       preferredChaseY: input.preferredChaseY ?? defaultChaseY,
       clearanceM: input.clearanceM ?? 0.05,
       walls,
+      wallPlacement: input.wallPlacement ?? 'in-wall',
     })
 
     const occupancy: OccupancyType =

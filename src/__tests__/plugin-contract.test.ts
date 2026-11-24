@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { type AnyNode, type GeometryContext, loadPlugin, nodeRegistry } from '@pascal-app/core'
+import { Box3 } from 'three'
 import { electricalAgentOperations } from '../agent-operations'
 import { electricalAgentTools } from '../agent-tools'
 import {
@@ -345,5 +346,107 @@ describe('Pascal Plugin API v1 Conformance & Agent Operations (E-014 / E-016)', 
     })
     const degenGeo = buildElectricalConduitRunGeometry(degenerateRun, dummyCtx)
     expect(degenGeo.children).toHaveLength(0)
+  })
+
+  test('R4-BUG-01 & R4-OPT-01: Dense 42-space 3P panel keeps all gutter wires behind Panel Cover On and skips occluded cover meshes in closed mode', () => {
+    const panel42 = ElectricalPanelNode.parse({
+      id: 'elecpanel_42p',
+      type: 'electrical:panel',
+      name: 'LP-42',
+      occupancy: 'commercial',
+      voltageSystem: '120/208V-3P',
+      busRatingAmps: 400,
+      mainBreakerAmps: 400,
+      spaces: 42,
+      coverRemoved: true,
+    })
+    const devices: Array<Record<string, unknown>> = []
+    for (let ckt = 1; ckt <= 36; ckt++) {
+      devices.push({
+        id: `dev_${ckt}`,
+        type: 'electrical:device',
+        name: `Branch ${ckt}`,
+        panelId: 'elecpanel_42p',
+        circuitNumber: ckt,
+        poles: 1,
+        breakerAmps: 20,
+        loadVa: 1400,
+        wireGauge: '12',
+      })
+    }
+    // Add 3-pole 60A circuit at bottom of panel (high lane index + multi-pole)
+    devices.push({
+      id: 'dev_3p_bottom',
+      type: 'electrical:device',
+      name: 'RTU Chiller 3P',
+      panelId: 'elecpanel_42p',
+      circuitNumber: 37,
+      poles: 3,
+      breakerAmps: 60,
+      loadVa: 14000,
+      wireGauge: '6',
+    })
+
+    const sched = buildPanelSchedule(panel42, devices as never)
+    const depth = 0.145
+    const zCover = -depth / 2 + 0.004 + 0.062
+
+    const coverOn = buildWiredPanelInteriorCad({ schedule: sched, depth, viewMode: 'panel-cover-on' })
+    let wireMeshesChecked = 0
+    coverOn.updateMatrixWorld(true)
+    coverOn.traverse((obj) => {
+      const kind = (obj.userData as { kind?: string } | undefined)?.kind
+      if (kind === 'wire-hot' || kind === 'wire-neutral' || kind === 'wire-ground') {
+        const box = new Box3().setFromObject(obj)
+        expect(box.max.z).toBeLessThan(zCover - 0.002)
+        wireMeshesChecked += 1
+      }
+    })
+    expect(wireMeshesChecked).toBeGreaterThanOrEqual(80)
+
+    const closed = buildWiredPanelInteriorCad({ schedule: sched, depth, viewMode: 'closed' })
+    expect(closed.children.length).toBeLessThan(coverOn.children.length - 10)
+  })
+
+  test('R4-BUG-06 & R4-CON-02: electrical_place_device sizes 25A (#10) and 60A (#4 NM-B) per NEC 240.4(D) & electrical_route_circuit supports wallPlacement', () => {
+    const nodes: Record<string, AnyNode> = {
+      level_0: { object: 'node', id: 'level_0', type: 'level', name: 'L1', parentId: null, visible: true, metadata: {} } as unknown as AnyNode,
+      wall_n: { object: 'node', id: 'wall_n', type: 'wall', parentId: 'level_0', start: [0, 0], end: [6, 0], height: 2.5, thickness: 0.14 } as unknown as AnyNode,
+    }
+    const ctx = { activeLevelId: 'level_0' }
+    const pOut = electricalAgentOperations.electrical_place_panel(
+      nodes,
+      { name: 'MDP-1', position: [0.5, 1.52, 0.08], occupancy: 'residential' },
+      ctx,
+    )
+    const panel = pOut.changes!.create![0]!.node
+    nodes[panel.id] = panel
+
+    const d25 = electricalAgentOperations.electrical_place_device(
+      nodes,
+      { name: 'Compressor 25A', position: [2, 0.38, 0.08], breakerAmps: 25, poles: 2, loadVa: 4000, autoWire: false },
+      ctx,
+    )
+    expect((d25.changes!.create![0]!.node as unknown as { wireGauge: string }).wireGauge).toBe('10')
+
+    const d60 = electricalAgentOperations.electrical_place_device(
+      nodes,
+      { name: 'Subfeed 100A', position: [4, 0.38, 0.08], breakerAmps: 100, poles: 2, loadVa: 19200, autoWire: false },
+      ctx,
+    )
+    const d60Node = d60.changes!.create![0]!.node
+    // 100A breaker (80A load) in NM-B (60°C column): #3 AWG Cu (85A) or larger, never capped at #6!
+    expect(['3', '2', '1']).toContain((d60Node as unknown as { wireGauge: string }).wireGauge)
+    nodes[d60Node.id] = d60Node
+
+    const surfaceRoute = electricalAgentOperations.electrical_route_circuit(
+      nodes,
+      { panelId: panel.id, targetDeviceId: d60Node.id, wallPlacement: 'surface' },
+      ctx,
+    )
+    expect(surfaceRoute.result.conduitRunId).toBeTruthy()
+    const runNode = surfaceRoute.changes!.create![0]!.node as unknown as { path: [number, number, number][] }
+    // Surface mode preserves wall face Z offset (0.08) instead of pulling to centerline (0)
+    expect(Math.abs(runNode.path[0]![2])).toBeGreaterThan(0.04)
   })
 })

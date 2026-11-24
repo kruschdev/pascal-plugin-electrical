@@ -22,7 +22,7 @@ const gfciMesh = buildElectricalCadPart('device-gfci-20a')
 const openPanel = buildWiredPanelInteriorCad({
   schedule: buildPanelSchedule(panelNode, deviceNodes, conduitRuns),
   nemaRating: 'NEMA-1',
-  viewMode: 'cover-off', // 'cover-off' | 'deadfront' | 'closed'
+  viewMode: 'cover-off', // 'cover-off' | 'panel-cover-on' | 'closed'
 })
 ```
 

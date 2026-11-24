@@ -150,6 +150,7 @@ export const electricalAgentTools: PluginAgentTools = {
           .optional(),
         preferredChaseY: z.number().min(0.2).max(6).default(2.55),
         clearanceM: z.number().min(0.02).max(0.5).default(0.05),
+        wallPlacement: z.enum(['in-wall', 'surface']).default('in-wall'),
       },
       annotations: { destructiveHint: false, idempotentHint: false },
     },

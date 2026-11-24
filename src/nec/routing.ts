@@ -1163,14 +1163,20 @@ export function routeElectricalRun(
 ): ElectricalRouteResult {
   const walls = options.walls && options.walls.length > 0 ? options.walls : null
   const wallPlacement = options.wallPlacement ?? 'in-wall'
-  const maxWallH = walls ? Math.max(...walls.map((w) => w.height)) : 0
+  const fullHeightWalls = walls ? walls.filter((w) => w.height >= 1.8) : []
+  const wallCeilingH =
+    fullHeightWalls.length > 0
+      ? Math.min(...fullHeightWalls.map((w) => w.height))
+      : walls && walls.length > 0
+        ? Math.max(...walls.map((w) => w.height))
+        : 0
   const rawPreferredChaseY = options.preferredChaseY ?? 2.55
   const preferredChaseY =
-    walls && maxWallH > 0
+    walls && wallCeilingH > 0
       ? round3(
           Math.min(
             rawPreferredChaseY,
-            wallPlacement === 'in-wall' ? maxWallH - 0.06 : maxWallH + 0.012,
+            wallPlacement === 'in-wall' ? wallCeilingH - 0.06 : wallCeilingH + 0.012,
           ),
         )
       : rawPreferredChaseY
@@ -1178,6 +1184,10 @@ export function routeElectricalRun(
   const conduitRadiusM = options.conduitRadiusM ?? 0.015
   const minY = options.minY ?? 0.15
   const maxY = options.maxY ?? 3.2
+  const inWallMaxY =
+    walls && wallCeilingH > 0 && wallPlacement === 'in-wall'
+      ? round3(Math.min(maxY, wallCeilingH - 0.04))
+      : maxY
   const maxBendDegrees = options.maxBendDegrees ?? 360
 
   // Baseline route (wall-guided Manhattan when building walls are supplied, else open Manhattan)
@@ -1191,15 +1201,23 @@ export function routeElectricalRun(
   const directLengthM = polylineLengthM(baseline)
   const baselineClashes = detectRunTradeClashes(baseline, obstacles, clearanceM, conduitRadiusM)
 
-  // Candidate chase elevations stay in the overhead ceiling/top-plate zone
-  // (never dropping mid-room across doorways or walkways), preferring the exact chase Y
-  // before stepping slightly above or below pipes/ducts.
-  const candidateElevations = [
-    preferredChaseY,
-    Math.min(maxY, preferredChaseY + 0.25),
-    Math.min(maxY, preferredChaseY + 0.45),
-    Math.max(Math.min(preferredChaseY, 2.2), preferredChaseY - 0.25),
-  ]
+  // Candidate chase elevations stay in the overhead ceiling/top-plate zone.
+  // In concealed ('in-wall') mode, NEVER climb above the wall top plate into empty air; duck inside the stud cavity instead.
+  const rawCandidateElevations =
+    walls && wallCeilingH > 0 && wallPlacement === 'in-wall'
+      ? [
+          preferredChaseY,
+          Math.min(inWallMaxY, round3(preferredChaseY + 0.02)),
+          Math.max(minY, round3(preferredChaseY - 0.16)),
+          Math.max(minY, round3(preferredChaseY - 0.34)),
+        ]
+      : [
+          preferredChaseY,
+          Math.min(maxY, preferredChaseY + 0.25),
+          Math.min(maxY, preferredChaseY + 0.45),
+          Math.max(Math.min(preferredChaseY, 2.2), preferredChaseY - 0.25),
+        ]
+  const candidateElevations = Array.from(new Set(rawCandidateElevations))
 
   let bestPath: Vec3[] = baseline
   let bestScore = Number.POSITIVE_INFINITY
@@ -1256,7 +1274,7 @@ export function routeElectricalRun(
     const segB = currentPath[segIdx + 1]!
     const margin = Math.max(obs.requiredClearanceM, clearanceM) + conduitRadiusM
     const expanded = expandAabb(obs.box, margin)
-    const detours = buildSegmentDetours(segA, segB, expanded, minY, maxY)
+    const detours = buildSegmentDetours(segA, segB, expanded, minY, inWallMaxY)
 
     let improved = false
     let localBest = currentPath

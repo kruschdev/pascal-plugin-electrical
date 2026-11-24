@@ -11,6 +11,7 @@ import { auditSceneElectrical } from '../nec/audit'
 import { findNextWallPlacement, type ProtectionMode } from '../nec/autopopulate'
 import type { SceneNodeLike } from '../nec/load-calc'
 import {
+  detectRunTradeClashes,
   extractRoutingWalls,
   extractTradeObstacles,
   resolveLevelHeightM,
@@ -29,6 +30,34 @@ function activeLevelOf(nodes: Readonly<Record<string, AnyNode>>, selectedLevelId
   return null
 }
 
+function belongsToLevel(
+  record: Readonly<Record<string, SceneNodeLike>>,
+  node: SceneNodeLike,
+  levelId: string | null,
+): boolean {
+  if (!levelId) return true
+  let cur: SceneNodeLike | undefined = node
+  const seen = new Set<string>()
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id)
+    if (cur.id === levelId || cur.parentId === levelId) return true
+    cur = cur.parentId ? record[cur.parentId] : undefined
+  }
+  return node.parentId == null
+}
+
+function pathsNearlyEqual(a: readonly Vec3[], b: readonly Vec3[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const p = a[i]!
+    const q = b[i]!
+    if (Math.abs(p[0] - q[0]) > 0.005 || Math.abs(p[1] - q[1]) > 0.005 || Math.abs(p[2] - q[2]) > 0.005) {
+      return false
+    }
+  }
+  return true
+}
+
 export default function ElectricalRailPanel() {
   const nodes = useScene((s) => s.nodes)
   const createNode = useScene((s) => s.createNode)
@@ -44,8 +73,12 @@ export default function ElectricalRailPanel() {
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
 
   const record = nodes as unknown as Readonly<Record<string, SceneNodeLike>>
+  const activeLevelId = useMemo(() => activeLevelOf(nodes, selectedLevelId), [nodes, selectedLevelId])
   const audit = useMemo(() => auditSceneElectrical(record), [record])
-  const obstacles = useMemo(() => extractTradeObstacles(record), [record])
+  const obstacles = useMemo(
+    () => extractTradeObstacles(record, activeLevelId),
+    [record, activeLevelId],
+  )
 
   const panels = useMemo(
     () => Object.values(record).filter((n) => n.type === 'electrical:panel'),
@@ -229,27 +262,43 @@ export default function ElectricalRailPanel() {
     let skippedCount = 0
 
     runAsSingleSceneHistoryStep(useScene, () => {
+      const levelObstacles = extractTradeObstacles(record, levelId)
       const walls = extractRoutingWalls(record, levelId)
       const levelHeight = resolveLevelHeightM(record, levelId)
       const defaultChaseY = Math.round(Math.min(2.55, levelHeight - 0.06) * 1000) / 1000
-      // 1. Reroute any existing clashing runs around higher-priority trades (strictly following walls)
-      for (const run of runs) {
+      const levelRuns = runs.filter((r) => belongsToLevel(record, r, levelId))
+      const levelDevices = devices.filter((d) => belongsToLevel(record, d, levelId))
+      // 1. Reroute existing runs on this level only when they clash or improve onto walls
+      for (const run of levelRuns) {
         const path = Array.isArray(run.path) ? (run.path as Vec3[]) : []
         if (path.length < 2) continue
-        const res = routeElectricalRun(path[0]!, path[path.length - 1]!, obstacles, {
+        const existingClashes = detectRunTradeClashes(path, levelObstacles)
+        const res = routeElectricalRun(path[0]!, path[path.length - 1]!, levelObstacles, {
           preferredChaseY: defaultChaseY,
           walls,
         })
-        if (res.avoidedObstacles.length > 0 || res.remainingClashes.length === 0) {
-          updateNode(run.id as never, { path: res.path } as Partial<AnyNode>)
+        const pathChanged = !pathsNearlyEqual(path, res.path)
+        const improvesClashes = existingClashes.length > 0 && res.remainingClashes.length < existingClashes.length
+        if ((improvesClashes || (pathChanged && res.remainingClashes.length <= existingClashes.length))) {
+          const prevMeta =
+            run.metadata && typeof run.metadata === 'object'
+              ? (run.metadata as Record<string, unknown>)
+              : {}
+          updateNode(run.id as never, {
+            path: res.path,
+            metadata: {
+              ...prevMeta,
+              avoidedObstaclesCount: res.avoidedObstacles.length,
+            },
+          } as Partial<AnyNode>)
           avoidedCount += res.avoidedObstacles.length
           routedCount += 1
         }
       }
 
-      // 2. Route any devices attached to a panel that don't have a run yet
+      // 2. Route any devices on this level attached to a panel that don't have a run yet
       const routedDevices = new Set(runs.map((r) => r.targetDeviceId).filter(Boolean))
-      for (const dev of devices) {
+      for (const dev of levelDevices) {
         if (routedDevices.has(dev.id)) continue
         const pid = (typeof dev.panelId === 'string' && dev.panelId) || primaryPanel.id
         try {

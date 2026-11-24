@@ -530,12 +530,17 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
     }
 
     // Gutter lane index for clean, non-overlapping electrician bundle routing
+    // Compact Z layering + hard clamp strictly behind zCover (zBack + 0.062) so even a full
+    // 42-space 3-phase panel never pokes through Panel Cover On or Cover Closed!
+    const zCoverPlane = zBack + 0.062
     const lane = side === -1 ? leftWireLane++ : rightWireLane++
-    const laneOffsetX = (lane % 4) * 0.0075
-    const laneOffsetZ = Math.floor(lane / 4) * 0.0065
-    const xGutterHot = side * (w * 0.345 + laneOffsetX)
-    const xEntry = side * (lane % 2 === 0 ? w * 0.37 : w * 0.27)
+    const laneOffsetX = (lane % 5) * 0.0052
+    const laneOffsetZ = (Math.floor(lane / 5) % 3) * 0.0038
     const wireR = wireRadiusForGauge(slot.wireGauge)
+    const maxGutterX = w / 2 - wall - wireR - 0.004
+    const maxGutterZ = zCoverPlane - 0.005 - wireR
+    const xGutterHot = side * Math.min(maxGutterX, w * 0.34 + laneOffsetX)
+    const xEntry = side * (lane % 2 === 0 ? w * 0.37 : w * 0.27)
 
     // Route Hot Conductor(s) from top knockout -> side gutter -> 90° bend -> exact breaker terminal(s)
     if (showHots) {
@@ -544,8 +549,8 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
         const rowPhase = schedule.rows[rowIdx + p]?.phaseLabel ?? 'L1'
         const ph = phaseWireHex(schedule.voltageSystem, rowPhase)
         const hotMat = getWireMat(ph.hex, isHighlighted)
-        const zHot = zBack + 0.042 + laneOffsetZ + p * 0.0045
-        const xPoleGutter = xGutterHot + side * p * 0.0055
+        const zHot = Math.min(maxGutterZ, zBack + 0.038 + laneOffsetZ + p * 0.0036)
+        const xPoleGutter = side * Math.min(maxGutterX, Math.abs(xGutterHot) + p * 0.0045)
 
         const hotPts = [
           new Vector3(xEntry, h / 2 - 0.004, zHot),
@@ -644,9 +649,26 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
   }
 
   // 6. Optional Panel Cover (Deadfront) & Hinged Exterior Door Layers
-  const showPanelCover =
-    viewMode === 'panel-cover-on' || viewMode === 'deadfront-on' || viewMode === 'closed'
-  if (showPanelCover) {
+  const isPanelCoverView = viewMode === 'panel-cover-on' || viewMode === 'deadfront-on'
+  const isClosedView = viewMode === 'closed'
+  const coverMat = mats.nemaGray
+
+  // Outer flush trim flange frame around the box rim (visible on Panel Cover On and around the closed door rim)
+  if (isPanelCoverView || isClosedView) {
+    const trimOver = 0.016
+    const trimTop = new Mesh(new BoxGeometry(w + trimOver * 2, 0.022, 0.006), coverMat)
+    trimTop.position.set(0, h / 2 + trimOver / 2 - 0.003, d / 2 + 0.002)
+    const trimBot = new Mesh(new BoxGeometry(w + trimOver * 2, 0.022, 0.006), coverMat)
+    trimBot.position.set(0, -h / 2 - trimOver / 2 + 0.003, d / 2 + 0.002)
+    const trimLeft = new Mesh(new BoxGeometry(0.022, h + trimOver * 2, 0.006), coverMat)
+    trimLeft.position.set(-w / 2 - trimOver / 2 + 0.003, 0, d / 2 + 0.002)
+    const trimRight = new Mesh(new BoxGeometry(0.022, h + trimOver * 2, 0.006), coverMat)
+    trimRight.position.set(w / 2 + trimOver / 2 - 0.003, 0, d / 2 + 0.002)
+    group.add(trimTop, trimBot, trimLeft, trimRight)
+  }
+
+  // Build recessed deadfront panel cover shields & spare filler plates only when visible (skipped when occluded by closed door)
+  if (isPanelCoverView) {
     // Seat the steel panel cover flush with the breaker molded faces (zBack + 0.062) so handles,
     // multi-pole ties, and AFCI/GFCI test buttons protrude cleanly while ALL live busbars,
     // lugs, service feeders, and gutter wiring are 100% shielded behind ANSI-61 gray steel.
@@ -656,9 +678,8 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
     const xCutOut = Math.min(bkrWidth + 0.01, 0.084)
     const bankTopY = busTopY
     const bankBotY = busTopY - visibleRows * rowPitch
-    const coverMat = mats.nemaGray
 
-    // Outer tub-flush front bezel + 4 recessed return flanges bridging zCover -> box rim (d/2)
+    // 4 recessed return flanges bridging zCover -> box rim (d/2)
     const rimDepth = Math.max(0.01, d / 2 - zCover)
     const zRimMid = zCover + rimDepth / 2
     const rimTop = new Mesh(new BoxGeometry(w, 0.014, rimDepth), coverMat)
@@ -670,18 +691,6 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
     const rimRight = new Mesh(new BoxGeometry(0.014, h, rimDepth), coverMat)
     rimRight.position.set(w / 2 - 0.007, 0, zRimMid)
     group.add(rimTop, rimBot, rimLeft, rimRight)
-
-    // Outer flush trim flange frame around the box rim (visible when door is open / Panel Cover On)
-    const trimOver = 0.016
-    const trimTop = new Mesh(new BoxGeometry(w + trimOver * 2, 0.022, 0.006), coverMat)
-    trimTop.position.set(0, h / 2 + trimOver / 2 - 0.003, d / 2 + 0.002)
-    const trimBot = new Mesh(new BoxGeometry(w + trimOver * 2, 0.022, 0.006), coverMat)
-    trimBot.position.set(0, -h / 2 - trimOver / 2 + 0.003, d / 2 + 0.002)
-    const trimLeft = new Mesh(new BoxGeometry(0.022, h + trimOver * 2, 0.006), coverMat)
-    trimLeft.position.set(-w / 2 - trimOver / 2 + 0.003, 0, d / 2 + 0.002)
-    const trimRight = new Mesh(new BoxGeometry(0.022, h + trimOver * 2, 0.006), coverMat)
-    trimRight.position.set(w / 2 + trimOver / 2 - 0.003, 0, d / 2 + 0.002)
-    group.add(trimTop, trimBot, trimLeft, trimRight)
 
     // 4 stainless cover mounting screws on the panel cover corners
     const screwGeo = new CylinderGeometry(0.005, 0.005, 0.004, 6)
