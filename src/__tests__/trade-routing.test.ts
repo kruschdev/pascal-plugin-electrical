@@ -2,8 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import {
   countPathBendDegrees,
   detectRunTradeClashes,
+  extractRoutingWalls,
   extractTradeObstacles,
   routeElectricalRun,
+  type RoutingWallSegment,
 } from '../nec/routing'
 
 describe('Trade-Priority Obstacle-Aware Electrical Routing', () => {
@@ -127,5 +129,68 @@ describe('Trade-Priority Obstacle-Aware Electrical Routing', () => {
     expect(bends.totalBendDegrees).toBe(450)
     expect(bends.bendCount90).toBe(5)
     expect(bends.pullBoxIndex).not.toBeNull()
+  })
+
+  test('Wall-guided Manhattan routing keeps same-wall outlets horizontal and climbs over doors', () => {
+    const walls: RoutingWallSegment[] = [
+      { id: 'w_south', start: [0, 0], end: [6, 0], thickness: 0.12, height: 2.5, doorSpans: [[2.5, 3.5]] },
+    ]
+
+    // Two outlets on the same wall with NO door between them -> horizontal stud chase at y = 0.38 (zero ceiling drop!)
+    const horiz = routeElectricalRun([0.6, 0.38, 0.07], [2.1, 0.38, 0.07], [], {
+      preferredChaseY: 2.55,
+      walls,
+    })
+    expect(horiz.path.every((pt) => Math.abs(pt[1] - 0.38) < 0.01)).toBe(true)
+    expect(horiz.totalBendDegrees).toBe(0)
+
+    // Two outlets on the same wall with a DOOR between them -> climbs over door header at top plate (2.512 m)
+    const overDoor = routeElectricalRun([1.2, 0.38, 0.07], [4.8, 0.38, 0.07], [], {
+      preferredChaseY: 2.55,
+      walls,
+    })
+    expect(overDoor.path.some((pt) => pt[1] >= 2.4 && pt[1] <= 2.52)).toBe(true)
+    // Every waypoint stays flush on the south wall plane (z ~ 0.07)
+    expect(overDoor.path.every((pt) => Math.abs(pt[2] - 0.07) <= 0.12)).toBe(true)
+  })
+
+  test('Wall-guided Manhattan routing follows wall corners around open rooms and still yields to plumbing', () => {
+    const scene = {
+      level_0: { id: 'level_0', type: 'level', height: 2.5 },
+      w_n: { id: 'w_n', type: 'wall', parentId: 'level_0', start: [0, 0], end: [6, 0], thickness: 0.1 },
+      w_e: { id: 'w_e', type: 'wall', parentId: 'level_0', start: [6, 0], end: [6, 4], thickness: 0.1 },
+      w_s: { id: 'w_s', type: 'wall', parentId: 'level_0', start: [6, 4], end: [0, 4], thickness: 0.1 },
+      w_w: { id: 'w_w', type: 'wall', parentId: 'level_0', start: [0, 4], end: [0, 0], thickness: 0.1 },
+      // Plumbing pipe crossing the north wall top plate at x = 3
+      pipe_1: {
+        id: 'pipe_1',
+        type: 'pipe-segment',
+        parentId: 'level_0',
+        diameter: 4,
+        path: [
+          [3.0, 2.51, -0.8],
+          [3.0, 2.51, 0.8],
+        ],
+      },
+    }
+
+    const walls = extractRoutingWalls(scene, 'level_0')
+    expect(walls).toHaveLength(4)
+    const obstacles = extractTradeObstacles(scene, 'level_0')
+
+    // West wall outlet -> East wall outlet (if naive shortest path, it would cut across z=1.2 middle of room!)
+    const route = routeElectricalRun([0.06, 0.38, 1.2], [5.94, 0.38, 1.2], obstacles, {
+      preferredChaseY: 2.55,
+      walls,
+    })
+
+    expect(route.remainingClashes).toHaveLength(0)
+    expect(route.avoidedObstacles.some((o) => o.nodeId === 'pipe_1')).toBe(true)
+
+    // Verify route follows the north perimeter wall (z ~ 0) rather than cutting across open room interior (z ~ 1.2)
+    const middleInteriorPts = route.path.filter(
+      (pt) => pt[0] > 0.5 && pt[0] < 5.5 && pt[2] > 0.4 && pt[2] < 3.6,
+    )
+    expect(middleInteriorPts).toHaveLength(0)
   })
 })

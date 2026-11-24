@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-amber.svg)](./LICENSE)
 [![Pascal Plugin API v1](https://img.shields.io/badge/Pascal_Plugin_API-v1-38bdf8.svg)](https://github.com/pascalorg/editor)
 [![3D CAD Models](https://img.shields.io/badge/MIT_3D_CAD_Models-30_.glb-10b981.svg)](./docs/CAD-CATALOG.md)
-[![NEC Tests](https://img.shields.io/badge/Tests-36%2F36_Passing-22c55e.svg)](./src/__tests__)
+[![NEC Tests](https://img.shields.io/badge/Tests-40%2F40_Passing-22c55e.svg)](./src/__tests__)
 
 An open-source, MIT-licensed **Residential and Commercial NEC Electrical** plugin for [Pascal Editor](https://github.com/pascalorg/editor).
 
@@ -15,8 +15,8 @@ I built this as a standalone external plugin implementing Pascal's full Plugin A
 
 **[Watch Full 720p HD Walkthrough Video Recorded in Pascal Editor (`assets/demo-walkthrough.mp4`)](./assets/demo-walkthrough.mp4)**
 
-1. **NEC Minimum Auto-Populate**: One click inside Pascal Editor scans the built-in two-bedroom house (walls, exterior doors, and rooms) to place a 200A panelboard (`MDP-1`), 6 ft / 12 ft wall outlets, kitchen GFCIs, bathroom vanity GFCI, front-door entry and outdoor WR GFCIs, room ceiling lights and switches, balanced circuits, Home Runs, and Outlet-to-Outlet Daisy-Chain runs with `0` NEC errors.
-2. **3D Orbit and Trade-Priority Routing**: Zooming inside the live Pascal 3D apartment shows ceiling light drums, blue PVC outlet boxes, and color-coded runs automatically routing clear of the overhead plumbing pipe and HVAC supply trunk.
+1. **NEC Minimum Auto-Populate and Smart Outlet Auto-Wiring**: One click inside Pascal Editor scans the built-in two-bedroom house (walls, T-junctions, doors, and rooms) to place a 200A panelboard (`MDP-1`), flush wall-snapped 6 ft / 12 ft outlets, kitchen GFCIs, bathroom vanity GFCI, front-door entry and outdoor WR GFCIs, door-jamb wall switches, ceiling lights, balanced circuits, Home Runs, and Outlet-to-Outlet Daisy-Chain runs with `0` NEC errors. Adding another outlet in an existing room automatically snaps it to a wall and extends that room's circuit run, while adding an outlet in a new room automatically allocates a balanced circuit and creates a Home Run from the panel.
+2. **Wall-Following 3D Manhattan Routing and Trade Priority**: Zooming inside the live Pascal 3D apartment shows same-wall outlets running horizontally at outlet height, cross-wall runs climbing inside walls and turning 90 degrees strictly along wall top plates (never cutting across open rooms), single perpendicular ceiling branches to flush ceiling lights, and automatic detours around plumbing pipes and HVAC ducts.
 3. **Zoom-In Cover-Off 3D Panel Interior View**: Opens inside Pascal's split-pane `Electrical Schedule` view to show the live open 200A load center with copper busbar stabs, AFCI/GFCI breakers, neutral/ground bars, and every 90-degree-bent conductor landing on its lug, with live *Full Open Panel*, *Zoom: Breakers & Lugs*, and *Deadfront On / Cover Off* toggles.
 4. **Live Panelboard Schedule and NEC 220 Load Calc**: Inspects populated Odd/Even `L1/L2` breaker circuits, wire gauges, phase balance, and Residential Standard / Optional (`220.82`) service load calculations.
 5. **Takeoff and Cost Live Price Calculator plus NEC Audit**: Adjusts live Labor (`$/hr`), Material Markup (`%`), and Material Tax (`%`) right inside Pascal Editor to recalculate BOM totals and CSV exports alongside the live NEC compliance audit.

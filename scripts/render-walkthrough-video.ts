@@ -88,7 +88,12 @@ page.on('pageerror', (e) => console.error('PAGEERROR:', e.message))
 
 console.log(`Opening real Pascal Editor at ${targetUrl}...`)
 await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 })
-await new Promise((r) => setTimeout(r, 12000))
+for (let i = 0; i < 40; i++) {
+  const ready = await page.evaluate(() => document.body.innerText.includes('Bedroom 1'))
+  if (ready) break
+  await new Promise((r) => setTimeout(r, 500))
+}
+await new Promise((r) => setTimeout(r, 2500))
 
 // Dismiss the "Pan / Rotate / Zoom" hint pill if present
 await page.evaluate(() => {
@@ -199,7 +204,34 @@ async function pulseCursor(active: boolean) {
   }, active)
 }
 
-async function captureFrames(count: number, delayMs = 90, saveKeyframeName?: string) {
+async function captureFrames(
+  count: number,
+  delayMs = 90,
+  saveKeyframeName?: string,
+  staticHold = false,
+) {
+  if (staticHold && count > 2) {
+    // Capture 2 live frames so React + WebGL settle, then hold the settled frame cleanly
+    let lastJpeg: Uint8Array | null = null
+    for (let i = 0; i < 2; i++) {
+      lastJpeg = await page.screenshot({ type: 'jpeg', quality: 92 })
+      ffmpeg.stdin.write(lastJpeg)
+      totalFrames += 1
+      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs))
+    }
+    if (lastJpeg) {
+      if (saveKeyframeName) {
+        fs.writeFileSync(path.join(keyframesDir, `${saveKeyframeName}.jpg`), lastJpeg)
+        lastKeyframe += 1
+      }
+      for (let i = 2; i < count; i++) {
+        ffmpeg.stdin.write(lastJpeg)
+        totalFrames += 1
+      }
+    }
+    return
+  }
+
   for (let i = 0; i < count; i++) {
     const jpeg = await page.screenshot({ type: 'jpeg', quality: 92 })
     ffmpeg.stdin.write(jpeg)
@@ -241,12 +273,12 @@ async function smoothClickButton(needle: string, exact = false, holdBefore = 6, 
     return false
   }
   await moveCursor(rect.x, rect.y)
-  await captureFrames(holdBefore, 80)
+  await captureFrames(holdBefore, 80, undefined, true)
   await pulseCursor(true)
   await page.mouse.click(rect.x, rect.y)
   await captureFrames(3, 80)
   await pulseCursor(false)
-  await captureFrames(holdAfter, 90, kf)
+  await captureFrames(holdAfter, 90, kf, true)
   return true
 }
 
@@ -281,22 +313,26 @@ async function dragOrbit(
 // ─── CHAPTER 1: Real Pascal Two-Bedroom Demo + One-Click NEC Auto-Populate ──
 console.log('Recording Chapter 1: NEC Minimum Auto-Populate in Pascal Editor...')
 await setBanner('1 / 5 · Pascal Editor Built-In Two-Bedroom House · Ready for NEC Auto-Populate')
-await captureFrames(18, 90, '01_before_autopop')
+await captureFrames(18, 90, '01_before_autopop', true)
 
-await setBanner('1 / 5 · One-Click NEC Minimum Auto-Populate (Outlets, GFCIs, Lights, Home Runs & Daisy Chains)')
-await smoothClickButton('Auto-Populate NEC Layout', false, 8, 28, '02_after_autopop')
+await setBanner('1 / 5 · One-Click NEC Minimum Auto-Populate (Wall-Snapped Outlets, Switches & Manhattan Runs)')
+await smoothClickButton('Auto-Populate NEC Layout', false, 6, 26, '02_after_autopop')
 
-// ─── CHAPTER 2: Orbit & Zoom Real 3D Pascal House + Trade-Priority Routing ──
+// Demonstrate adding an outlet: snaps flush to wall & joins existing room circuit run automatically!
+await setBanner('1 / 5 · Add Outlet -> Snaps to Wall & Auto-Joins Existing Room Circuit Run')
+await smoothClickButton('+ Receptacle', true, 5, 18, '02b_add_outlet')
+
+// ─── CHAPTER 2: Orbit & Zoom Real 3D Pascal House + Wall-Following Manhattan Routing ──
 console.log('Recording Chapter 2: Orbit & Zoom 3D Auto-Populated House...')
-await setBanner('2 / 5 · 3D Auto-Populated Panel, Outlets, Lights & Trade-Priority Routing (0 Errors · NEC PASS)')
+await setBanner('2 / 5 · Wall-Following 3D Manhattan Routing & Flush Wall Devices (0 Errors · NEC PASS)')
 await page.mouse.move(960, 440)
 await moveCursor(960, 440)
-for (let i = 0; i < 6; i++) {
-  await page.mouse.wheel({ deltaY: -140 })
+for (let i = 0; i < 5; i++) {
+  await page.mouse.wheel({ deltaY: -150 })
   await captureFrames(2, 70)
 }
-await dragOrbit(980, 440, -180, -35, 22, 'right', '03_orbit_3d')
-await captureFrames(10, 90)
+await dragOrbit(980, 440, -180, -35, 14, 'right', '03_orbit_3d')
+await captureFrames(10, 90, undefined, true)
 
 // ─── CHAPTER 3: Zoom-In Cover-Off 3D Panel Interior Wiring View ─────────────
 console.log('Recording Chapter 3: Cover-Off 3D Panel Interior Wiring View...')
@@ -315,7 +351,7 @@ if (closeRailBtn) {
   await new Promise((r) => setTimeout(r, 700))
 }
 await moveCursor(-40, -40)
-await captureFrames(18, 90, '04_panel_breakers_zoom')
+await captureFrames(18, 90, '04_panel_breakers_zoom', true)
 
 // Click Full Open Panel, then Zoom: Breakers & Lugs, then orbit the live 3D open panel canvas!
 await setBanner('3 / 5 · Cover-Off 3D Panel Interior · Full Open Panel & Copper Busbars')
@@ -336,7 +372,7 @@ const panelCanvasRect = await page.evaluate(() => {
     : null
 })
 if (panelCanvasRect) {
-  await dragOrbit(panelCanvasRect.x - 40, panelCanvasRect.y, 110, -25, 22, 'left', '05_panel_orbit')
+  await dragOrbit(panelCanvasRect.x - 40, panelCanvasRect.y, 110, -25, 12, 'left', '05_panel_orbit')
 }
 
 await setBanner('3 / 5 · Toggle Deadfront On / Cover Off Live Inside Pascal Editor')
@@ -373,7 +409,7 @@ await page.evaluate(() => {
   }
 })
 await moveCursor(-40, -40)
-await captureFrames(24, 90, '07_takeoff_cost')
+await captureFrames(24, 90, '07_takeoff_cost', true)
 
 await setBanner('5 / 5 · Live NEC Compliance Audit: 0 Errors, 0 Warnings (NEC PASS)')
 await smoothClickButton('NEC Audit', false, 5, 22, '08_nec_audit')

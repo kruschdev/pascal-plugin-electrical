@@ -8,7 +8,11 @@ import type { AnyNode } from '@pascal-app/core'
 import type { AgentContext, AgentOperations, SceneNodes } from '@pascal-app/core/agent-operations'
 import { refuse } from '@pascal-app/core/agent-tools'
 import { auditSceneElectrical } from './nec/audit'
-import { planNecAutoPopulate, type ProtectionMode } from './nec/autopopulate'
+import {
+  planDeviceAutoConnection,
+  planNecAutoPopulate,
+  type ProtectionMode,
+} from './nec/autopopulate'
 import { calculateSceneLoad, type SceneNodeLike } from './nec/load-calc'
 import {
   buildElectricalTakeoff,
@@ -16,7 +20,13 @@ import {
   formatPanelScheduleCsv,
 } from './nec/panel-schedule'
 import { formatElectricalBomCsv } from './nec/pricing'
-import { extractTradeObstacles, routeElectricalRun, type Vec3 } from './nec/routing'
+import {
+  extractRoutingWalls,
+  extractTradeObstacles,
+  resolveLevelHeightM,
+  routeElectricalRun,
+  type Vec3,
+} from './nec/routing'
 import {
   calculateConduitFill,
   calculateTransformerSizing,
@@ -200,77 +210,184 @@ export const electricalAgentOperations = {
       continuous?: boolean
       gfciProtected?: boolean
       afciProtected?: boolean
+      autoWire?: boolean
       boxType?: string
       wireGauge?: string
       conductorCount?: number
     },
     context: AgentContext,
   ) => {
+    const record = asRecord(nodes)
     const parentId = resolveLevelId(nodes, input.levelId, context)
     if (input.panelId && !nodes[input.panelId]) {
       refuse('panel_not_found', `Electrical panel "${input.panelId}" does not exist in the scene.`)
     }
     const id = deterministicId('elecdev', nodes)
     const deviceKind = input.deviceKind ?? 'duplex'
-    const breakerAmps = input.breakerAmps ?? 20
+    const occupancy: OccupancyType = input.occupancy ?? 'residential'
+    const name = input.name ?? deviceKind
+    const initialBreakerAmps = input.breakerAmps ?? 20
     const poles: 1 | 2 | 3 = input.poles ?? 1
-    const autoWireGauge =
-      breakerAmps >= 50
+    const loadVa = input.loadVa ?? 180
+    const continuous = input.continuous ?? false
+    const autoWireGauge: WireGauge =
+      initialBreakerAmps >= 50
         ? '6'
-        : breakerAmps >= 40
+        : initialBreakerAmps >= 40
           ? '8'
-          : breakerAmps >= 30
+          : initialBreakerAmps >= 30
             ? '10'
-            : breakerAmps <= 15
+            : initialBreakerAmps <= 15
               ? '14'
               : '12'
-    const autoBoxType =
+    const autoBoxType = (
       deviceKind === 'junction-box'
         ? '4-sq-2.125'
-        : breakerAmps >= 40
+        : initialBreakerAmps >= 40
           ? '4-11-16-2.125'
-          : breakerAmps >= 30
+          : initialBreakerAmps >= 30
             ? '4-sq-2.125'
-            : 'single-gang-standard'
-    const autoConductorCount =
-      input.conductorCount ?? (poles === 3 ? 3 : breakerAmps >= 30 ? 3 : 4)
+            : deviceKind === 'gfci'
+              ? 'single-gang-deep'
+              : 'single-gang-standard'
+    ) as import('./nec/tables').BoxType
+    const initialConductorCount =
+      input.conductorCount ?? (poles === 3 ? 3 : initialBreakerAmps >= 30 ? 3 : 4)
+
+    const shouldAutoWire = input.autoWire !== false
+    const autoConn = shouldAutoWire
+      ? planDeviceAutoConnection(
+          record,
+          {
+            id,
+            name,
+            position: input.position,
+            rotation: input.rotation ?? 0,
+            deviceKind,
+            occupancy,
+            panelId: input.panelId,
+            circuitNumber: input.circuitNumber,
+            poles,
+            breakerAmps: initialBreakerAmps,
+            loadVa,
+            continuous,
+            gfciProtected: input.gfciProtected ?? deviceKind === 'gfci',
+            afciProtected: input.afciProtected ?? deviceKind === 'afci',
+            boxType: (input.boxType ?? autoBoxType) as import('./nec/tables').BoxType,
+            wireGauge: (input.wireGauge ?? autoWireGauge) as WireGauge,
+            conductorCount: initialConductorCount,
+          },
+          { levelId: parentId },
+        )
+      : null
+
+    const finalPanelId = autoConn?.panelId ?? input.panelId
+    const finalCircuitNumber = autoConn?.circuitNumber ?? input.circuitNumber ?? 1
+    const finalBreakerAmps = autoConn?.breakerAmps ?? initialBreakerAmps
+    const finalWireGauge = (input.wireGauge ?? autoConn?.wireGauge ?? autoWireGauge) as WireGauge
+    const finalBoxType = input.boxType ?? autoConn?.boxType ?? autoBoxType
+    const finalConductorCount = input.conductorCount ?? autoConn?.conductorCount ?? initialConductorCount
+    const finalGfciProtected = autoConn ? autoConn.gfciProtected : (input.gfciProtected ?? deviceKind === 'gfci')
+    const finalAfciProtected = autoConn ? autoConn.afciProtected : (input.afciProtected ?? deviceKind === 'afci')
+
     const node = {
       object: 'node',
       id,
       type: 'electrical:device',
-      name: input.name ?? deviceKind,
+      name,
       parentId,
       visible: true,
-      metadata: {},
+      metadata: {
+        ...(autoConn?.roomName ? { roomName: autoConn.roomName } : {}),
+      },
       position: input.position,
       rotation: input.rotation ?? 0,
       deviceKind,
-      occupancy: input.occupancy ?? 'residential',
-      panelId: input.panelId,
-      circuitNumber: input.circuitNumber ?? 1,
+      occupancy,
+      panelId: finalPanelId,
+      circuitNumber: finalCircuitNumber,
       poles,
-      breakerAmps,
-      loadVa: input.loadVa ?? 180,
-      continuous: input.continuous ?? false,
+      breakerAmps: finalBreakerAmps,
+      loadVa,
+      continuous,
       isMotor: deviceKind === 'motor-load',
-      gfciProtected: input.gfciProtected ?? deviceKind === 'gfci',
-      afciProtected: input.afciProtected ?? deviceKind === 'afci',
-      boxType: input.boxType ?? autoBoxType,
-      wireGauge: input.wireGauge ?? autoWireGauge,
-      conductorCount: autoConductorCount,
+      gfciProtected: finalGfciProtected,
+      afciProtected: finalAfciProtected,
+      boxType: finalBoxType,
+      wireGauge: finalWireGauge,
+      conductorCount: finalConductorCount,
       clampCount: 1,
       yokeCount: deviceKind === 'junction-box' ? 0 : 1,
     } as unknown as AnyNode
+
+    const creates: Array<{ node: AnyNode; parentId?: string }> = [
+      { node, parentId: parentId ?? undefined },
+    ]
+    let createdRunId: string | null = null
+    if (autoConn?.run) {
+      createdRunId = deterministicId('eleccond', nodes)
+      const r = autoConn.run
+      const runNode = {
+        object: 'node',
+        id: createdRunId,
+        type: 'electrical:conduit-run',
+        name: r.name,
+        parentId,
+        visible: true,
+        metadata: {
+          runKind: r.runKind,
+          fromNodeId: r.fromNodeId,
+          avoidedObstaclesCount: r.avoidedObstaclesCount,
+        },
+        path: r.path,
+        occupancy: r.occupancy,
+        racewayType: r.racewayType,
+        tradeSize: r.tradeSize,
+        conductorMaterial: 'cu',
+        insulationRating: '90C',
+        wireGauge: r.wireGauge,
+        currentCarryingCount: r.currentCarryingCount,
+        totalConductorCount: r.totalConductorCount,
+        ambientTempC: 30,
+        rooftopExposed: false,
+        inPlenum: false,
+        panelId: r.panelId,
+        targetDeviceId: id,
+        circuitNumber: r.circuitNumber,
+        loadAmps: r.loadAmps,
+        continuous: r.continuous,
+        voltage: r.voltage,
+        phases: r.phases,
+      } as unknown as AnyNode
+      creates.push({ node: runNode, parentId: parentId ?? undefined })
+    }
+
+    const updates = autoConn?.anchorDevicePatch
+      ? [
+          {
+            id: autoConn.anchorDevicePatch.id,
+            data: autoConn.anchorDevicePatch.patch as unknown as Partial<AnyNode>,
+          },
+        ]
+      : undefined
 
     return {
       result: {
         deviceId: id,
         deviceKind,
-        panelId: input.panelId ?? null,
-        circuitNumber: input.circuitNumber ?? 1,
+        panelId: finalPanelId ?? null,
+        circuitNumber: finalCircuitNumber,
         levelId: parentId,
+        connectionMode: autoConn?.mode ?? 'none',
+        conduitRunId: createdRunId,
+        connectedFromNodeId: autoConn?.connectedFromNodeId ?? null,
+        connectedFromName: autoConn?.connectedFromName ?? null,
+        roomName: autoConn?.roomName ?? null,
       },
-      changes: { create: [{ node, parentId: parentId ?? undefined }] },
+      changes: {
+        create: creates,
+        ...(updates ? { update: updates } : {}),
+      },
     }
   },
 
@@ -308,9 +425,13 @@ export const electricalAgentOperations = {
       (typeof panel.parentId === 'string' ? panel.parentId : null) ??
       resolveLevelId(nodes, undefined, context)
     const obstacles = extractTradeObstacles(record, parentId)
+    const walls = extractRoutingWalls(record, parentId)
+    const levelHeight = resolveLevelHeightM(record, parentId)
+    const defaultChaseY = Math.round(Math.min(2.55, levelHeight + 0.012) * 1000) / 1000
     const route = routeElectricalRun(startPt, endPt, obstacles, {
-      preferredChaseY: input.preferredChaseY ?? 2.55,
+      preferredChaseY: input.preferredChaseY ?? defaultChaseY,
       clearanceM: input.clearanceM ?? 0.05,
+      walls,
     })
 
     const occupancy: OccupancyType =

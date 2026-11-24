@@ -300,4 +300,209 @@ describe('NEC Minimum Auto-Populate (Outlets, GFCIs, Doors, Stairs, Circuits, Ho
     }
     expect(audit.findings.filter((f) => f.category === 'box-fill')).toHaveLength(0)
   })
+
+  test('Enclosed Two-Bedroom apartment: 100% wall-snapped outlets/switches (zero floating), ceiling lights <= level height, and wall-following Manhattan runs', () => {
+    const wallsList: Array<[string, [number, number], [number, number]]> = [
+      ['wall_n', [-5, -4], [5, -4]],
+      ['wall_e', [5, -4], [5, 4]],
+      ['wall_s', [5, 4], [-5, 4]],
+      ['wall_w', [-5, 4], [-5, -4]],
+      ['wall_corr_1', [-5, 0], [-1, 0]],
+      ['wall_corr_2', [-1, 0], [2, 0]],
+      ['wall_corr_3', [2, 0], [5, 0]],
+      ['wall_part_1', [-1, -4], [-1, 0]],
+      ['wall_part_2', [2, -4], [2, 0]],
+    ]
+
+    const nodes: Record<string, AnyNode> = {
+      level_0: {
+        id: 'level_0',
+        type: 'level',
+        name: 'Ground Floor',
+        parentId: null,
+        height: 2.5,
+      } as unknown as AnyNode,
+      zone_living: {
+        id: 'zone_living',
+        type: 'zone',
+        name: 'Living / Kitchen',
+        parentId: 'level_0',
+        polygon: [[-5, 0], [5, 0], [5, 4], [-5, 4]],
+      } as unknown as AnyNode,
+      zone_bed1: {
+        id: 'zone_bed1',
+        type: 'zone',
+        name: 'Bedroom 1',
+        parentId: 'level_0',
+        polygon: [[-5, -4], [-1, -4], [-1, 0], [-5, 0]],
+      } as unknown as AnyNode,
+      zone_bath: {
+        id: 'zone_bath',
+        type: 'zone',
+        name: 'Bath',
+        parentId: 'level_0',
+        polygon: [[-1, -4], [2, -4], [2, 0], [-1, 0]],
+      } as unknown as AnyNode,
+      zone_bed2: {
+        id: 'zone_bed2',
+        type: 'zone',
+        name: 'Bedroom 2',
+        parentId: 'level_0',
+        polygon: [[2, -4], [5, -4], [5, 0], [2, 0]],
+      } as unknown as AnyNode,
+      door_front: { id: 'door_front', type: 'door', name: 'Front Door', parentId: 'wall_s', position: [0, 1.05, 0], width: 0.8 } as unknown as AnyNode,
+      door_bed1: { id: 'door_bed1', type: 'door', name: 'Bed 1 Door', parentId: 'wall_corr_1', position: [2.0, 1.05, 0], width: 0.8 } as unknown as AnyNode,
+      door_bath: { id: 'door_bath', type: 'door', name: 'Bath Door', parentId: 'wall_corr_2', position: [1.5, 1.05, 0], width: 0.8 } as unknown as AnyNode,
+      door_bed2: { id: 'door_bed2', type: 'door', name: 'Bed 2 Door', parentId: 'wall_corr_3', position: [1.5, 1.05, 0], width: 0.8 } as unknown as AnyNode,
+    }
+    for (const [id, start, end] of wallsList) {
+      nodes[id] = { id, type: 'wall', parentId: 'level_0', start, end, thickness: 0.1 } as unknown as AnyNode
+    }
+
+    const outcome = electricalAgentOperations.electrical_autopopulate_nec(
+      nodes,
+      { occupancy: 'residential', protectionMode: 'hybrid', includeLighting: true, includeWiring: true },
+      { activeLevelId: 'level_0' },
+    )
+    for (const c of outcome.changes?.create ?? []) {
+      nodes[c.node.id] = c.node
+    }
+
+    const distToNearestWall = (x: number, z: number): number => {
+      let best = Number.POSITIVE_INFINITY
+      for (const [, s, e] of wallsList) {
+        const vx = e[0] - s[0]
+        const vz = e[1] - s[1]
+        const len = Math.hypot(vx, vz)
+        const t = Math.max(0, Math.min(len, ((x - s[0]) * vx + (z - s[1]) * vz) / len))
+        const px = s[0] + (vx / len) * t
+        const pz = s[1] + (vz / len) * t
+        const d = Math.hypot(x - px, z - pz)
+        if (d < best) best = d
+      }
+      return best
+    }
+
+    const record = nodes as unknown as Readonly<Record<string, SceneNodeLike>>
+    const devices = Object.values(record).filter((n) => n.type === 'electrical:device')
+    const runs = Object.values(record).filter((n) => n.type === 'electrical:conduit-run')
+
+    // 1. ZERO floating wall-mounted devices (every outlet, GFCI, and switch sits flush within 0.12 m of a wall!)
+    const wallDevices = devices.filter((d) => d.deviceKind !== 'luminaire')
+    expect(wallDevices.length).toBeGreaterThanOrEqual(16)
+    for (const dev of wallDevices) {
+      const pos = dev.position as [number, number, number]
+      expect(distToNearestWall(pos[0], pos[2])).toBeLessThanOrEqual(0.12)
+    }
+
+    // 2. Ceiling luminaires sit below levelHeight (2.5 m), never floating above the walls!
+    const luminaires = devices.filter((d) => d.deviceKind === 'luminaire')
+    expect(luminaires.length).toBeGreaterThanOrEqual(4)
+    for (const lum of luminaires) {
+      const pos = lum.position as [number, number, number]
+      expect(pos[1]).toBeLessThanOrEqual(2.5)
+    }
+
+    // 3. Every wall-to-wall circuit run strictly follows building walls (every waypoint within 0.18 m of a wall!)
+    const luminaireIds = new Set(luminaires.map((l) => l.id))
+    const wallToWallRuns = runs.filter(
+      (r) => !luminaireIds.has(String(r.targetDeviceId)) && !luminaireIds.has(String((r.metadata as { fromNodeId?: string })?.fromNodeId)),
+    )
+    expect(wallToWallRuns.length).toBeGreaterThanOrEqual(10)
+    for (const run of wallToWallRuns) {
+      const path = run.path as [number, number, number][]
+      // Skip runs whose start or end is a ceiling luminaire (identified by being > 0.3 m from walls)
+      if (
+        distToNearestWall(path[0]![0], path[0]![2]) > 0.25 ||
+        distToNearestWall(path[path.length - 1]![0], path[path.length - 1]![2]) > 0.25
+      ) {
+        continue
+      }
+      for (const pt of path) {
+        expect(distToNearestWall(pt[0], pt[2])).toBeLessThanOrEqual(0.18)
+      }
+    }
+
+    // 4. Full NEC audit passes with 0 errors and 0 warnings
+    const audit = auditSceneElectrical(record)
+    expect(audit.errorCount).toBe(0)
+    expect(audit.warningCount).toBe(0)
+  })
+
+  test('Adding an outlet auto-joins existing room run (wall-following daisy chain) or creates a new Home Run in a new room', () => {
+    const nodes: Record<string, AnyNode> = {
+      level_0: { id: 'level_0', type: 'level', name: 'Ground Floor', parentId: null, height: 2.5 } as unknown as AnyNode,
+      wall_n: { id: 'wall_n', type: 'wall', parentId: 'level_0', start: [-5, -4], end: [5, -4], thickness: 0.1 } as unknown as AnyNode,
+      wall_e: { id: 'wall_e', type: 'wall', parentId: 'level_0', start: [5, -4], end: [5, 0], thickness: 0.1 } as unknown as AnyNode,
+      wall_s: { id: 'wall_s', type: 'wall', parentId: 'level_0', start: [5, 0], end: [-5, 0], thickness: 0.1 } as unknown as AnyNode,
+      wall_w: { id: 'wall_w', type: 'wall', parentId: 'level_0', start: [-5, 0], end: [-5, -4], thickness: 0.1 } as unknown as AnyNode,
+      wall_mid: { id: 'wall_mid', type: 'wall', parentId: 'level_0', start: [0, -4], end: [0, 0], thickness: 0.1 } as unknown as AnyNode,
+      zone_bed1: { id: 'zone_bed1', type: 'zone', name: 'Bedroom 1', parentId: 'level_0', polygon: [[-5, -4], [0, -4], [0, 0], [-5, 0]] } as unknown as AnyNode,
+      zone_bed2: { id: 'zone_bed2', type: 'zone', name: 'Bedroom 2', parentId: 'level_0', polygon: [[0, -4], [5, -4], [5, 0], [0, 0]] } as unknown as AnyNode,
+    }
+    const ctx = { activeLevelId: 'level_0' }
+    const applyOutcome = (out: { changes?: { create?: Array<{ node: AnyNode }>; update?: Array<{ id: string; data: Partial<AnyNode> }> } }) => {
+      for (const c of out.changes?.create ?? []) nodes[c.node.id] = c.node
+      for (const u of out.changes?.update ?? []) {
+        if (nodes[u.id]) nodes[u.id] = { ...nodes[u.id], ...u.data } as AnyNode
+      }
+    }
+
+    // Place panel on Bedroom 1 south wall
+    const pOut = electricalAgentOperations.electrical_place_panel(
+      nodes,
+      { name: 'MDP-1', position: [-3.5, 1.52, -0.12], rotation: Math.PI, occupancy: 'residential' },
+      ctx,
+    )
+    applyOutcome(pOut)
+    const panelId = pOut.result.panelId
+
+    // 1. Add first outlet in Bedroom 1 (new room -> automatically creates a Home Run from MDP-1!)
+    const bed1Out1 = electricalAgentOperations.electrical_place_device(
+      nodes,
+      { name: 'Bed1 Outlet 1', position: [-4.94, 0.38, -2.0], rotation: Math.PI / 2, deviceKind: 'duplex', panelId },
+      ctx,
+    )
+    applyOutcome(bed1Out1)
+    expect(bed1Out1.result.connectionMode).toBe('new-home-run')
+    expect(bed1Out1.result.roomName).toBe('Bedroom 1')
+    expect(bed1Out1.result.conduitRunId).toBeTruthy()
+    const run1 = nodes[bed1Out1.result.conduitRunId!] as unknown as SceneNodeLike
+    expect((run1.metadata as { runKind?: string })?.runKind).toBe('home-run')
+
+    // 2. Add second outlet on the SAME wall in Bedroom 1 -> joins Bedroom 1's existing circuit with horizontal wall daisy chain!
+    const bed1Out2 = electricalAgentOperations.electrical_place_device(
+      nodes,
+      { name: 'Bed1 Outlet 2', position: [-4.94, 0.38, -3.2], rotation: Math.PI / 2, deviceKind: 'duplex', panelId },
+      ctx,
+    )
+    applyOutcome(bed1Out2)
+    expect(bed1Out2.result.connectionMode).toBe('joined-existing-run')
+    expect(bed1Out2.result.circuitNumber).toBe(bed1Out1.result.circuitNumber)
+    expect(bed1Out2.result.connectedFromNodeId).toBe(bed1Out1.result.deviceId)
+    const run2 = nodes[bed1Out2.result.conduitRunId!] as unknown as SceneNodeLike
+    expect((run2.metadata as { runKind?: string })?.runKind).toBe('daisy-chain')
+    // Same wall, same height -> stays horizontally on west wall at y = 0.38 (zero ceiling drop!)
+    expect((run2.path as [number, number, number][]).every((pt) => Math.abs(pt[1] - 0.38) < 0.01)).toBe(true)
+    // Anchor device conductorCount bumped from 2 -> 4 (feed-in + feed-thru)
+    expect((nodes[bed1Out1.result.deviceId] as unknown as SceneNodeLike).conductorCount).toBe(4)
+
+    // 3. Add outlet in Bedroom 2 (a NEW room!) -> automatically allocates a NEW circuit & creates a Home Run!
+    const bed2Out1 = electricalAgentOperations.electrical_place_device(
+      nodes,
+      { name: 'Bed2 Outlet 1', position: [4.94, 0.38, -2.0], rotation: -Math.PI / 2, deviceKind: 'duplex', panelId },
+      ctx,
+    )
+    applyOutcome(bed2Out1)
+    expect(bed2Out1.result.connectionMode).toBe('new-home-run')
+    expect(bed2Out1.result.roomName).toBe('Bedroom 2')
+    expect(bed2Out1.result.circuitNumber).not.toBe(bed1Out1.result.circuitNumber)
+    const run3 = nodes[bed2Out1.result.conduitRunId!] as unknown as SceneNodeLike
+    expect((run3.metadata as { runKind?: string })?.runKind).toBe('home-run')
+
+    // 4. Full scene NEC audit passes cleanly with 0 errors and 0 warnings
+    const audit = auditSceneElectrical(nodes as unknown as Readonly<Record<string, SceneNodeLike>>)
+    expect(audit.errorCount).toBe(0)
+    expect(audit.warningCount).toBe(0)
+  })
 })

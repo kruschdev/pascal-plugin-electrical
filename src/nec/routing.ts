@@ -53,6 +53,16 @@ export type TradeClashFinding = {
   readonly point: Vec3
 }
 
+export type RoutingWallSegment = {
+  readonly id: string
+  readonly start: readonly [number, number]
+  readonly end: readonly [number, number]
+  readonly thickness: number
+  readonly height: number
+  /** Door opening intervals `[tMin, tMax]` (meters from `start`) so same-wall runs climb over doors. */
+  readonly doorSpans?: readonly (readonly [number, number])[]
+}
+
 export type RouteElectricalOptions = {
   /** Preferred chase/ceiling routing elevation in level-local meters (default 2.55 m). */
   preferredChaseY?: number
@@ -66,6 +76,8 @@ export type RouteElectricalOptions = {
   maxY?: number
   /** Maximum total bend degrees before pull box required (NEC 358.26 = 360°). */
   maxBendDegrees?: number
+  /** Optional building walls so conduit/cable follows wall Manhattan geometry instead of cutting across open rooms. */
+  walls?: readonly RoutingWallSegment[]
 }
 
 export type ElectricalRouteResult = {
@@ -356,6 +368,112 @@ export function extractTradeObstacles(
   return obstacles.sort((a, b) => a.priorityRank - b.priorityRank)
 }
 
+/**
+ * Resolve the architectural ceiling/wall height (meters) of a Pascal level.
+ * Checks the level node's explicit `height`, then falls back to wall node heights,
+ * and finally Pascal's standard 2.5 m level height.
+ */
+export function resolveLevelHeightM(
+  nodes: Readonly<Record<string, SceneNodeLike>>,
+  levelId?: string | null,
+): number {
+  const all = Object.values(nodes)
+  const levelNode =
+    (levelId ? nodes[levelId] : undefined) ?? all.find((n) => n.type === 'level')
+  if (
+    levelNode &&
+    typeof levelNode.height === 'number' &&
+    levelNode.height >= 1.8 &&
+    levelNode.height <= 12
+  ) {
+    return levelNode.height
+  }
+
+  let maxWallH = 0
+  for (const n of all) {
+    if (n.type !== 'wall') continue
+    if (levelId && n.parentId && n.parentId !== levelId) continue
+    if (typeof n.height === 'number' && n.height >= 1.8 && n.height <= 12) {
+      if (n.height > maxWallH) maxWallH = n.height
+    }
+  }
+  return maxWallH > 0 ? maxWallH : 2.5
+}
+
+/**
+ * Extract 2D wall centerlines (with height, thickness, and door opening spans) from a Pascal scene graph
+ * so `routeElectricalRun` strictly follows building walls instead of cutting across open rooms.
+ */
+export function extractRoutingWalls(
+  nodes: Readonly<Record<string, SceneNodeLike>>,
+  levelId?: string | null,
+): RoutingWallSegment[] {
+  const all = Object.values(nodes)
+  const defaultHeight = resolveLevelHeightM(nodes, levelId)
+
+  const belongsToLevel = (node: SceneNodeLike): boolean => {
+    if (!levelId) return true
+    let cur: SceneNodeLike | undefined = node
+    const seen = new Set<string>()
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id)
+      if (cur.id === levelId || cur.parentId === levelId) return true
+      cur = cur.parentId ? nodes[cur.parentId] : undefined
+    }
+    return node.parentId == null
+  }
+
+  const walls: RoutingWallSegment[] = []
+  for (const n of all) {
+    if (n.type !== 'wall') continue
+    if (!belongsToLevel(n)) continue
+    if (!Array.isArray(n.start) || !Array.isArray(n.end)) continue
+    const sx = Number(n.start[0])
+    const sz = Number(n.start[1])
+    const ex = Number(n.end[0])
+    const ez = Number(n.end[1])
+    const len = Math.hypot(ex - sx, ez - sz)
+    if (!Number.isFinite(len) || len < 0.1) continue
+
+    const dx = (ex - sx) / len
+    const dz = (ez - sz) / len
+    const thickness =
+      typeof n.thickness === 'number' && n.thickness > 0 ? n.thickness : 0.14
+    const height =
+      typeof n.height === 'number' && n.height >= 1.5 ? n.height : defaultHeight
+
+    const doorSpans: Array<[number, number]> = []
+    for (const child of all) {
+      if (child.parentId !== n.id || child.type !== 'door') continue
+      const openW = typeof child.width === 'number' && child.width > 0 ? child.width : 0.9
+      let tCenter = len / 2
+      if (Array.isArray(child.position) && typeof child.position[0] === 'number') {
+        const px = child.position[0] as number
+        const pz = typeof child.position[2] === 'number' ? (child.position[2] as number) : 0
+        if (Math.abs(pz) < 0.4 && px >= -0.2 && px <= len + 0.2) {
+          tCenter = px
+        } else {
+          tCenter = (px - sx) * dx + (pz - sz) * dz
+        }
+      }
+      doorSpans.push([
+        Math.max(0, tCenter - openW / 2 - 0.1),
+        Math.min(len, tCenter + openW / 2 + 0.1),
+      ])
+    }
+
+    walls.push({
+      id: n.id,
+      start: [sx, sz],
+      end: [ex, ez],
+      thickness,
+      height,
+      doorSpans: doorSpans.length > 0 ? doorSpans : undefined,
+    })
+  }
+  return walls
+}
+
 // ─── Polyline Geometry & Bend Math ──────────────────────────────────────────
 
 export function polylineLengthM(path: readonly Vec3[]): number {
@@ -485,6 +603,452 @@ function buildManhattanCandidate(start: Vec3, end: Vec3, chaseY: number, order: 
   return simplifyOrthogonalPath(pts)
 }
 
+// ─── Wall-Guided Manhattan Geometry (2D Wall Graph + Dijkstra) ──────────────
+
+type WallProjection = {
+  wallIdx: number
+  t: number
+  len: number
+  x: number
+  z: number
+  dist: number
+  signedDist: number
+  dx: number
+  dz: number
+  wall: RoutingWallSegment
+}
+
+function projectPointToWalls(
+  px: number,
+  pz: number,
+  walls: readonly RoutingWallSegment[],
+): WallProjection | null {
+  let best: WallProjection | null = null
+  for (let i = 0; i < walls.length; i++) {
+    const w = walls[i]!
+    const vx = w.end[0] - w.start[0]
+    const vz = w.end[1] - w.start[1]
+    const len = Math.hypot(vx, vz)
+    if (len < 1e-4) continue
+    const dx = vx / len
+    const dz = vz / len
+    const rawT = (px - w.start[0]) * dx + (pz - w.start[1]) * dz
+    const t = Math.max(0, Math.min(len, rawT))
+    const x = w.start[0] + dx * t
+    const z = w.start[1] + dz * t
+    const dist = Math.hypot(px - x, pz - z)
+    // Left normal (-dz, dx)
+    const signedDist = (px - x) * -dz + (pz - z) * dx
+    if (!best || dist < best.dist - 1e-4) {
+      best = { wallIdx: i, t, len, x, z, dist, signedDist, dx, dz, wall: w }
+    }
+  }
+  return best
+}
+
+function isEndpointWallMounted(pt: Vec3, proj: WallProjection): boolean {
+  const wallSnapThreshold = Math.max(0.32, proj.wall.thickness / 2 + 0.18)
+  const isCeilingFixture =
+    pt[1] >= proj.wall.height - 0.18 && proj.dist > proj.wall.thickness / 2 + 0.1
+  return proj.dist <= wallSnapThreshold && !isCeilingFixture
+}
+
+function hasInterveningDoor(wall: RoutingWallSegment, tA: number, tB: number): boolean {
+  if (!wall.doorSpans || wall.doorSpans.length === 0) return false
+  const lo = Math.min(tA, tB)
+  const hi = Math.max(tA, tB)
+  for (const [dMin, dMax] of wall.doorSpans) {
+    if (dMax > lo + 0.05 && dMin < hi - 0.05) return true
+  }
+  return false
+}
+
+/**
+ * Build a strictly wall-following 3D Manhattan path between `start` and `end`:
+ * - Same-wall, same-height outlets (no intervening door): horizontal stud chase inside/along that wall.
+ * - Cross-wall runs & home runs: climb vertically along the source wall to `chaseY`, walk Dijkstra's
+ *   shortest path strictly along real wall top plates around actual wall corners, and drop vertically
+ *   along the target wall into the destination box.
+ * - Wall-to-ceiling luminaires: follow wall top plates to the closest wall point, then take a single
+ *   clean orthogonal 90° ceiling branch to the luminaire box.
+ */
+function buildWallGuidedManhattanPath(
+  start: Vec3,
+  end: Vec3,
+  chaseY: number,
+  walls: readonly RoutingWallSegment[],
+): Vec3[] | null {
+  if (walls.length === 0) return null
+  const sProj = projectPointToWalls(start[0], start[2], walls)
+  const eProj = projectPointToWalls(end[0], end[2], walls)
+  if (!sProj || !eProj) return null
+
+  const isStartWall = isEndpointWallMounted(start, sProj)
+  const isEndWall = isEndpointWallMounted(end, eProj)
+
+  // Fast path A: Same wall, same mounting height band, no door in between -> horizontal wall chase (no ceiling drop!)
+  if (
+    isStartWall &&
+    isEndWall &&
+    sProj.wallIdx === eProj.wallIdx &&
+    Math.abs(start[1] - end[1]) < 0.25 &&
+    Math.max(start[1], end[1]) < chaseY - 0.35 &&
+    !hasInterveningDoor(sProj.wall, sProj.t, eProj.t)
+  ) {
+    const sameSide = sProj.signedDist * eProj.signedDist >= -1e-4
+    const midY = round3((start[1] + end[1]) / 2)
+    if (sameSide) {
+      return simplifyOrthogonalPath([
+        start,
+        [start[0], midY, start[2]],
+        [end[0], midY, end[2]],
+        end,
+      ])
+    }
+    // Opposite faces of the same interior partition wall -> bore cleanly through stud cavity
+    return simplifyOrthogonalPath([
+      start,
+      [sProj.x, midY, sProj.z],
+      [eProj.x, midY, eProj.z],
+      end,
+    ])
+  }
+
+  // Fast path B: Same wall (e.g. climbing over a door header, or panel -> outlet on the same wall)
+  if (isStartWall && isEndWall && sProj.wallIdx === eProj.wallIdx) {
+    const sameSide = sProj.signedDist * eProj.signedDist >= -1e-4
+    if (sameSide) {
+      return simplifyOrthogonalPath([
+        start,
+        [start[0], chaseY, start[2]],
+        [end[0], chaseY, end[2]],
+        end,
+      ])
+    }
+    return simplifyOrthogonalPath([
+      start,
+      [start[0], chaseY, start[2]],
+      [sProj.x, chaseY, sProj.z],
+      [eProj.x, chaseY, eProj.z],
+      [end[0], chaseY, end[2]],
+      end,
+    ])
+  }
+
+  // Build 2D wall centerline graph with wall-to-wall intersections & T-junction snapping
+  const wallGeom = walls.map((w) => {
+    const vx = w.end[0] - w.start[0]
+    const vz = w.end[1] - w.start[1]
+    const len = Math.hypot(vx, vz)
+    return { w, len, dx: len > 1e-4 ? vx / len : 1, dz: len > 1e-4 ? vz / len : 0 }
+  })
+
+  const splits: number[][] = wallGeom.map((g) => [0, g.len])
+  splits[sProj.wallIdx]!.push(sProj.t)
+  splits[eProj.wallIdx]!.push(eProj.t)
+
+  const JUNCTION_SNAP = 0.25
+  for (let i = 0; i < wallGeom.length; i++) {
+    const a = wallGeom[i]!
+    if (a.len < 1e-4) continue
+    for (let j = i + 1; j < wallGeom.length; j++) {
+      const b = wallGeom[j]!
+      if (b.len < 1e-4) continue
+
+      // 1) Segment-segment intersection (with small endpoint tolerance)
+      const denom = a.dx * b.dz - a.dz * b.dx
+      if (Math.abs(denom) > 1e-4) {
+        const rx = b.w.start[0] - a.w.start[0]
+        const rz = b.w.start[1] - a.w.start[1]
+        const ta = (rx * b.dz - rz * b.dx) / denom
+        const tb = (rx * a.dz - rz * a.dx) / denom
+        if (
+          ta >= -JUNCTION_SNAP &&
+          ta <= a.len + JUNCTION_SNAP &&
+          tb >= -JUNCTION_SNAP &&
+          tb <= b.len + JUNCTION_SNAP
+        ) {
+          splits[i]!.push(Math.max(0, Math.min(a.len, ta)))
+          splits[j]!.push(Math.max(0, Math.min(b.len, tb)))
+        }
+      }
+
+      // 2) T-junction endpoint snapping (endpoints of A onto B and B onto A)
+      for (const ep of [a.w.start, a.w.end]) {
+        const tb = (ep[0] - b.w.start[0]) * b.dx + (ep[1] - b.w.start[1]) * b.dz
+        if (tb >= 0 && tb <= b.len) {
+          const px = b.w.start[0] + b.dx * tb
+          const pz = b.w.start[1] + b.dz * tb
+          if (Math.hypot(ep[0] - px, ep[1] - pz) <= JUNCTION_SNAP) {
+            splits[j]!.push(tb)
+          }
+        }
+      }
+      for (const ep of [b.w.start, b.w.end]) {
+        const ta = (ep[0] - a.w.start[0]) * a.dx + (ep[1] - a.w.start[1]) * a.dz
+        if (ta >= 0 && ta <= a.len) {
+          const px = a.w.start[0] + a.dx * ta
+          const pz = a.w.start[1] + a.dz * ta
+          if (Math.hypot(ep[0] - px, ep[1] - pz) <= JUNCTION_SNAP) {
+            splits[i]!.push(ta)
+          }
+        }
+      }
+    }
+  }
+
+  // Merge nearby wall junction vertices (<= 0.20 m) into shared graph nodes
+  const nodes2D: Array<{ x: number; z: number }> = []
+  const findOrAddVertex = (x: number, z: number, eps: number): number => {
+    for (let idx = 0; idx < nodes2D.length; idx++) {
+      const v = nodes2D[idx]!
+      if (Math.hypot(v.x - x, v.z - z) <= eps) return idx
+    }
+    nodes2D.push({ x, z })
+    return nodes2D.length - 1
+  }
+
+  // Register wall endpoints & T-junctions first so corners cluster accurately
+  for (let i = 0; i < wallGeom.length; i++) {
+    const g = wallGeom[i]!
+    for (const t of splits[i]!) {
+      if (
+        (i === sProj.wallIdx && Math.abs(t - sProj.t) < 1e-4) ||
+        (i === eProj.wallIdx && Math.abs(t - eProj.t) < 1e-4)
+      ) {
+        continue
+      }
+      findOrAddVertex(g.w.start[0] + g.dx * t, g.w.start[1] + g.dz * t, 0.2)
+    }
+  }
+
+  // Register exact start & end wall projections (only snap if practically on top of a corner)
+  const startV = findOrAddVertex(sProj.x, sProj.z, 0.04)
+  const endV = findOrAddVertex(eProj.x, eProj.z, 0.04)
+
+  type GraphEdge = { to: number; weight: number; isWall: boolean }
+  const adj: GraphEdge[][] = Array.from({ length: nodes2D.length }, () => [])
+  const addEdge = (u: number, v: number, weight: number, isWall: boolean) => {
+    if (u === v) return
+    adj[u]!.push({ to: v, weight, isWall })
+    adj[v]!.push({ to: u, weight, isWall })
+  }
+
+  for (let i = 0; i < wallGeom.length; i++) {
+    const g = wallGeom[i]!
+    const ts = [...splits[i]!].sort((a, b) => a - b)
+    let prevV = -1
+    for (const t of ts) {
+      const px = g.w.start[0] + g.dx * t
+      const pz = g.w.start[1] + g.dz * t
+      let vIdx: number
+      if (i === sProj.wallIdx && Math.abs(t - sProj.t) < 1e-4) {
+        vIdx = startV
+      } else if (i === eProj.wallIdx && Math.abs(t - eProj.t) < 1e-4) {
+        vIdx = endV
+      } else {
+        vIdx = findOrAddVertex(px, pz, 0.2)
+      }
+      if (prevV !== -1 && prevV !== vIdx) {
+        const uNode = nodes2D[prevV]!
+        const vNode = nodes2D[vIdx]!
+        addEdge(prevV, vIdx, Math.hypot(vNode.x - uNode.x, vNode.z - uNode.z), true)
+      }
+      prevV = vIdx
+    }
+  }
+
+  // Ensure connectivity across disconnected wall islands using orthogonal Manhattan ceiling bridges
+  const nVerts = nodes2D.length
+  const getComponents = (): number[] => {
+    const comp = new Array<number>(nVerts).fill(-1)
+    let cid = 0
+    for (let i = 0; i < nVerts; i++) {
+      if (comp[i] !== -1) continue
+      const q = [i]
+      comp[i] = cid
+      while (q.length > 0) {
+        const cur = q.shift()!
+        for (const e of adj[cur]!) {
+          if (comp[e.to] === -1) {
+            comp[e.to] = cid
+            q.push(e.to)
+          }
+        }
+      }
+      cid += 1
+    }
+    return comp
+  }
+
+  let comp = getComponents()
+  let guard = 0
+  while (comp[startV] !== comp[endV] && guard < 32) {
+    guard += 1
+    let bestU = -1
+    let bestV = -1
+    let bestD = Number.POSITIVE_INFINITY
+    for (let u = 0; u < nVerts; u++) {
+      for (let v = u + 1; v < nVerts; v++) {
+        if (comp[u] === comp[v]) continue
+        const a = nodes2D[u]!
+        const b = nodes2D[v]!
+        const md = Math.abs(b.x - a.x) + Math.abs(b.z - a.z)
+        if (md < bestD) {
+          bestD = md
+          bestU = u
+          bestV = v
+        }
+      }
+    }
+    if (bestU === -1 || bestV === -1) break
+    // Penalize ceiling bridges slightly so real wall paths are always preferred when connected
+    addEdge(bestU, bestV, bestD * 1.6 + 0.5, false)
+    comp = getComponents()
+  }
+
+  // Dijkstra shortest wall-following path from startV to endV
+  const distArr = new Array<number>(nVerts).fill(Number.POSITIVE_INFINITY)
+  const prevArr = new Array<number>(nVerts).fill(-1)
+  const prevIsWall = new Array<boolean>(nVerts).fill(true)
+  const visited = new Array<boolean>(nVerts).fill(false)
+  distArr[startV] = 0
+
+  for (let step = 0; step < nVerts; step++) {
+    let u = -1
+    let best = Number.POSITIVE_INFINITY
+    for (let i = 0; i < nVerts; i++) {
+      if (!visited[i] && distArr[i]! < best) {
+        best = distArr[i]!
+        u = i
+      }
+    }
+    if (u === -1 || u === endV) break
+    visited[u] = true
+    for (const e of adj[u]!) {
+      if (visited[e.to]) continue
+      const nd = distArr[u]! + e.weight
+      if (nd < distArr[e.to]!) {
+        distArr[e.to] = nd
+        prevArr[e.to] = u
+        prevIsWall[e.to] = e.isWall
+      }
+    }
+  }
+
+  if (!Number.isFinite(distArr[endV]!)) return null
+
+  const revNodes: number[] = []
+  const revEdgeWall: boolean[] = []
+  let cur = endV
+  while (cur !== -1) {
+    revNodes.push(cur)
+    if (prevArr[cur] !== -1) revEdgeWall.push(prevIsWall[cur]!)
+    cur = prevArr[cur]!
+  }
+  revNodes.reverse()
+  revEdgeWall.reverse()
+
+  // Compact consecutive collinear wall edges so each straight wall run is 1 clean segment
+  const pts2D: Array<[number, number]> = []
+  const edgeWall: boolean[] = []
+  for (let i = 0; i < revNodes.length; i++) {
+    const v = nodes2D[revNodes[i]!]!
+    const pt: [number, number] = [v.x, v.z]
+    if (pts2D.length >= 2) {
+      const lastWall = edgeWall[edgeWall.length - 1]
+      const curWall = revEdgeWall[i - 1]
+      if (lastWall && curWall) {
+        const a = pts2D[pts2D.length - 2]!
+        const b = pts2D[pts2D.length - 1]!
+        const v1x = b[0] - a[0]
+        const v1z = b[1] - a[1]
+        const v2x = pt[0] - b[0]
+        const v2z = pt[1] - b[1]
+        const l1 = Math.hypot(v1x, v1z)
+        const l2 = Math.hypot(v2x, v2z)
+        if (l1 > 1e-4 && l2 > 1e-4 && (v1x * v2x + v1z * v2z) / (l1 * l2) > 0.999) {
+          pts2D[pts2D.length - 1] = pt
+          continue
+        }
+      }
+    }
+    if (pts2D.length > 0) edgeWall.push(revEdgeWall[i - 1]!)
+    pts2D.push(pt)
+  }
+
+  // Corner-align flush wall offsets at start & end to eliminate tiny 6cm micro-jogs at 90° wall corners
+  if (isStartWall && pts2D.length >= 3 && edgeWall[0] && edgeWall[1]) {
+    const offX = start[0] - pts2D[0]![0]
+    const offZ = start[2] - pts2D[0]![1]
+    if (Math.hypot(offX, offZ) <= 0.16) {
+      const u0x = pts2D[1]![0] - pts2D[0]![0]
+      const u0z = pts2D[1]![1] - pts2D[0]![1]
+      const u1x = pts2D[2]![0] - pts2D[1]![0]
+      const u1z = pts2D[2]![1] - pts2D[1]![1]
+      const l0 = Math.hypot(u0x, u0z)
+      const l1 = Math.hypot(u1x, u1z)
+      if (l0 > 0.05 && l1 > 0.05 && Math.abs((u0x * u1x + u0z * u1z) / (l0 * l1)) < 0.2) {
+        pts2D[0] = [start[0], start[2]]
+        pts2D[1] = [pts2D[1]![0] + offX, pts2D[1]![1] + offZ]
+      }
+    }
+  }
+  if (isEndWall && pts2D.length >= 3) {
+    const last = pts2D.length - 1
+    if (edgeWall[last - 1] && edgeWall[last - 2]) {
+      const offX = end[0] - pts2D[last]![0]
+      const offZ = end[2] - pts2D[last]![1]
+      if (Math.hypot(offX, offZ) <= 0.16) {
+        const uPx = pts2D[last - 1]![0] - pts2D[last - 2]![0]
+        const uPz = pts2D[last - 1]![1] - pts2D[last - 2]![1]
+        const uLx = pts2D[last]![0] - pts2D[last - 1]![0]
+        const uLz = pts2D[last]![1] - pts2D[last - 1]![1]
+        const lP = Math.hypot(uPx, uPz)
+        const lL = Math.hypot(uLx, uLz)
+        if (lP > 0.05 && lL > 0.05 && Math.abs((uPx * uLx + uPz * uLz) / (lP * lL)) < 0.2) {
+          pts2D[last] = [end[0], end[2]]
+          pts2D[last - 1] = [pts2D[last - 1]![0] + offX, pts2D[last - 1]![1] + offZ]
+        }
+      }
+    }
+  }
+
+  // Assemble clean 3D Manhattan polyline along wall top plates with orthogonal ceiling branches for luminaires
+  const pts3D: Vec3[] = [start, [start[0], chaseY, start[2]]]
+  const first2D = pts2D[0]!
+  if (!isStartWall) {
+    if (Math.abs(start[0] - first2D[0]) > 0.01 && Math.abs(start[2] - first2D[1]) > 0.01) {
+      pts3D.push([first2D[0], chaseY, start[2]])
+    }
+    pts3D.push([first2D[0], chaseY, first2D[1]])
+  } else if (Math.hypot(start[0] - first2D[0], start[2] - first2D[1]) > 0.01) {
+    pts3D.push([first2D[0], chaseY, first2D[1]])
+  }
+
+  for (let i = 0; i < pts2D.length - 1; i++) {
+    const a = pts2D[i]!
+    const b = pts2D[i + 1]!
+    if (!edgeWall[i] && Math.abs(b[0] - a[0]) > 0.01 && Math.abs(b[1] - a[1]) > 0.01) {
+      pts3D.push([b[0], chaseY, a[1]])
+    }
+    pts3D.push([b[0], chaseY, b[1]])
+  }
+
+  const last2D = pts2D[pts2D.length - 1]!
+  if (!isEndWall) {
+    if (Math.abs(end[0] - last2D[0]) > 0.01 && Math.abs(end[2] - last2D[1]) > 0.01) {
+      pts3D.push([last2D[0], chaseY, end[2]])
+    }
+    pts3D.push([end[0], chaseY, end[2]])
+  } else if (Math.hypot(end[0] - last2D[0], end[2] - last2D[1]) > 0.01) {
+    pts3D.push([end[0], chaseY, end[2]])
+  }
+  pts3D.push(end)
+
+  return simplifyOrthogonalPath(pts3D)
+}
+
 /**
  * Given a single axis-aligned segment [a, b] that hits obstacle `obs`, generate
  * clean orthogonal saddle/jog detours (over, under, left, right) around `obs`.
@@ -567,22 +1131,31 @@ export function routeElectricalRun(
   obstacles: readonly TradeObstacle[],
   options: RouteElectricalOptions = {},
 ): ElectricalRouteResult {
-  const preferredChaseY = options.preferredChaseY ?? 2.55
+  const walls = options.walls && options.walls.length > 0 ? options.walls : null
+  const maxWallH = walls ? Math.max(...walls.map((w) => w.height)) : 0
+  const rawPreferredChaseY = options.preferredChaseY ?? 2.55
+  const preferredChaseY =
+    walls && maxWallH > 0
+      ? round3(Math.min(rawPreferredChaseY, maxWallH + 0.012))
+      : rawPreferredChaseY
   const clearanceM = options.clearanceM ?? DEFAULT_CLEARANCE_M
   const conduitRadiusM = options.conduitRadiusM ?? 0.015
   const minY = options.minY ?? 0.15
   const maxY = options.maxY ?? 3.2
   const maxBendDegrees = options.maxBendDegrees ?? 360
 
-  // Baseline naive route (without obstacles) to measure detour overhead & avoided obstacles
-  const baselineXZ = buildManhattanCandidate(start, end, preferredChaseY, 'xz')
-  const baselineZX = buildManhattanCandidate(start, end, preferredChaseY, 'zx')
+  // Baseline route (wall-guided Manhattan when building walls are supplied, else open Manhattan)
+  const fallbackXZ = buildManhattanCandidate(start, end, preferredChaseY, 'xz')
+  const fallbackZX = buildManhattanCandidate(start, end, preferredChaseY, 'zx')
+  const fallbackManhattan =
+    polylineLengthM(fallbackXZ) <= polylineLengthM(fallbackZX) ? fallbackXZ : fallbackZX
   const baseline =
-    polylineLengthM(baselineXZ) <= polylineLengthM(baselineZX) ? baselineXZ : baselineZX
+    (walls ? buildWallGuidedManhattanPath(start, end, preferredChaseY, walls) : null) ??
+    fallbackManhattan
   const directLengthM = polylineLengthM(baseline)
   const baselineClashes = detectRunTradeClashes(baseline, obstacles, clearanceM, conduitRadiusM)
 
-  // Candidate chase elevations stay in the overhead ceiling/plenum zone
+  // Candidate chase elevations stay in the overhead ceiling/top-plate zone
   // (never dropping mid-room across doorways or walkways), preferring the exact chase Y
   // before stepping slightly above or below pipes/ducts.
   const candidateElevations = [
@@ -604,16 +1177,30 @@ export function routeElectricalRun(
     return { score: clashes.length * 1000 + len + bendPenalty, clashes }
   }
 
-  // Step 1: Try clean Manhattan candidates across chase elevations & XZ/ZX orders
-  for (const y of candidateElevations) {
-    for (const order of ['xz', 'zx'] as const) {
-      const candidate = buildManhattanCandidate(start, end, y, order)
+  // Step 1: Try clean wall-guided (or open) Manhattan candidates across chase elevations
+  if (walls) {
+    for (const y of candidateElevations) {
+      const candidate =
+        buildWallGuidedManhattanPath(start, end, y, walls) ??
+        buildManhattanCandidate(start, end, y, 'xz')
       const { score, clashes } = scorePath(candidate)
       if (score < bestScore) {
         bestScore = score
         bestPath = candidate
       }
       if (clashes.length === 0 && y === preferredChaseY) break
+    }
+  } else {
+    for (const y of candidateElevations) {
+      for (const order of ['xz', 'zx'] as const) {
+        const candidate = buildManhattanCandidate(start, end, y, order)
+        const { score, clashes } = scorePath(candidate)
+        if (score < bestScore) {
+          bestScore = score
+          bestPath = candidate
+        }
+        if (clashes.length === 0 && y === preferredChaseY) break
+      }
     }
   }
 

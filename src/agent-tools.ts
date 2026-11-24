@@ -96,13 +96,14 @@ export const electricalAgentTools: PluginAgentTools = {
           .default('duplex'),
         occupancy: z.enum(['residential', 'commercial']).default('residential'),
         panelId: z.string().optional(),
-        circuitNumber: z.number().int().min(1).max(84).default(1),
+        circuitNumber: z.number().int().min(1).max(84).optional(),
         poles: z.union([z.literal(1), z.literal(2), z.literal(3)]).default(1),
         breakerAmps: z.number().min(15).max(400).default(20),
         loadVa: z.number().min(0).max(200000).default(180),
         continuous: z.boolean().default(false),
         gfciProtected: z.boolean().default(false),
         afciProtected: z.boolean().default(false),
+        autoWire: z.boolean().default(true),
         boxType: z
           .enum([
             'single-gang-shallow',

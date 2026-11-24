@@ -8,10 +8,15 @@ import { openEditorView, useScene, useViewer } from '@pascal-app/editor'
 import { useMemo, useState } from 'react'
 import { electricalAgentOperations } from '../agent-operations'
 import { auditSceneElectrical } from '../nec/audit'
-import type { ProtectionMode } from '../nec/autopopulate'
+import { findNextWallPlacement, type ProtectionMode } from '../nec/autopopulate'
 import type { SceneNodeLike } from '../nec/load-calc'
-import { findNextFreePanelCircuit } from '../nec/panel-schedule'
-import { extractTradeObstacles, routeElectricalRun, type Vec3 } from '../nec/routing'
+import {
+  extractRoutingWalls,
+  extractTradeObstacles,
+  resolveLevelHeightM,
+  routeElectricalRun,
+  type Vec3,
+} from '../nec/routing'
 import { useElectricalUi } from './store'
 
 export const ELECTRICAL_SCHEDULE_VIEW_ID = 'krusch:electrical:schedule'
@@ -29,6 +34,7 @@ export default function ElectricalRailPanel() {
   const createNode = useScene((s) => s.createNode)
   const updateNode = useScene((s) => s.updateNode)
   const selectedLevelId = useViewer((s) => s.selection.levelId)
+  const selectedIds = useViewer((s) => s.selection.selectedIds)
   const { occupancy, setOccupancy, setActiveTab, setSelectedPanelId } = useElectricalUi()
   const [protectionMode, setProtectionMode] = useState<ProtectionMode>('hybrid')
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
@@ -119,29 +125,55 @@ export default function ElectricalRailPanel() {
     const isHeavy = deviceKind === 'evse' || deviceKind === 'motor-load'
     const poles: 1 | 2 | 3 =
       deviceKind === 'motor-load' && occupancy === 'commercial' ? 3 : isHeavy ? 2 : 1
-    const nextCircuit = findNextFreePanelCircuit(primaryPanel, devices, poles)
+    const selectedZoneId =
+      selectedIds.find((sid) => record[sid]?.type === 'zone') ?? null
+    const placement = findNextWallPlacement(record, levelId, {
+      deviceKind,
+      preferredZoneId: selectedZoneId,
+    })
+
     const outcome = electricalAgentOperations.electrical_place_device(
       nodes,
       {
         levelId,
         name: `${deviceKind.toUpperCase()}-${idx}`,
-        position: [1.5 + idx * 0.8, deviceKind === 'junction-box' ? 2.45 : 0.4, 1.5],
+        position: [...placement.position] as [number, number, number],
+        rotation: placement.rotation,
         deviceKind,
         occupancy,
         panelId: primaryPanel?.id,
-        circuitNumber: nextCircuit,
         poles,
-        breakerAmps: deviceKind === 'evse' ? 50 : deviceKind === 'motor-load' ? 30 : 20,
+        breakerAmps: deviceKind === 'evse' ? 50 : deviceKind === 'motor-load' ? 30 : deviceKind === 'gfci' ? 20 : occupancy === 'commercial' ? 20 : 15,
         loadVa: deviceKind === 'evse' ? 9600 : deviceKind === 'motor-load' ? 4800 : 180,
         continuous: deviceKind === 'evse',
         gfciProtected: deviceKind === 'gfci',
+        autoWire: true,
       },
       { activeLevelId: levelId },
     )
-    const created = outcome.changes?.create?.[0]
-    if (created) {
-      createNode(created.node, created.parentId as never)
-      setStatusMsg(`Placed ${deviceKind} on CKT-${outcome.result.circuitNumber}.`)
+    const createdList = outcome.changes?.create ?? []
+    const updateList = outcome.changes?.update ?? []
+    if (createdList.length > 0) {
+      runAsSingleSceneHistoryStep(useScene, () => {
+        for (const item of createdList) {
+          createNode(item.node, item.parentId as never)
+        }
+        for (const upd of updateList) {
+          updateNode(upd.id as never, upd.data as Partial<AnyNode>)
+        }
+      })
+      const roomLabel = outcome.result.roomName ? ` in ${outcome.result.roomName}` : ''
+      if (outcome.result.connectionMode === 'joined-existing-run') {
+        setStatusMsg(
+          `Placed ${deviceKind}${roomLabel} on existing CKT-${outcome.result.circuitNumber} (added wall-following run from ${outcome.result.connectedFromName}).`,
+        )
+      } else if (outcome.result.connectionMode === 'new-home-run') {
+        setStatusMsg(
+          `Placed ${deviceKind}${roomLabel} on new CKT-${outcome.result.circuitNumber} (created wall-following home run from ${outcome.result.connectedFromName}).`,
+        )
+      } else {
+        setStatusMsg(`Placed ${deviceKind}${roomLabel} (place a panel to auto-wire runs).`)
+      }
     }
   }
 
@@ -193,11 +225,17 @@ export default function ElectricalRailPanel() {
     let skippedCount = 0
 
     runAsSingleSceneHistoryStep(useScene, () => {
-      // 1. Reroute any existing clashing runs around higher-priority trades
+      const walls = extractRoutingWalls(record, levelId)
+      const levelHeight = resolveLevelHeightM(record, levelId)
+      const defaultChaseY = Math.round(Math.min(2.55, levelHeight + 0.012) * 1000) / 1000
+      // 1. Reroute any existing clashing runs around higher-priority trades (strictly following walls)
       for (const run of runs) {
         const path = Array.isArray(run.path) ? (run.path as Vec3[]) : []
         if (path.length < 2) continue
-        const res = routeElectricalRun(path[0]!, path[path.length - 1]!, obstacles)
+        const res = routeElectricalRun(path[0]!, path[path.length - 1]!, obstacles, {
+          preferredChaseY: defaultChaseY,
+          walls,
+        })
         if (res.avoidedObstacles.length > 0 || res.remainingClashes.length === 0) {
           updateNode(run.id as never, { path: res.path } as Partial<AnyNode>)
           avoidedCount += res.avoidedObstacles.length
