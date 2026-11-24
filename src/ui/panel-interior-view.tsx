@@ -83,6 +83,7 @@ export default function PanelInteriorView({
     size: new Vector3(0.45, 0.92, 0.15),
     center: new Vector3(0, 0, 0),
     maxDim: 0.92,
+    populatedCenterY: null as number | null,
   })
 
   const [viewMode, setViewMode] = useState<PanelInteriorViewMode>('cover-off')
@@ -269,10 +270,26 @@ export default function PanelInteriorView({
     const center = new Vector3()
     box.getSize(size)
     box.getCenter(center)
+
+    // Compute vertical centroid of actually populated breakers so "Zoom: Breakers & Lugs" frames them cleanly even on tall 42-space panels
+    const populatedBox = new Box3()
+    let hasPopulatedBreaker = false
+    panelGroup.traverse((obj) => {
+      const meta = obj.userData as Partial<PanelWireMetadata> | undefined
+      if (meta?.kind === 'breaker') {
+        populatedBox.expandByObject(obj)
+        hasPopulatedBreaker = true
+      }
+    })
+    const populatedCenterY = hasPopulatedBreaker
+      ? (populatedBox.min.y + populatedBox.max.y) / 2
+      : null
+
     boundsRef.current = {
       size,
       center,
       maxDim: Math.max(size.x, size.y, size.z, 0.5),
+      populatedCenterY,
     }
 
     rt.renderFrame()
@@ -282,18 +299,21 @@ export default function PanelInteriorView({
   useEffect(() => {
     const rt = runtimeRef.current
     if (!rt) return
-    const { size, center, maxDim } = boundsRef.current
+    const { size, center, maxDim, populatedCenterY } = boundsRef.current
     const pConf = PRESET_VIEWS[preset]
     orbitRef.current.theta = pConf.theta
     orbitRef.current.phi = pConf.phi
     orbitRef.current.dist = maxDim * pConf.distFactor
+    const usePopulatedY =
+      populatedCenterY !== null &&
+      (preset === 'breakers' || preset === 'left-gutter' || preset === 'right-gutter')
     orbitRef.current.target.set(
       center.x + size.x * pConf.targetXRatio,
-      center.y + size.y * pConf.targetYRatio,
+      usePopulatedY ? populatedCenterY : center.y + size.y * pConf.targetYRatio,
       center.z + 0.02,
     )
     rt.renderFrame()
-  }, [preset, presetTick, schedule.panelId])
+  }, [preset, presetTick, schedule.panelId, schedule.usedSpaces])
 
   const phaseLegend =
     schedule.voltageSystem === '277/480V-3P'

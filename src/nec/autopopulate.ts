@@ -1137,8 +1137,9 @@ export function planNecAutoPopulate(
     }
 
     if (hrRoute) {
-      const totalChainFt =
-        hrRoute.routedLengthFt + hopRoutes.reduce((sum, r) => sum + r.routedLengthFt, 0)
+      // Distributed-load voltage drop centroid: full home-run distance plus half of the daisy-chain span
+      const effectiveDropFt =
+        hrRoute.routedLengthFt + 0.5 * hopRoutes.reduce((sum, r) => sum + r.routedLengthFt, 0)
       const ampGauge = recommendWireGauge({
         material: 'cu',
         insulationRating: '90C',
@@ -1153,7 +1154,7 @@ export function planNecAutoPopulate(
         wireGauge: ampGauge,
         material: 'cu',
         loadAmps: circuitLoadAmps,
-        oneWayLengthFt: totalChainFt,
+        oneWayLengthFt: effectiveDropFt,
         voltage,
         phases,
         maxDropPct: 3.0,
