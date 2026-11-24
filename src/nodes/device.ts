@@ -32,6 +32,20 @@ export const DeviceKindEnum = z.enum([
   'exit-sign',
   'motor-load',
   'junction-box',
+  'solar-inverter',
+  'battery-ess',
+  'transfer-switch',
+  'generator-inlet',
+  'rapid-shutdown',
+  'spd',
+  'vfd',
+  'dimmer',
+  'usb-duplex',
+  'weatherproof-gfci',
+  'floor-box',
+  'smoke-co',
+  'ceiling-fan',
+  'under-cabinet-led',
 ])
 
 export type ElectricalDeviceKind = z.infer<typeof DeviceKindEnum>
@@ -89,6 +103,20 @@ const DEVICE_COLORS: Record<ElectricalDeviceKind, { hex: string; num: number }> 
   'exit-sign': { hex: '#dc2626', num: 0xdc2626 },
   'motor-load': { hex: '#ea580c', num: 0xea580c },
   'junction-box': { hex: '#64748b', num: 0x64748b },
+  'solar-inverter': { hex: '#f59e0b', num: 0xf59e0b },
+  'battery-ess': { hex: '#06b6d4', num: 0x06b6d4 },
+  'transfer-switch': { hex: '#22c55e', num: 0x22c55e },
+  'generator-inlet': { hex: '#eab308', num: 0xeab308 },
+  'rapid-shutdown': { hex: '#dc2626', num: 0xdc2626 },
+  spd: { hex: '#2563eb', num: 0x2563eb },
+  vfd: { hex: '#ea580c', num: 0xea580c },
+  dimmer: { hex: '#8b5cf6', num: 0x8b5cf6 },
+  'usb-duplex': { hex: '#38bdf8', num: 0x38bdf8 },
+  'weatherproof-gfci': { hex: '#10b981', num: 0x10b981 },
+  'floor-box': { hex: '#d4a63a', num: 0xd4a63a },
+  'smoke-co': { hex: '#f8fafc', num: 0xf8fafc },
+  'ceiling-fan': { hex: '#facc15', num: 0xfacc15 },
+  'under-cabinet-led': { hex: '#fde047', num: 0xfde047 },
 }
 
 export function getElectricalDevicePorts(node: ElectricalDeviceNode): NodePort[] {
@@ -144,13 +172,88 @@ export function buildElectricalDeviceFloorplan(
       stroke,
       strokeWidth: 0.02,
     })
+  } else if (
+    node.deviceKind === 'solar-inverter' ||
+    node.deviceKind === 'battery-ess' ||
+    node.deviceKind === 'transfer-switch' ||
+    node.deviceKind === 'generator-inlet' ||
+    node.deviceKind === 'rapid-shutdown' ||
+    node.deviceKind === 'spd' ||
+    node.deviceKind === 'vfd'
+  ) {
+    const hw = node.deviceKind === 'battery-ess' ? 0.36 : node.deviceKind === 'solar-inverter' || node.deviceKind === 'transfer-switch' ? 0.21 : 0.12
+    const hd = 0.09
+    children.push(
+      {
+        kind: 'polygon',
+        points: [
+          [x - hw, zPos - hd],
+          [x + hw, zPos - hd],
+          [x + hw, zPos + hd],
+          [x - hw, zPos + hd],
+        ],
+        fill: '#1e293b',
+        stroke,
+        strokeWidth: 0.02,
+      },
+      { kind: 'line', x1: x - hw, y1: zPos - hd, x2: x + hw, y2: zPos + hd, stroke, strokeWidth: 0.014 },
+    )
+  } else if (node.deviceKind === 'ceiling-fan') {
+    children.push({ kind: 'circle', cx: x, cy: zPos, r: 0.16, fill: '#fef9c3', stroke, strokeWidth: 0.02 })
+    for (let i = 0; i < 5; i++) {
+      const a = (i * Math.PI * 2) / 5
+      children.push({
+        kind: 'line',
+        x1: x,
+        y1: zPos,
+        x2: x + Math.cos(a) * 0.45,
+        y2: zPos + Math.sin(a) * 0.45,
+        stroke,
+        strokeWidth: 0.018,
+      })
+    }
+  } else if (node.deviceKind === 'smoke-co') {
+    children.push(
+      { kind: 'circle', cx: x, cy: zPos, r: 0.12, fill: '#f8fafc', stroke, strokeWidth: 0.02 },
+      { kind: 'circle', cx: x, cy: zPos, r: 0.055, fill: '#f8fafc', stroke, strokeWidth: 0.014 },
+    )
+  } else if (node.deviceKind === 'under-cabinet-led') {
+    children.push({
+      kind: 'polygon',
+      points: [
+        [x - 0.3, zPos - 0.045],
+        [x + 0.3, zPos - 0.045],
+        [x + 0.3, zPos + 0.045],
+        [x - 0.3, zPos + 0.045],
+      ],
+      fill: '#fef08a',
+      stroke,
+      strokeWidth: 0.016,
+    })
+  } else if (node.deviceKind === 'floor-box') {
+    const h = 0.085
+    children.push(
+      {
+        kind: 'polygon',
+        points: [
+          [x - h, zPos - h],
+          [x + h, zPos - h],
+          [x + h, zPos + h],
+          [x - h, zPos + h],
+        ],
+        fill: '#fef3c7',
+        stroke,
+        strokeWidth: 0.02,
+      },
+      { kind: 'circle', cx: x, cy: zPos, r: 0.045, fill: '#ffffff', stroke, strokeWidth: 0.015 },
+    )
   } else if (node.deviceKind === 'luminaire') {
     children.push(
       { kind: 'circle', cx: x, cy: zPos, r: 0.14, fill: '#fef9c3', stroke, strokeWidth: 0.02 },
       { kind: 'line', x1: x - 0.14, y1: zPos, x2: x + 0.14, y2: zPos, stroke, strokeWidth: 0.015 },
       { kind: 'line', x1: x, y1: zPos - 0.14, x2: x, y2: zPos + 0.14, stroke, strokeWidth: 0.015 },
     )
-  } else if (node.deviceKind === 'switch-1p' || node.deviceKind === 'switch-3way') {
+  } else if (node.deviceKind === 'switch-1p' || node.deviceKind === 'switch-3way' || node.deviceKind === 'dimmer') {
     children.push(
       { kind: 'circle', cx: x, cy: zPos, r: 0.08, fill: '#f3e8ff', stroke, strokeWidth: 0.02 },
       {

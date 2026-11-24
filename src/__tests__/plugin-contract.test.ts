@@ -12,7 +12,9 @@ import {
   electricalScheduleView,
 } from '../index'
 import { buildWiredPanelInteriorCad, ELECTRICAL_CAD_CATALOG, measureCadDimensionsMm } from '../cad'
-import { buildPanelSchedule } from '../nec/panel-schedule'
+import { buildElectricalTakeoff, buildPanelSchedule } from '../nec/panel-schedule'
+import { findNextWallPlacement } from '../nec/autopopulate'
+import type { SceneNodeLike } from '../nec/load-calc'
 import {
   buildElectricalConduitRunFloorplan,
   buildElectricalConduitRunGeometry,
@@ -451,5 +453,118 @@ describe('Pascal Plugin API v1 Conformance & Agent Operations (E-014 / E-016)', 
     const runNode = surfaceRoute.changes!.create![0]!.node as unknown as { path: [number, number, number][] }
     // Surface mode preserves wall face Z offset (0.08) instead of pulling to centerline (0)
     expect(Math.abs(runNode.path[0]![2])).toBeGreaterThan(0.04)
+  })
+
+  test('All 14 expanded CAD equipment & smart device kinds render 3D+2D, auto-wire cleanly, pass NEC audit, and price in BOM takeoff', () => {
+    const newKinds = [
+      'solar-inverter',
+      'battery-ess',
+      'transfer-switch',
+      'generator-inlet',
+      'rapid-shutdown',
+      'spd',
+      'vfd',
+      'dimmer',
+      'usb-duplex',
+      'weatherproof-gfci',
+      'floor-box',
+      'smoke-co',
+      'ceiling-fan',
+      'under-cabinet-led',
+    ] as const
+
+    for (const kind of newKinds) {
+      const parsed = ElectricalDeviceNode.parse({
+        id: `elecdev_${kind.replace(/-/g, '_')}`,
+        type: 'electrical:device',
+        name: kind,
+        deviceKind: kind,
+      })
+      const geo = buildElectricalDeviceGeometry(parsed, dummyCtx)
+      expect(geo.children.length).toBeGreaterThan(0)
+      const fp = buildElectricalDeviceFloorplan(parsed, dummyCtx)
+      expect(fp.kind).toBe('group')
+    }
+
+    // End-to-end live placement + auto-wiring + BOM takeoff pricing for solar/ESS + smart devices
+    const nodes: Record<string, AnyNode> = {
+      level_0: { object: 'node', id: 'level_0', type: 'level', name: 'L1', parentId: null, height: 2.5, visible: true, metadata: {} } as unknown as AnyNode,
+      wall_n: { object: 'node', id: 'wall_n', type: 'wall', parentId: 'level_0', start: [0, 0], end: [6, 0], height: 2.5, thickness: 0.14 } as unknown as AnyNode,
+      wall_e: { object: 'node', id: 'wall_e', type: 'wall', parentId: 'level_0', start: [6, 0], end: [6, 4], height: 2.5, thickness: 0.14 } as unknown as AnyNode,
+      wall_s: { object: 'node', id: 'wall_s', type: 'wall', parentId: 'level_0', start: [6, 4], end: [0, 4], height: 2.5, thickness: 0.14 } as unknown as AnyNode,
+      wall_w: { object: 'node', id: 'wall_w', type: 'wall', parentId: 'level_0', start: [0, 4], end: [0, 0], height: 2.5, thickness: 0.14 } as unknown as AnyNode,
+      zone_living: { object: 'node', id: 'zone_living', type: 'zone', name: 'Living', parentId: 'level_0', polygon: [[0, 0], [6, 0], [6, 4], [0, 4]] } as unknown as AnyNode,
+    }
+    const ctx = { activeLevelId: 'level_0' }
+    const apply = (out: { changes?: { create?: Array<{ node: AnyNode }>; update?: Array<{ id: string; data: Partial<AnyNode> }> } }) => {
+      for (const c of out.changes?.create ?? []) nodes[c.node.id] = c.node
+      for (const u of out.changes?.update ?? []) {
+        if (nodes[u.id]) nodes[u.id] = { ...nodes[u.id], ...u.data } as AnyNode
+      }
+    }
+
+    const pOut = electricalAgentOperations.electrical_place_panel(
+      nodes,
+      { name: 'MDP-1', position: [0.08, 1.52, 2.0], rotation: Math.PI / 2, occupancy: 'residential' },
+      ctx,
+    )
+    apply(pOut)
+    const panelId = pOut.result.panelId
+
+    // Place Solar PV Inverter (dedicated Home Run) + USB-C Duplex (room Home Run) + Smart Dimmer + Ceiling Fan (joins lighting!)
+    const pvOut = electricalAgentOperations.electrical_place_device(
+      nodes,
+      { name: 'PV Inverter', position: [1.5, 1.45, 0.08], deviceKind: 'solar-inverter', panelId, poles: 2, breakerAmps: 40, loadVa: 7600, continuous: true },
+      ctx,
+    )
+    apply(pvOut)
+    expect(pvOut.result.connectionMode).toBe('new-home-run')
+
+    const usbOut = electricalAgentOperations.electrical_place_device(
+      nodes,
+      { name: 'Living USB-C', position: [3.2, 0.38, 0.08], deviceKind: 'usb-duplex', panelId, breakerAmps: 20, loadVa: 180 },
+      ctx,
+    )
+    apply(usbOut)
+    expect(usbOut.result.connectionMode).toBe('new-home-run')
+
+    const fanPlace = findNextWallPlacement(nodes as unknown as Readonly<Record<string, SceneNodeLike>>, 'level_0', {
+      deviceKind: 'ceiling-fan',
+      preferredZoneId: 'zone_living',
+    })
+    expect(fanPlace.position[0]).toBeCloseTo(3.0, 2)
+    expect(fanPlace.position[2]).toBeCloseTo(2.0, 2)
+    expect(fanPlace.position[1]).toBeCloseTo(2.34, 2)
+
+    const floorBoxPlace = findNextWallPlacement(nodes as unknown as Readonly<Record<string, SceneNodeLike>>, 'level_0', {
+      deviceKind: 'floor-box',
+      preferredZoneId: 'zone_living',
+    })
+    expect(floorBoxPlace.position[1]).toBe(0)
+
+    const fanOut = electricalAgentOperations.electrical_place_device(
+      nodes,
+      { name: 'Living Fan', position: [...fanPlace.position] as [number, number, number], deviceKind: 'ceiling-fan', panelId, breakerAmps: 15, loadVa: 120 },
+      ctx,
+    )
+    apply(fanOut)
+    const dimOut = electricalAgentOperations.electrical_place_device(
+      nodes,
+      { name: 'Living Dimmer', position: [5.92, 1.22, 2.0], rotation: -Math.PI / 2, deviceKind: 'dimmer', panelId, breakerAmps: 15, loadVa: 150 },
+      ctx,
+    )
+    apply(dimOut)
+    expect(dimOut.result.connectionMode).toBe('joined-existing-run')
+    expect(dimOut.result.circuitNumber).toBe(fanOut.result.circuitNumber)
+
+    // Verify Priced BOM Takeoff includes solar-inverter, usb-duplex, ceiling-fan, and dimmer line items
+    const takeoff = buildElectricalTakeoff(nodes as unknown as Readonly<Record<string, SceneNodeLike>>)
+    expect(takeoff.pricing.lineItems.some((l) => l.cadSlug === 'solar-inverter-string')).toBe(true)
+    expect(takeoff.pricing.lineItems.some((l) => l.cadSlug === 'device-usb-duplex-20a')).toBe(true)
+    expect(takeoff.pricing.lineItems.some((l) => l.cadSlug === 'fixture-ceiling-fan-light')).toBe(true)
+    expect(takeoff.pricing.lineItems.some((l) => l.cadSlug === 'device-dimmer-smart')).toBe(true)
+
+    const auditOut = electricalAgentOperations.electrical_audit_nec(nodes)
+    expect(auditOut.result.errorCount).toBe(0)
   })
 })

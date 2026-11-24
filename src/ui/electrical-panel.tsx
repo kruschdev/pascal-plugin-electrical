@@ -58,6 +58,47 @@ function pathsNearlyEqual(a: readonly Vec3[], b: readonly Vec3[]): boolean {
   return true
 }
 
+type CatalogQuickItem = {
+  kind:
+    | 'solar-inverter'
+    | 'battery-ess'
+    | 'transfer-switch'
+    | 'generator-inlet'
+    | 'rapid-shutdown'
+    | 'spd'
+    | 'vfd'
+    | 'dimmer'
+    | 'usb-duplex'
+    | 'weatherproof-gfci'
+    | 'floor-box'
+    | 'smoke-co'
+    | 'ceiling-fan'
+    | 'under-cabinet-led'
+  label: string
+  poles: 1 | 2 | 3
+  breakerAmps: number
+  loadVa: number
+  continuous?: boolean
+  gfciProtected?: boolean
+}
+
+const CATALOG_QUICK_ITEMS: readonly CatalogQuickItem[] = [
+  { kind: 'solar-inverter', label: 'Solar PV Inverter (NEC 690, 40A)', poles: 2, breakerAmps: 40, loadVa: 7600, continuous: true },
+  { kind: 'battery-ess', label: 'Wall Battery ESS 13.5 kWh (60A)', poles: 2, breakerAmps: 60, loadVa: 11500, continuous: true },
+  { kind: 'transfer-switch', label: '200A Auto Transfer Switch (ATS)', poles: 2, breakerAmps: 200, loadVa: 0 },
+  { kind: 'generator-inlet', label: '50A Generator Inlet Box (SS2-50P)', poles: 2, breakerAmps: 50, loadVa: 12000 },
+  { kind: 'rapid-shutdown', label: 'PV Rapid Shutdown Switch (690.12)', poles: 2, breakerAmps: 40, loadVa: 0 },
+  { kind: 'spd', label: 'Type 2 Surge Protector (NEC 230.67)', poles: 2, breakerAmps: 20, loadVa: 0 },
+  { kind: 'vfd', label: 'Commercial 3Φ VFD Drive (40A)', poles: 3, breakerAmps: 40, loadVa: 12000, continuous: true },
+  { kind: 'dimmer', label: 'Smart Decora Slide Dimmer', poles: 1, breakerAmps: 15, loadVa: 150 },
+  { kind: 'usb-duplex', label: '20A USB-A / USB-C Duplex Outlet', poles: 1, breakerAmps: 20, loadVa: 180 },
+  { kind: 'weatherproof-gfci', label: 'Weatherproof In-Use Bubble GFCI', poles: 1, breakerAmps: 20, loadVa: 180, gfciProtected: true },
+  { kind: 'floor-box', label: 'Recessed Brass Floor Outlet Box', poles: 1, breakerAmps: 20, loadVa: 180 },
+  { kind: 'smoke-co', label: 'Hardwired 120V Smoke/CO Alarm', poles: 1, breakerAmps: 15, loadVa: 25 },
+  { kind: 'ceiling-fan', label: '52" Ceiling Fan w/ LED Kit', poles: 1, breakerAmps: 15, loadVa: 120 },
+  { kind: 'under-cabinet-led', label: '24" Under-Cabinet LED Task Bar', poles: 1, breakerAmps: 15, loadVa: 30 },
+]
+
 export default function ElectricalRailPanel() {
   const nodes = useScene((s) => s.nodes)
   const createNode = useScene((s) => s.createNode)
@@ -70,6 +111,7 @@ export default function ElectricalRailPanel() {
   const setXrayFamily = useViewer((s) => s.setXrayFamily)
   const { occupancy, setOccupancy, setActiveTab, setSelectedPanelId } = useElectricalUi()
   const [protectionMode, setProtectionMode] = useState<ProtectionMode>('hybrid')
+  const [catalogKind, setCatalogKind] = useState<CatalogQuickItem['kind']>('solar-inverter')
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
 
   const record = nodes as unknown as Readonly<Record<string, SceneNodeLike>>
@@ -151,7 +193,15 @@ export default function ElectricalRailPanel() {
     }
   }
 
-  const placeDevice = (deviceKind: 'duplex' | 'gfci' | 'evse' | 'junction-box' | 'motor-load') => {
+  const placeDevice = (
+    deviceKind:
+      | 'duplex'
+      | 'gfci'
+      | 'evse'
+      | 'junction-box'
+      | 'motor-load'
+      | CatalogQuickItem['kind'],
+  ) => {
     const levelId = activeLevelOf(nodes, selectedLevelId)
     if (!levelId) {
       setStatusMsg('Create a building level first before placing electrical equipment.')
@@ -159,9 +209,15 @@ export default function ElectricalRailPanel() {
     }
     const primaryPanel = panels[0]
     const idx = devices.length + 1
+    const catalogSpec = CATALOG_QUICK_ITEMS.find((item) => item.kind === deviceKind)
     const isHeavy = deviceKind === 'evse' || deviceKind === 'motor-load'
-    const poles: 1 | 2 | 3 =
-      deviceKind === 'motor-load' && occupancy === 'commercial' ? 3 : isHeavy ? 2 : 1
+    const poles: 1 | 2 | 3 = catalogSpec
+      ? catalogSpec.poles
+      : deviceKind === 'motor-load' && occupancy === 'commercial'
+        ? 3
+        : isHeavy
+          ? 2
+          : 1
     const selectedZoneId =
       selectedIds.find((sid) => record[sid]?.type === 'zone') ?? null
     const placement = findNextWallPlacement(record, levelId, {
@@ -180,10 +236,26 @@ export default function ElectricalRailPanel() {
         occupancy,
         panelId: primaryPanel?.id,
         poles,
-        breakerAmps: deviceKind === 'evse' ? 50 : deviceKind === 'motor-load' ? 30 : deviceKind === 'gfci' ? 20 : occupancy === 'commercial' ? 20 : 15,
-        loadVa: deviceKind === 'evse' ? 9600 : deviceKind === 'motor-load' ? 4800 : 180,
-        continuous: deviceKind === 'evse',
-        gfciProtected: deviceKind === 'gfci',
+        breakerAmps: catalogSpec
+          ? catalogSpec.breakerAmps
+          : deviceKind === 'evse'
+            ? 50
+            : deviceKind === 'motor-load'
+              ? 30
+              : deviceKind === 'gfci'
+                ? 20
+                : occupancy === 'commercial'
+                  ? 20
+                  : 15,
+        loadVa: catalogSpec
+          ? catalogSpec.loadVa
+          : deviceKind === 'evse'
+            ? 9600
+            : deviceKind === 'motor-load'
+              ? 4800
+              : 180,
+        continuous: catalogSpec ? Boolean(catalogSpec.continuous) : deviceKind === 'evse',
+        gfciProtected: catalogSpec ? Boolean(catalogSpec.gfciProtected) : deviceKind === 'gfci',
         autoWire: true,
       },
       { activeLevelId: levelId },
@@ -447,6 +519,43 @@ export default function ElectricalRailPanel() {
             }}
           >
             Inspect Panel Wiring (3D Cover Off)
+          </button>
+        </div>
+        <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+          <select
+            aria-label="Catalog Equipment Model"
+            value={catalogKind}
+            onChange={(e) => setCatalogKind(e.target.value as CatalogQuickItem['kind'])}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              padding: '5px 7px',
+              borderRadius: 6,
+              background: 'rgba(255,255,255,0.06)',
+              color: 'inherit',
+              border: '1px solid var(--border, rgba(255,255,255,0.18))',
+              fontSize: 11,
+            }}
+          >
+            {CATALOG_QUICK_ITEMS.map((item) => (
+              <option key={item.kind} value={item.kind}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => placeDevice(catalogKind)}
+            style={{
+              ...btnStyle,
+              padding: '5px 10px',
+              whiteSpace: 'nowrap',
+              borderColor: 'rgba(16,185,129,0.5)',
+              background: 'rgba(16,185,129,0.15)',
+              fontWeight: 600,
+            }}
+          >
+            + Place
           </button>
         </div>
       </div>

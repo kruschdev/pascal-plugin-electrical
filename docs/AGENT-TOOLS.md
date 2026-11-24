@@ -10,7 +10,7 @@ Because `./agent-tools` imports only Zod and `@pascal-app/core/agent-tools`, any
 |---|---|---|
 | `electrical_place_panel` | Write | Place a residential (`120/240V-1P`) or commercial (`120/208V-3P`, `277/480V-3P`) panelboard with NEC 110.26 clearance envelope |
 | `electrical_place_transformer` | Write | Place a commercial dry-type step-down transformer (`480V -> 208V 3P`) with NEC Table 450.3(B) FLA and OCPD sizing |
-| `electrical_place_device` | Write | Place any receptacle, GFCI/AFCI, 240V dedicated outlet, EVSE, 1P/3-way switch, luminaire, exit sign, 3-phase motor load, or junction box |
+| `electrical_place_device` | Write | Place any of 25 live equipment and device kinds (receptacles, GFCI/AFCI, USB-C duplex, weatherproof in-use GFCI, brass floor box, smart dimmer, 1P/3-way switches, luminaires, ceiling fan, under-cabinet LED, smoke/CO alarm, exit sign, EVSE, 240V dedicated, 3-phase motor, VFD, Type 2 SPD, solar PV inverter, wall battery ESS, 200A ATS, 50A generator inlet, PV rapid shutdown, or junction box) with automatic room-aware Manhattan wiring |
 | `electrical_route_circuit` | Write | Route a 3D conduit or cable run from panel to device, automatically detouring around Pascal plumbing, HVAC, and structural obstacles and auto-sizing wire gauge and conduit trade size |
 | `electrical_autopopulate_nec` | Write | Walk Pascal walls, exterior doors, stairways, and room zones to auto-populate NEC minimum outlets, GFCIs, front-door and stairway lighting/3-way switches, balanced panel circuits, home runs, and outlet-to-outlet daisy-chain runs |
 | `electrical_calculate_load` | Read-only | Run Residential Standard, Residential Optional (`220.82`), or Commercial (`Table 220.12` / `220.44` / `430.24`) NEC Article 220 service load calculations |

@@ -7,6 +7,7 @@ import { type ConduitTradeSize, type WireGauge, round2 } from './tables'
 
 export type ElectricalBomCategory =
   | 'panels-gear'
+  | 'solar-backup'
   | 'breakers'
   | 'outlet-boxes'
   | 'wiring-devices'
@@ -80,6 +81,20 @@ export const DEVICE_UNIT_PRICES_USD: Record<
   'exit-sign': { label: 'Commercial LED EXIT Sign w/ Battery & Floods', category: 'light-fixtures', usd: 54.0, hrs: 0.6, cadSlug: 'fixture-exit-sign' },
   'motor-load': { label: '3-Phase Motor Disconnect & Liquidtight Whip', category: 'wiring-devices', usd: 185.0, hrs: 1.5, cadSlug: 'device-motor-3p-tefc' },
   'junction-box': { label: 'Steel Junction Box Cover + Clamps/Connectors', category: 'outlet-boxes', usd: 4.5, hrs: 0.2, cadSlug: 'box-4-11-16-steel' },
+  'solar-inverter': { label: 'String Solar PV Inverter (7.6 kW, NEC 690)', category: 'solar-backup', usd: 1850.0, hrs: 3.5, cadSlug: 'solar-inverter-string' },
+  'battery-ess': { label: 'Wall-Mounted Home Battery ESS (13.5 kWh, NEC 706)', category: 'solar-backup', usd: 7800.0, hrs: 5.0, cadSlug: 'battery-wall-ess' },
+  'transfer-switch': { label: '200A NEMA-3R Automatic Transfer Switch (ATS)', category: 'solar-backup', usd: 1150.0, hrs: 4.5, cadSlug: 'transfer-switch-200a' },
+  'generator-inlet': { label: '50A NEMA SS2-50P Weatherproof Generator Inlet Box', category: 'solar-backup', usd: 92.0, hrs: 1.1, cadSlug: 'generator-inlet-50a' },
+  'rapid-shutdown': { label: 'NEC 690.12 PV Rapid Shutdown / AC Disconnect Switch', category: 'solar-backup', usd: 135.0, hrs: 0.9, cadSlug: 'ac-rapid-shutdown' },
+  spd: { label: 'Type 2 Whole-Home Surge Protective Device (NEC 230.67)', category: 'panels-gear', usd: 128.0, hrs: 0.75, cadSlug: 'spd-type2-panel' },
+  vfd: { label: 'Commercial 3-Phase Variable Frequency Drive (NEC 430.122)', category: 'panels-gear', usd: 1420.0, hrs: 3.25, cadSlug: 'vfd-drive-commercial' },
+  dimmer: { label: 'Smart Decora Slide Dimmer Switch + Plate', category: 'wiring-devices', usd: 34.0, hrs: 0.25, cadSlug: 'device-dimmer-smart' },
+  'usb-duplex': { label: '20A TR USB-A / USB-C Duplex Receptacle + Plate', category: 'wiring-devices', usd: 29.5, hrs: 0.25, cadSlug: 'device-usb-duplex-20a' },
+  'weatherproof-gfci': { label: '20A WR GFCI + Cast FS Box + Extra-Duty In-Use Bubble Cover', category: 'wiring-devices', usd: 46.0, hrs: 0.55, cadSlug: 'device-weatherproof-inuse' },
+  'floor-box': { label: 'Recessed Solid-Brass Floor Outlet Box Assembly', category: 'wiring-devices', usd: 118.0, hrs: 1.25, cadSlug: 'device-floor-box-brass' },
+  'smoke-co': { label: 'Hardwired 120V Interconnected Smoke/CO Detector', category: 'wiring-devices', usd: 58.0, hrs: 0.35, cadSlug: 'device-smoke-co-alarm' },
+  'ceiling-fan': { label: '52" Ceiling Fan w/ Integrated LED Kit + Fan-Rated Brace', category: 'light-fixtures', usd: 215.0, hrs: 1.4, cadSlug: 'fixture-ceiling-fan-light' },
+  'under-cabinet-led': { label: '24" Hardwired Kitchen Under-Cabinet LED Task Bar', category: 'light-fixtures', usd: 64.0, hrs: 0.65, cadSlug: 'fixture-under-cabinet-led' },
 }
 
 export const CONDUIT_STICK_PRICES_USD: Record<'EMT' | 'PVC-40' | 'RMC', Record<ConduitTradeSize, number>> = {

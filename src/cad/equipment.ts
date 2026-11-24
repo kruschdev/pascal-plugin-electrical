@@ -33,12 +33,30 @@ import {
 } from '../nec/tables'
 import { buildElectricalBoxCad } from './boxes'
 import {
+  buildBrassFloorBoxCad,
+  buildCeilingFanLightCad,
+  buildCommercialVfdCad,
+  buildSmartDimmerCad,
+  buildSmokeCoAlarmCad,
+  buildType2SpdCad,
+  buildUnderCabinetLedCad,
+  buildUsbDuplexReceptacleCad,
+  buildWeatherproofInUseCoverCad,
+} from './expansion'
+import {
   buildPanelNameplatePlacards,
   type CadMaterialPool,
   createCadMaterialPool,
   nmbJacketColor,
   voltageAccentMaterial,
 } from './materials'
+import {
+  buildAutomaticTransferSwitchCad,
+  buildGeneratorInletBoxCad,
+  buildPvRapidShutdownCad,
+  buildSolarStringInverterCad,
+  buildWallBatteryEssCad,
+} from './solar-backup'
 
 const IN = 0.0254
 
@@ -581,6 +599,20 @@ export type DeviceCadOptions = {
     | 'exit-sign'
     | 'motor-load'
     | 'junction-box'
+    | 'solar-inverter'
+    | 'battery-ess'
+    | 'transfer-switch'
+    | 'generator-inlet'
+    | 'rapid-shutdown'
+    | 'spd'
+    | 'vfd'
+    | 'dimmer'
+    | 'usb-duplex'
+    | 'weatherproof-gfci'
+    | 'floor-box'
+    | 'smoke-co'
+    | 'ceiling-fan'
+    | 'under-cabinet-led'
   boxType?: BoxType
   occupancy?: OccupancyType
   breakerAmps?: number
@@ -592,6 +624,63 @@ export function buildDeviceCad(opts: DeviceCadOptions): Group {
   const boxType: BoxType = opts.boxType ?? 'single-gang-standard'
   const group = new Group()
   group.name = `cad-device-${opts.deviceKind}`
+
+  if (opts.deviceKind === 'solar-inverter') {
+    group.add(buildSolarStringInverterCad(mats))
+    return group
+  }
+  if (opts.deviceKind === 'battery-ess') {
+    group.add(buildWallBatteryEssCad(mats))
+    return group
+  }
+  if (opts.deviceKind === 'transfer-switch') {
+    group.add(buildAutomaticTransferSwitchCad(mats))
+    return group
+  }
+  if (opts.deviceKind === 'generator-inlet') {
+    group.add(buildGeneratorInletBoxCad(mats))
+    return group
+  }
+  if (opts.deviceKind === 'rapid-shutdown') {
+    group.add(buildPvRapidShutdownCad(mats))
+    return group
+  }
+  if (opts.deviceKind === 'spd') {
+    group.add(buildType2SpdCad(mats))
+    return group
+  }
+  if (opts.deviceKind === 'vfd') {
+    group.add(buildCommercialVfdCad(mats))
+    return group
+  }
+  if (opts.deviceKind === 'dimmer') {
+    group.add(buildSmartDimmerCad(mats))
+    return group
+  }
+  if (opts.deviceKind === 'usb-duplex') {
+    group.add(buildUsbDuplexReceptacleCad(mats))
+    return group
+  }
+  if (opts.deviceKind === 'weatherproof-gfci') {
+    group.add(buildWeatherproofInUseCoverCad(mats))
+    return group
+  }
+  if (opts.deviceKind === 'floor-box') {
+    group.add(buildBrassFloorBoxCad(mats))
+    return group
+  }
+  if (opts.deviceKind === 'smoke-co') {
+    group.add(buildSmokeCoAlarmCad(mats))
+    return group
+  }
+  if (opts.deviceKind === 'ceiling-fan') {
+    group.add(buildCeilingFanLightCad(mats))
+    return group
+  }
+  if (opts.deviceKind === 'under-cabinet-led') {
+    group.add(buildUnderCabinetLedCad(mats))
+    return group
+  }
 
   if (opts.deviceKind === 'luminaire') {
     const fixture =

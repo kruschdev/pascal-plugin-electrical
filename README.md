@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-amber.svg)](./LICENSE)
 [![Pascal Plugin API v1](https://img.shields.io/badge/Pascal_Plugin_API-v1-38bdf8.svg)](https://github.com/pascalorg/editor)
 [![3D CAD Models](https://img.shields.io/badge/MIT_3D_CAD_Models-50_.glb-10b981.svg)](./docs/CAD-CATALOG.md)
-[![NEC Tests](https://img.shields.io/badge/Tests-44%2F44_Passing-22c55e.svg)](./src/__tests__)
+[![NEC Tests](https://img.shields.io/badge/Tests-45%2F45_Passing-22c55e.svg)](./src/__tests__)
 
 An open-source, MIT-licensed **Residential and Commercial NEC Electrical** plugin for [Pascal Editor](https://github.com/pascalorg/editor).
 

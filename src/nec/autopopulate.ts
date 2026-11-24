@@ -1664,12 +1664,47 @@ export type DeviceAutoConnectionPlan = {
 }
 
 function deviceFamilyOf(kind: string): 'receptacle' | 'lighting' | 'junction' | 'dedicated' {
-  if (kind === 'duplex' || kind === 'gfci' || kind === 'afci') return 'receptacle'
-  if (kind === 'switch-1p' || kind === 'switch-3way' || kind === 'luminaire' || kind === 'exit-sign') {
+  if (
+    kind === 'duplex' ||
+    kind === 'gfci' ||
+    kind === 'afci' ||
+    kind === 'usb-duplex' ||
+    kind === 'weatherproof-gfci' ||
+    kind === 'floor-box'
+  ) {
+    return 'receptacle'
+  }
+  if (
+    kind === 'switch-1p' ||
+    kind === 'switch-3way' ||
+    kind === 'dimmer' ||
+    kind === 'luminaire' ||
+    kind === 'exit-sign' ||
+    kind === 'ceiling-fan' ||
+    kind === 'smoke-co' ||
+    kind === 'under-cabinet-led'
+  ) {
     return 'lighting'
   }
   if (kind === 'junction-box') return 'junction'
   return 'dedicated'
+}
+
+function isZeroYokeDeviceKind(kind: unknown): boolean {
+  return (
+    kind === 'junction-box' ||
+    kind === 'luminaire' ||
+    kind === 'ceiling-fan' ||
+    kind === 'smoke-co' ||
+    kind === 'under-cabinet-led' ||
+    kind === 'solar-inverter' ||
+    kind === 'battery-ess' ||
+    kind === 'transfer-switch' ||
+    kind === 'generator-inlet' ||
+    kind === 'rapid-shutdown' ||
+    kind === 'spd' ||
+    kind === 'vfd'
+  )
 }
 
 function resolveZoneNearPoint(
@@ -1766,18 +1801,38 @@ export function findNextWallPlacement(
   const safeLevelHeight = Number.isFinite(rawLevelHeight) && rawLevelHeight > 0.5 ? rawLevelHeight : 2.5
   const kind = options.deviceKind ?? 'duplex'
   const mountY =
-    kind === 'motor-load'
+    kind === 'motor-load' || kind === 'floor-box'
       ? 0
       : kind === 'luminaire'
         ? round3(Math.max(2.1, safeLevelHeight - 0.04))
-        : kind === 'junction-box'
-          ? round3(Math.max(1.2, Math.min(2.45, safeLevelHeight - 0.1)))
-          : kind === 'evse' || kind === 'gfci'
-            ? 1.12
-            : kind === 'switch-1p' || kind === 'switch-3way'
-              ? 1.22
-              : 0.38
-  const enforceTubClearance = kind !== 'luminaire' && kind !== 'junction-box'
+        : kind === 'smoke-co'
+          ? round3(Math.max(2.1, safeLevelHeight - 0.03))
+          : kind === 'ceiling-fan'
+            ? round3(Math.max(2.1, safeLevelHeight - 0.16))
+            : kind === 'junction-box'
+              ? round3(Math.max(1.2, Math.min(2.45, safeLevelHeight - 0.1)))
+              : kind === 'spd'
+                ? 1.52
+                : kind === 'solar-inverter' || kind === 'transfer-switch' || kind === 'rapid-shutdown' || kind === 'vfd'
+                  ? 1.45
+                  : kind === 'under-cabinet-led'
+                    ? 1.32
+                    : kind === 'switch-1p' || kind === 'switch-3way' || kind === 'dimmer'
+                      ? 1.22
+                      : kind === 'battery-ess'
+                        ? 1.15
+                        : kind === 'evse' || kind === 'gfci'
+                          ? 1.12
+                          : kind === 'generator-inlet'
+                            ? 0.65
+                            : kind === 'weatherproof-gfci'
+                              ? 0.45
+                              : 0.38
+  const enforceTubClearance =
+    kind !== 'luminaire' &&
+    kind !== 'junction-box' &&
+    kind !== 'ceiling-fan' &&
+    kind !== 'smoke-co'
 
   const isOccupied = (pos: Vec3, rot: number): boolean => {
     for (const d of existingDevices) {
@@ -1787,6 +1842,36 @@ export function findNextWallPlacement(
       if (dist3D(ep, pos) < 0.52 && Math.cos(eRot - rot) > 0.25) return true
     }
     return false
+  }
+
+  // Room-interior placement for ceiling-centered fixtures (ceiling-fan, smoke-co, luminaire) & floor boxes
+  if (kind === 'ceiling-fan' || kind === 'smoke-co' || kind === 'luminaire' || kind === 'floor-box') {
+    const interiorZones = zones.filter((z) => !isOutdoorCategory(z.category))
+    const prioritized = [...interiorZones].sort((a, b) => {
+      const aPref = options.preferredZoneId && a.id === options.preferredZoneId ? 1 : 0
+      const bPref = options.preferredZoneId && b.id === options.preferredZoneId ? 1 : 0
+      if (aPref !== bPref) return bPref - aPref
+      return b.areaM2 - a.areaM2
+    })
+    for (const z of prioritized) {
+      const offsets: Array<[number, number]> = [
+        [0, 0],
+        [0.65, 0],
+        [-0.65, 0],
+        [0, 0.65],
+        [0, -0.65],
+      ]
+      for (const [ox, oz] of offsets) {
+        const px = round3(z.centroid[0] + ox)
+        const pz = round3(z.centroid[1] + oz)
+        if (!zoneAtPoint(zones, px, pz)) continue
+        if (enforceTubClearance && minDistToTubBoxes(tubBoxes, px, pz) < 0.96) continue
+        const pos: Vec3 = [px, mountY, pz]
+        if (!isOccupied(pos, 0)) {
+          return { position: pos, rotation: 0, zoneName: z.name }
+        }
+      }
+    }
   }
 
   let best: { pos: Vec3; rot: number; zoneName: string | null; score: number } | null = null
@@ -2075,7 +2160,7 @@ export function planDeviceAutoConnection(
     const newBoxCheck = calculateBoxFill({
       boxType: newBoxType,
       conductors: [{ gauge: boxFillGauge, count: newConductorCount }],
-      deviceYokeCount: draft.deviceKind === 'junction-box' || draft.deviceKind === 'luminaire' ? 0 : 1,
+      deviceYokeCount: isZeroYokeDeviceKind(draft.deviceKind) ? 0 : 1,
       internalClampCount: 1,
       equipmentGroundCount: 1,
     })
@@ -2090,8 +2175,7 @@ export function planDeviceAutoConnection(
     const anchorBoxCheck = calculateBoxFill({
       boxType: nextAnchorBox,
       conductors: [{ gauge: boxFillGauge, count: nextCond }],
-      deviceYokeCount:
-        anchorDevice.deviceKind === 'junction-box' || anchorDevice.deviceKind === 'luminaire' ? 0 : 1,
+      deviceYokeCount: isZeroYokeDeviceKind(anchorDevice.deviceKind) ? 0 : 1,
       internalClampCount: typeof anchorDevice.clampCount === 'number' ? anchorDevice.clampCount : 1,
       equipmentGroundCount: 1,
     })
@@ -2220,7 +2304,7 @@ export function planDeviceAutoConnection(
   const newBoxCheck = calculateBoxFill({
     boxType: newBoxType,
     conductors: [{ gauge: boxFillGauge, count: newConductorCount }],
-    deviceYokeCount: draft.deviceKind === 'junction-box' || draft.deviceKind === 'luminaire' ? 0 : 1,
+    deviceYokeCount: isZeroYokeDeviceKind(draft.deviceKind) ? 0 : 1,
     internalClampCount: 1,
     equipmentGroundCount: 1,
   })

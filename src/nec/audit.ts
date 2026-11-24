@@ -640,10 +640,23 @@ export function auditSceneElectrical(
       ? wireGauge
       : '12'
     const conductorCount = typeof dev.conductorCount === 'number' ? dev.conductorCount : 4
+    const isZeroYokeKind =
+      dev.deviceKind === 'junction-box' ||
+      dev.deviceKind === 'luminaire' ||
+      dev.deviceKind === 'ceiling-fan' ||
+      dev.deviceKind === 'smoke-co' ||
+      dev.deviceKind === 'under-cabinet-led' ||
+      dev.deviceKind === 'solar-inverter' ||
+      dev.deviceKind === 'battery-ess' ||
+      dev.deviceKind === 'transfer-switch' ||
+      dev.deviceKind === 'generator-inlet' ||
+      dev.deviceKind === 'rapid-shutdown' ||
+      dev.deviceKind === 'spd' ||
+      dev.deviceKind === 'vfd'
     const yokeCount =
       typeof dev.yokeCount === 'number'
         ? dev.yokeCount
-        : dev.deviceKind === 'junction-box'
+        : isZeroYokeKind
           ? 0
           : 1
     const clampCount = typeof dev.clampCount === 'number' ? dev.clampCount : 1
@@ -682,9 +695,18 @@ export function auditSceneElectrical(
         dev.deviceKind === 'duplex' ||
         dev.deviceKind === 'gfci' ||
         dev.deviceKind === 'afci' ||
-        dev.deviceKind === 'dedicated-240v'
-      const isSwitch = dev.deviceKind === 'switch-1p' || dev.deviceKind === 'switch-3way'
-      const isLuminaire = dev.deviceKind === 'luminaire'
+        dev.deviceKind === 'dedicated-240v' ||
+        dev.deviceKind === 'usb-duplex' ||
+        dev.deviceKind === 'weatherproof-gfci' ||
+        dev.deviceKind === 'floor-box'
+      const isSwitch =
+        dev.deviceKind === 'switch-1p' ||
+        dev.deviceKind === 'switch-3way' ||
+        dev.deviceKind === 'dimmer'
+      const isLuminaire =
+        dev.deviceKind === 'luminaire' ||
+        dev.deviceKind === 'ceiling-fan' ||
+        dev.deviceKind === 'under-cabinet-led'
 
       // NEC 406.9(C), 404.4(C), 410.10(D), & 406.5 Fixture-Proximity Prohibited Zones
       // Only enforce within the same room zone (solid partition walls separate adjacent rooms)

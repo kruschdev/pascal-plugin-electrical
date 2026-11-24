@@ -243,16 +243,31 @@ export const electricalAgentOperations = {
       continuousLoad: continuous,
       breakerAmps: initialBreakerAmps,
     })
+    const isZeroYoke =
+      deviceKind === 'junction-box' ||
+      deviceKind === 'luminaire' ||
+      deviceKind === 'ceiling-fan' ||
+      deviceKind === 'smoke-co' ||
+      deviceKind === 'under-cabinet-led' ||
+      deviceKind === 'solar-inverter' ||
+      deviceKind === 'battery-ess' ||
+      deviceKind === 'transfer-switch' ||
+      deviceKind === 'generator-inlet' ||
+      deviceKind === 'rapid-shutdown' ||
+      deviceKind === 'spd' ||
+      deviceKind === 'vfd'
     const autoBoxType = (
       deviceKind === 'junction-box'
         ? '4-sq-2.125'
-        : initialBreakerAmps >= 40
-          ? '4-11-16-2.125'
-          : initialBreakerAmps >= 30
-            ? '4-sq-2.125'
-            : deviceKind === 'gfci'
-              ? 'single-gang-deep'
-              : 'single-gang-standard'
+        : deviceKind === 'ceiling-fan' || deviceKind === 'smoke-co' || deviceKind === 'luminaire'
+          ? '4-oct-2.125'
+          : initialBreakerAmps >= 40
+            ? '4-11-16-2.125'
+            : initialBreakerAmps >= 30
+              ? '4-sq-2.125'
+              : deviceKind === 'gfci' || deviceKind === 'usb-duplex' || deviceKind === 'weatherproof-gfci'
+                ? 'single-gang-deep'
+                : 'single-gang-standard'
     ) as import('./nec/tables').BoxType
     const initialConductorCount =
       input.conductorCount ?? (poles === 3 ? 3 : initialBreakerAmps >= 30 ? 3 : 4)
@@ -274,7 +289,7 @@ export const electricalAgentOperations = {
             breakerAmps: initialBreakerAmps,
             loadVa,
             continuous,
-            gfciProtected: input.gfciProtected ?? deviceKind === 'gfci',
+            gfciProtected: input.gfciProtected ?? (deviceKind === 'gfci' || deviceKind === 'weatherproof-gfci'),
             afciProtected: input.afciProtected ?? deviceKind === 'afci',
             boxType: (input.boxType ?? autoBoxType) as import('./nec/tables').BoxType,
             wireGauge: (input.wireGauge ?? autoWireGauge) as WireGauge,
@@ -290,7 +305,9 @@ export const electricalAgentOperations = {
     const finalWireGauge = (input.wireGauge ?? autoConn?.wireGauge ?? autoWireGauge) as WireGauge
     const finalBoxType = input.boxType ?? autoConn?.boxType ?? autoBoxType
     const finalConductorCount = input.conductorCount ?? autoConn?.conductorCount ?? initialConductorCount
-    const finalGfciProtected = autoConn ? autoConn.gfciProtected : (input.gfciProtected ?? deviceKind === 'gfci')
+    const finalGfciProtected = autoConn
+      ? autoConn.gfciProtected
+      : (input.gfciProtected ?? (deviceKind === 'gfci' || deviceKind === 'weatherproof-gfci'))
     const finalAfciProtected = autoConn ? autoConn.afciProtected : (input.afciProtected ?? deviceKind === 'afci')
 
     const node = {
@@ -313,14 +330,14 @@ export const electricalAgentOperations = {
       breakerAmps: finalBreakerAmps,
       loadVa,
       continuous,
-      isMotor: deviceKind === 'motor-load',
+      isMotor: deviceKind === 'motor-load' || deviceKind === 'vfd',
       gfciProtected: finalGfciProtected,
       afciProtected: finalAfciProtected,
       boxType: finalBoxType,
       wireGauge: finalWireGauge,
       conductorCount: finalConductorCount,
       clampCount: 1,
-      yokeCount: deviceKind === 'junction-box' ? 0 : 1,
+      yokeCount: isZeroYoke ? 0 : 1,
     } as unknown as AnyNode
 
     const creates: Array<{ node: AnyNode; parentId?: string }> = [
