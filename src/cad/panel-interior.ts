@@ -24,7 +24,11 @@ import {
 } from 'three'
 import type { PanelSchedule, PanelSlotEntry } from '../nec/panel-schedule'
 import type { VoltageSystem, WireGauge } from '../nec/tables'
-import { type CadMaterialPool, createCadMaterialPool, voltageAccentMaterial } from './materials'
+import {
+  buildPanelNameplatePlacards,
+  type CadMaterialPool,
+  createCadMaterialPool,
+} from './materials'
 
 export type PanelInteriorViewMode = 'cover-off' | 'panel-cover-on' | 'deadfront-on' | 'closed'
 
@@ -777,18 +781,20 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
       }
     }
 
-    // Subtle dark steel trim borders along the breaker bank opening + voltage header stripe & circuit index strips
+    // Subtle dark steel trim borders along the breaker bank opening + engraved NEMA nameplate & NEC 110.16 arc-flash placard
     const bankFrameH = spineH + 0.006
     const bankBorderL = new Mesh(new BoxGeometry(0.003, bankFrameH, 0.002), mats.darkSteel)
     bankBorderL.position.set(-xCutOut - 0.0015, (bankTopY + bankBotY) / 2, zCover + 0.002)
     const bankBorderR = new Mesh(new BoxGeometry(0.003, bankFrameH, 0.002), mats.darkSteel)
     bankBorderR.position.set(xCutOut + 0.0015, (bankTopY + bankBotY) / 2, zCover + 0.002)
-    const coverStripe = new Mesh(
-      new BoxGeometry(w * 0.72, 0.022, 0.002),
-      voltageAccentMaterial(mats, schedule.voltageSystem),
-    )
-    coverStripe.position.set(0, h / 2 - 0.042, zCover + 0.0025)
-    group.add(bankBorderL, bankBorderR, coverStripe)
+    const coverPlacards = buildPanelNameplatePlacards({
+      panelWidth: w,
+      yCenter: h / 2 - 0.046,
+      zFront: zCover + covT / 2,
+      voltageSystem: schedule.voltageSystem,
+      mats,
+    })
+    group.add(bankBorderL, bankBorderR, coverPlacards)
 
     // Left & right white printed circuit-number index label strips flanking the breaker columns
     const idxStripW = Math.min(0.028, sideShieldW * 0.42)
@@ -805,14 +811,16 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
   if (viewMode === 'closed') {
     const door = new Mesh(new BoxGeometry(w + 0.02, h + 0.02, 0.01), mats.nemaGray)
     door.position.set(0, 0, d / 2 + 0.008)
-    const stripe = new Mesh(
-      new BoxGeometry(w * 0.86, 0.036, 0.005),
-      voltageAccentMaterial(mats, schedule.voltageSystem),
-    )
-    stripe.position.set(0, h * 0.43, d / 2 + 0.015)
+    const doorPlacards = buildPanelNameplatePlacards({
+      panelWidth: w,
+      yCenter: h * 0.41,
+      zFront: d / 2 + 0.013,
+      voltageSystem: schedule.voltageSystem,
+      mats,
+    })
     const latch = new Mesh(new BoxGeometry(0.022, 0.068, 0.012), mats.darkSteel)
     latch.position.set(w * 0.38, -h * 0.03, d / 2 + 0.016)
-    group.add(door, stripe, latch)
+    group.add(door, doorPlacards, latch)
   }
 
   return group

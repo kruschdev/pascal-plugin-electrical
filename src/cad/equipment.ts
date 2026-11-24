@@ -33,6 +33,7 @@ import {
 } from '../nec/tables'
 import { buildElectricalBoxCad } from './boxes'
 import {
+  buildPanelNameplatePlacards,
   type CadMaterialPool,
   createCadMaterialPool,
   nmbJacketColor,
@@ -104,11 +105,15 @@ export function buildPanelCad(opts: PanelCadOptions = {}): Group {
   trim.castShadow = true
   group.add(trim)
 
-  // Voltage-coded top header identification stripe
-  const stripeMat = voltageAccentMaterial(mats, voltageSystem)
-  const stripe = new Mesh(new BoxGeometry(w * 0.86, 0.038, 0.006), stripeMat)
-  stripe.position.set(0, h * 0.43, d / 2 + 0.014)
-  group.add(stripe)
+  // Engraved NEMA panelboard nameplate + compact NEC 110.16 arc-flash warning placard
+  const placards = buildPanelNameplatePlacards({
+    panelWidth: w,
+    yCenter: h * 0.425,
+    zFront: d / 2 + 0.012,
+    voltageSystem,
+    mats,
+  })
+  group.add(placards)
 
   if (!doorOpen) {
     // Closed hinged door panel with recessed latch & directory card window

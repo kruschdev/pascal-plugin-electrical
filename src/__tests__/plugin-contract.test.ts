@@ -266,12 +266,14 @@ describe('Pascal Plugin API v1 Conformance & Agent Operations (E-014 / E-016)', 
     )
   })
 
-  test('All 30 clean-room electrical CAD material models (panels, boxes, devices, light fixtures, fittings) build valid 3D meshes', () => {
-    expect(ELECTRICAL_CAD_CATALOG.length).toBe(30)
+  test('All 50 clean-room electrical CAD material models (panels, solar/ESS, boxes, smart devices, fixtures, conduit/grounding) build valid 3D meshes', () => {
+    expect(ELECTRICAL_CAD_CATALOG.length).toBe(50)
     const seen = new Set<string>()
+    const categories = new Set<string>()
     for (const entry of ELECTRICAL_CAD_CATALOG) {
       expect(seen.has(entry.slug)).toBe(false)
       seen.add(entry.slug)
+      categories.add(entry.category)
       const group = entry.build()
       expect(group.children.length).toBeGreaterThan(0)
       const [wMm, hMm, dMm] = measureCadDimensionsMm(group)
@@ -279,6 +281,7 @@ describe('Pascal Plugin API v1 Conformance & Agent Operations (E-014 / E-016)', 
       expect(hMm).toBeGreaterThan(0)
       expect(dMm).toBeGreaterThan(0)
     }
+    expect(categories.size).toBe(6)
   })
 
   test('Cover-off wired panel interior builder generates exposed busbars, breakers, feeders, and individual branch wires with circuit metadata', () => {

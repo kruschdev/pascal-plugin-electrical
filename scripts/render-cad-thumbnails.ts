@@ -1,7 +1,7 @@
 /**
- * Renders a studio-lit 30-item WebGL contact sheet (`assets/cad-material-catalog.png`)
+ * Renders a studio-lit 50-item WebGL contact sheet (`assets/cad-material-catalog.png`)
  * by loading every exported `.glb` via Three.js `GLTFLoader` in headless Chrome,
- * proving all 30 GLBs parse & render cleanly in a real browser.
+ * proving all 50 GLBs parse & render cleanly in a real browser.
  */
 
 import fs from 'node:fs'
@@ -48,7 +48,7 @@ const html = `<!doctype html>
   .sub { font-size: 12px; color: #94a3b8; }
   .grid {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 12px;
   }
   .card {
@@ -81,8 +81,8 @@ const html = `<!doctype html>
 </head>
 <body>
   <header>
-    <h1>@kruschdev/pascal-plugin-electrical — 30 Clean-Room MIT Electrical CAD Models (.glb)</h1>
-    <div class="sub">Panels · Breakers · Transformers · NEC 314.16 Boxes · Wiring Devices · Light Fixtures · Conduit Fittings</div>
+    <h1>@kruschdev/pascal-plugin-electrical — 50 Clean-Room MIT Electrical CAD Models (.glb)</h1>
+    <div class="sub">Panels · Solar &amp; ESS · ATS/Gen · Transformers · NEC 314.16 Boxes · Smart Devices · Light Fixtures · Cable Tray &amp; Grounding</div>
   </header>
   <div id="grid" class="grid"></div>
   <script type="module">
@@ -125,10 +125,15 @@ const html = `<!doctype html>
       const maxDim = Math.max(size.x, size.y, size.z, 0.05);
       const camera = new THREE.PerspectiveCamera(34, 320 / 240, 0.005, 50);
       const dist = maxDim * 2.1;
-      const isCeilingFixture = item.slug.startsWith('fixture-') && !item.slug.includes('wall') && !item.slug.includes('exit');
+      const isCeilingFixture =
+        (item.slug.startsWith('fixture-') && !item.slug.includes('wall') && !item.slug.includes('exit')) ||
+        item.slug === 'device-smoke-co-alarm'
+      const isFloorOrTray = item.slug === 'device-floor-box-brass' || item.slug === 'cable-tray-ladder'
       const camPos = isCeilingFixture
         ? new THREE.Vector3(center.x + dist * 0.75, center.y - dist * 0.45, center.z + dist * 0.8)
-        : new THREE.Vector3(center.x + dist * 0.65, center.y + dist * 0.48, center.z + dist * 0.92);
+        : isFloorOrTray
+          ? new THREE.Vector3(center.x + dist * 0.7, center.y + dist * 0.85, center.z + dist * 0.85)
+          : new THREE.Vector3(center.x + dist * 0.65, center.y + dist * 0.48, center.z + dist * 0.92)
       camera.position.copy(camPos);
       camera.lookAt(center);
 
@@ -216,8 +221,8 @@ const chromeArgs = [
   '--use-angle=swiftshader',
   '--enable-webgl',
   '--ignore-gpu-blocklist',
-  '--virtual-time-budget=25000',
-  '--window-size=1680,1460',
+  '--virtual-time-budget=35000',
+  '--window-size=1680,2560',
   `--screenshot=${outSheet}`,
   `http://127.0.0.1:${server.port}/`,
 ]

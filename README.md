@@ -2,8 +2,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-amber.svg)](./LICENSE)
 [![Pascal Plugin API v1](https://img.shields.io/badge/Pascal_Plugin_API-v1-38bdf8.svg)](https://github.com/pascalorg/editor)
-[![3D CAD Models](https://img.shields.io/badge/MIT_3D_CAD_Models-30_.glb-10b981.svg)](./docs/CAD-CATALOG.md)
-[![NEC Tests](https://img.shields.io/badge/Tests-40%2F40_Passing-22c55e.svg)](./src/__tests__)
+[![3D CAD Models](https://img.shields.io/badge/MIT_3D_CAD_Models-50_.glb-10b981.svg)](./docs/CAD-CATALOG.md)
+[![NEC Tests](https://img.shields.io/badge/Tests-44%2F44_Passing-22c55e.svg)](./src/__tests__)
 
 An open-source, MIT-licensed **Residential and Commercial NEC Electrical** plugin for [Pascal Editor](https://github.com/pascalorg/editor).
 
@@ -29,7 +29,7 @@ I built this as a standalone external plugin implementing Pascal's full Plugin A
 
 ![Split 3D Viewport, Electrical Rail Panel, and Full-Pane 3-Phase Panelboard Schedule View](./assets/demo-panel-schedule.png)
 
-![30 Clean-Room MIT Electrical CAD Material Models (.glb): Load Centers, Open-Cover Panels, Circuit Breakers, Dry-Type Transformers, NEC 314.16 Boxes, Wiring Devices, Residential & Commercial Light Fixtures, and Conduit Fittings](./assets/cad-material-catalog.png)
+![50 Clean-Room MIT Electrical CAD Material Models (.glb): Load Centers, Open-Cover and Panel-Cover-On Panels, Solar Inverters, Battery ESS, Automatic Transfer Switches, VFDs, SPDs, Dry-Type Transformers, NEC 314.16 Boxes, Smart Wiring Devices, Light Fixtures, Cable Tray, Wireways, and Grounding Hardware](./assets/cad-material-catalog.png)
 
 > **Drafting and engineering aid, not stamped engineering.** Always verify calculations, conductor sizing, and local AHJ amendments with a licensed electrical engineer or inspector before construction.
 
@@ -50,7 +50,7 @@ The one code exception where foreign systems cannot invade electrical is **NEC 1
 |---|---|
 | **[Architecture Guide](./docs/ARCHITECTURE.md)** | System diagram, 6 entrypoint boundary gates, 4 `electrical:*` node kinds, local-yaw 2D SAT clearances, and cover-off 3D panel pipeline |
 | **[NEC Engineering Reference](./docs/NEC-REFERENCE.md)** | Every implemented NEC Article and Table (`220`, `210.8`, `210.11`, `210.12`, `210.19`, `210.52`, `210.70`, `240.4(D)`, `240.24`, `310.16`, `312.2`, `314.16`, `358.26`, `404.4(C)`, `406.5(E)`, `406.9(C)`, `410.10(D)`, `410.16(C)`, `450.3(B)`, `705.12`, `110.26`, `Ch. 9`) |
-| **[30-Model MIT 3D CAD Catalog](./docs/CAD-CATALOG.md)** | Full inventory of all 30 `.glb` models, dimensions in mm, NEC references, and programmatic `./cad` usage |
+| **[50-Model MIT 3D CAD Catalog](./docs/CAD-CATALOG.md)** | Full inventory of all 50 `.glb` models across 6 categories (including Solar/ESS/ATS, Smart Controls, VFDs, Cable Tray, and Grounding), dimensions in mm, NEC references, and programmatic `./cad` usage |
 | **[Agent Tools Reference (`E-016`)](./docs/AGENT-TOOLS.md)** | All 8 pure Zod agent tools and pure scene operations for MCP servers, chat workflows, and headless automation |
 | **[Contributing Guide](./CONTRIBUTING.md)** | Local setup, boundary gates, CAD `.glb` regeneration, and PR guidelines |
 
@@ -60,7 +60,7 @@ The one code exception where foreign systems cannot invade electrical is **NEC 1
 |---|---|---|
 | `.` | `electricalPlugin`, `electricalHostPanel`, `electricalScheduleView`, `electricalChatExtension` | Full editor integration (`EditorHostPanel`, full-pane `EditorHostView`, `InspectorExtension`, chat cards) |
 | `./render` | `electricalRenderPlugin` | Editor-free read-only viewer manifest (verified by `bun run check:render`) |
-| `./cad` | `ELECTRICAL_CAD_CATALOG`, `buildElectricalCadPart`, `buildWiredPanelInteriorCad`, `buildPanelCad`, `buildElectricalBoxCad`, `buildDeviceCad`, `buildConduitRunCad` | Editor-free, React-free Three.js CAD part builders for all 30 electrical materials |
+| `./cad` | `ELECTRICAL_CAD_CATALOG`, `buildElectricalCadPart`, `buildWiredPanelInteriorCad`, `buildPanelCad`, `buildElectricalBoxCad`, `buildDeviceCad`, `buildConduitRunCad` | Editor-free, React-free Three.js CAD part builders for all 50 electrical materials |
 | `./nec` | Pure NEC, auto-populate, audit, trade-routing, schedule, and BOM pricing functions | Framework-free TypeScript (zero React, Three.js, or `@pascal-app/*`) |
 | `./agent-tools` | `electricalAgentTools` (`PluginAgentTools`, `E-016`) | Pure Zod-only contracts (`8` tools + skill) |
 | `./agent-operations` | `electricalAgentOperations` (`AgentOperations`, `E-016`) | Pure scene operations runnable on MCP, detached runtime, or live chat |

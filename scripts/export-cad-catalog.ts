@@ -1,5 +1,5 @@
 /**
- * Exports all 30 clean-room MIT Electrical Materials CAD models into binary `.glb` files
+ * Exports all 50 clean-room MIT Electrical Materials CAD models into binary `.glb` files
  * under `assets/cad/<slug>/model.glb` (matching Pascal's `apps/editor/public/items/<slug>/` layout)
  * plus `assets/cad/catalog.json` metadata.
  */

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "license": "MIT",
-  "count": 30,
+  "count": 50,
   "items": [
     {
       "slug": "panel-res-200a-closed",
@@ -14,7 +14,7 @@
         944,
         167
       ],
-      "glbBytes": 19492,
+      "glbBytes": 41240,
       "modelPath": "./panel-res-200a-closed/model.glb",
       "thumbnailPath": "./panel-res-200a-closed/thumbnail.png"
     },
@@ -29,7 +29,7 @@
         901,
         149
       ],
-      "glbBytes": 801880,
+      "glbBytes": 802164,
       "modelPath": "./panel-res-200a-open/model.glb",
       "thumbnailPath": "./panel-res-200a-open/thumbnail.png"
     },
@@ -44,7 +44,7 @@
         1091,
         149
       ],
-      "glbBytes": 568664,
+      "glbBytes": 568864,
       "modelPath": "./panel-comm-400a-3p/model.glb",
       "thumbnailPath": "./panel-comm-400a-3p/thumbnail.png"
     },
@@ -59,7 +59,7 @@
         844,
         182
       ],
-      "glbBytes": 26148,
+      "glbBytes": 47896,
       "modelPath": "./panel-nema3r-outdoor/model.glb",
       "thumbnailPath": "./panel-nema3r-outdoor/thumbnail.png"
     },
@@ -122,6 +122,141 @@
       "glbBytes": 30552,
       "modelPath": "./meter-socket-200a/model.glb",
       "thumbnailPath": "./meter-socket-200a/thumbnail.png"
+    },
+    {
+      "slug": "panel-res-200a-cover-on",
+      "name": "200A Load Center (Panel Cover On)",
+      "category": "panels-gear",
+      "necRef": "NEC 408.7 / UL 67",
+      "description": "200A residential load center with flush ANSI-61 gray steel panel cover, breaker handles, spare twist-out blanks, NEMA nameplate, and NEC 110.16 arc-flash placard.",
+      "dimensionsMm": [
+        452,
+        907,
+        152
+      ],
+      "glbBytes": 657872,
+      "modelPath": "./panel-res-200a-cover-on/model.glb",
+      "thumbnailPath": "./panel-res-200a-cover-on/thumbnail.png"
+    },
+    {
+      "slug": "subpanel-100a-mlo",
+      "name": "100A 12-Space MLO Subpanel (Wired)",
+      "category": "panels-gear",
+      "necRef": "NEC 250.24(A)(5) / 408",
+      "description": "Compact 100A Main-Lugs-Only garage/ADU subpanel with isolated neutral and separate equipment grounding bar (no main bonding screw).",
+      "dimensionsMm": [
+        366,
+        661,
+        149
+      ],
+      "glbBytes": 420212,
+      "modelPath": "./subpanel-100a-mlo/model.glb",
+      "thumbnailPath": "./subpanel-100a-mlo/thumbnail.png"
+    },
+    {
+      "slug": "spd-type2-panel",
+      "name": "Type 2 Whole-Home Surge Protector (SPD)",
+      "category": "panels-gear",
+      "necRef": "NEC 230.67",
+      "description": "NEMA-4X Type 2 panel-mounted Surge Protective Device with 1/2\" close-nipple, locknut, twin green diagnostic LEDs, and color-coded leads.",
+      "dimensionsMm": [
+        164,
+        145,
+        85
+      ],
+      "glbBytes": 31160,
+      "modelPath": "./spd-type2-panel/model.glb",
+      "thumbnailPath": "./spd-type2-panel/thumbnail.png"
+    },
+    {
+      "slug": "vfd-drive-commercial",
+      "name": "Commercial 3-Phase VFD Motor Drive",
+      "category": "panels-gear",
+      "necRef": "NEC 430.122",
+      "description": "Industrial Variable Frequency Drive with deep aluminum heatsink fins, front keypad, cyan frequency display, speed pot, and dual bottom EMT hubs.",
+      "dimensionsMm": [
+        220,
+        411,
+        238
+      ],
+      "glbBytes": 41172,
+      "modelPath": "./vfd-drive-commercial/model.glb",
+      "thumbnailPath": "./vfd-drive-commercial/thumbnail.png"
+    },
+    {
+      "slug": "solar-inverter-string",
+      "name": "String Solar PV Inverter (NEC 690)",
+      "category": "solar-backup",
+      "necRef": "NEC 690.15 / 690.31",
+      "description": "Wall-mounted string PV inverter with extruded rear heatsink fins, OLED readout, integrated rotary DC isolator, MC4 inputs, and AC conduit gland.",
+      "dimensionsMm": [
+        434,
+        579,
+        234
+      ],
+      "glbBytes": 40012,
+      "modelPath": "./solar-inverter-string/model.glb",
+      "thumbnailPath": "./solar-inverter-string/thumbnail.png"
+    },
+    {
+      "slug": "battery-wall-ess",
+      "name": "Wall-Mounted Home Battery ESS (13.5 kWh)",
+      "category": "solar-backup",
+      "necRef": "NEC 706.15",
+      "description": "Architectural wall-mounted lithium ESS battery pack with beveled white fascia, glowing charge-status lightpipe, side shutoff toggle, and bottom conduit hub.",
+      "dimensionsMm": [
+        762,
+        1157,
+        156
+      ],
+      "glbBytes": 22456,
+      "modelPath": "./battery-wall-ess/model.glb",
+      "thumbnailPath": "./battery-wall-ess/thumbnail.png"
+    },
+    {
+      "slug": "transfer-switch-200a",
+      "name": "200A Automatic Transfer Switch (ATS)",
+      "category": "solar-backup",
+      "necRef": "NEC 702.5",
+      "description": "Service-entrance rated 200A NEMA-3R ATS with sloped drip hood, utility/generator/load status LEDs, side throw handle, and feeder hubs.",
+      "dimensionsMm": [
+        547,
+        755,
+        222
+      ],
+      "glbBytes": 70588,
+      "modelPath": "./transfer-switch-200a/model.glb",
+      "thumbnailPath": "./transfer-switch-200a/thumbnail.png"
+    },
+    {
+      "slug": "generator-inlet-50a",
+      "name": "50A NEMA SS2-50P Generator Inlet Box",
+      "category": "solar-backup",
+      "necRef": "NEC 702.7",
+      "description": "Raintight outdoor 50A generator power inlet box with spring-flip weather lid and recessed twist-lock brass male prongs.",
+      "dimensionsMm": [
+        135,
+        193,
+        183
+      ],
+      "glbBytes": 34768,
+      "modelPath": "./generator-inlet-50a/model.glb",
+      "thumbnailPath": "./generator-inlet-50a/thumbnail.png"
+    },
+    {
+      "slug": "ac-rapid-shutdown",
+      "name": "PV Rapid Shutdown / AC Disconnect Switch",
+      "category": "solar-backup",
+      "necRef": "NEC 690.12",
+      "description": "NEMA-4X polycarbonate rapid-shutdown disconnect with high-visibility yellow escutcheon, red padlockable rotary handle, and watertight glands.",
+      "dimensionsMm": [
+        161,
+        261,
+        160
+      ],
+      "glbBytes": 25180,
+      "modelPath": "./ac-rapid-shutdown/model.glb",
+      "thumbnailPath": "./ac-rapid-shutdown/thumbnail.png"
     },
     {
       "slug": "box-1gang-pvc",
@@ -319,6 +454,81 @@
       "thumbnailPath": "./device-motor-3p-tefc/thumbnail.png"
     },
     {
+      "slug": "device-dimmer-smart",
+      "name": "Smart Decora Slide Dimmer Switch",
+      "category": "wiring-devices",
+      "necRef": "NEC 404.2",
+      "description": "Smart architectural Decora dimmer with rocker paddle, side slide bar, 5-dot cyan brightness LEDs, beveled wallplate, and rough-in box.",
+      "dimensionsMm": [
+        108,
+        133,
+        132
+      ],
+      "glbBytes": 37256,
+      "modelPath": "./device-dimmer-smart/model.glb",
+      "thumbnailPath": "./device-dimmer-smart/thumbnail.png"
+    },
+    {
+      "slug": "device-usb-duplex-20a",
+      "name": "20A TR USB-A / USB-C Duplex Receptacle",
+      "category": "wiring-devices",
+      "necRef": "NEC 406.12",
+      "description": "20A tamper-resistant T-slot duplex outlet with integrated USB-A and USB-C charging ports, charging LED, wallplate, and deep box.",
+      "dimensionsMm": [
+        108,
+        133,
+        151
+      ],
+      "glbBytes": 57420,
+      "modelPath": "./device-usb-duplex-20a/model.glb",
+      "thumbnailPath": "./device-usb-duplex-20a/thumbnail.png"
+    },
+    {
+      "slug": "device-weatherproof-inuse",
+      "name": "Extra-Duty Weatherproof In-Use Bubble Cover",
+      "category": "wiring-devices",
+      "necRef": "NEC 406.9(B)(1)",
+      "description": "Wet-location cast-aluminum FS box with 20A WR GFCI behind a hinged translucent polycarbonate extra-duty bubble hood.",
+      "dimensionsMm": [
+        96,
+        161,
+        163
+      ],
+      "glbBytes": 41684,
+      "modelPath": "./device-weatherproof-inuse/model.glb",
+      "thumbnailPath": "./device-weatherproof-inuse/thumbnail.png"
+    },
+    {
+      "slug": "device-floor-box-brass",
+      "name": "Recessed Solid-Brass Floor Outlet Box",
+      "category": "wiring-devices",
+      "necRef": "NEC 314.27(B)",
+      "description": "Flush brushed-brass floor box assembly with under-floor galvanized rough-in box, conduit hubs, coin-slot plug, and hinged access flap.",
+      "dimensionsMm": [
+        148,
+        129,
+        146
+      ],
+      "glbBytes": 28888,
+      "modelPath": "./device-floor-box-brass/model.glb",
+      "thumbnailPath": "./device-floor-box-brass/thumbnail.png"
+    },
+    {
+      "slug": "device-smoke-co-alarm",
+      "name": "Hardwired 120V Interconnected Smoke/CO Alarm",
+      "category": "wiring-devices",
+      "necRef": "IRC R314 / NEC 760",
+      "description": "Ceiling-mounted 120V interconnected smoke and carbon monoxide detector with intake louver ring, test/hush button, and status LEDs.",
+      "dimensionsMm": [
+        148,
+        47,
+        148
+      ],
+      "glbBytes": 47988,
+      "modelPath": "./device-smoke-co-alarm/model.glb",
+      "thumbnailPath": "./device-smoke-co-alarm/thumbnail.png"
+    },
+    {
       "slug": "fixture-can-6in-recessed",
       "name": "6\" IC Recessed Can Downlight",
       "category": "light-fixtures",
@@ -424,6 +634,36 @@
       "thumbnailPath": "./fixture-exit-sign/thumbnail.png"
     },
     {
+      "slug": "fixture-ceiling-fan-light",
+      "name": "52\" Ceiling Fan with Integrated LED Kit",
+      "category": "light-fixtures",
+      "necRef": "NEC 314.27(C)",
+      "description": "Fan-rated ceiling luminaire assembly with canopy, downrod, brushed motor housing, 5 pitched blades, and frosted LED dome.",
+      "dimensionsMm": [
+        1231,
+        333,
+        1294
+      ],
+      "glbBytes": 62304,
+      "modelPath": "./fixture-ceiling-fan-light/model.glb",
+      "thumbnailPath": "./fixture-ceiling-fan-light/thumbnail.png"
+    },
+    {
+      "slug": "fixture-under-cabinet-led",
+      "name": "24\" Hardwired Under-Cabinet LED Task Bar",
+      "category": "light-fixtures",
+      "necRef": "NEC 410",
+      "description": "Slim anodized aluminum kitchen under-cabinet LED task bar with continuous frosted diffuser, rocker switch, and rear Romex clamp.",
+      "dimensionsMm": [
+        610,
+        32,
+        111
+      ],
+      "glbBytes": 10212,
+      "modelPath": "./fixture-under-cabinet-led/model.glb",
+      "thumbnailPath": "./fixture-under-cabinet-led/thumbnail.png"
+    },
+    {
       "slug": "conduit-body-lb-34",
       "name": "3/4\" Type LB Conduit Body",
       "category": "conduit-fittings",
@@ -452,6 +692,66 @@
       "glbBytes": 46524,
       "modelPath": "./fitting-emt-connector-coupling/model.glb",
       "thumbnailPath": "./fitting-emt-connector-coupling/thumbnail.png"
+    },
+    {
+      "slug": "conduit-body-ll-lr-t-set",
+      "name": "3/4\" Type LL, LR & T Conduit Body Trio",
+      "category": "conduit-fittings",
+      "necRef": "NEC 314.16(C)(2)",
+      "description": "Cast-aluminum 3/4\" Type LL, LR, and Tee conduit bodies with stamped steel covers, neoprene gaskets, and stainless cover screws.",
+      "dimensionsMm": [
+        264,
+        180,
+        54
+      ],
+      "glbBytes": 38912,
+      "modelPath": "./conduit-body-ll-lr-t-set/model.glb",
+      "thumbnailPath": "./conduit-body-ll-lr-t-set/thumbnail.png"
+    },
+    {
+      "slug": "wireway-gutter-4x4",
+      "name": "4\"x4\"x4ft Hinged Auxiliary Wireway Gutter",
+      "category": "conduit-fittings",
+      "necRef": "NEC 376",
+      "description": "NEMA-1 ANSI-61 gray steel 4-inch square hinged wiring trough with top piano hinges, quarter-turn latches, end flanges, and knockouts.",
+      "dimensionsMm": [
+        1223,
+        115,
+        118
+      ],
+      "glbBytes": 17924,
+      "modelPath": "./wireway-gutter-4x4/model.glb",
+      "thumbnailPath": "./wireway-gutter-4x4/thumbnail.png"
+    },
+    {
+      "slug": "cable-tray-ladder",
+      "name": "12\" Aluminum Ladder Cable Tray Section",
+      "category": "conduit-fittings",
+      "necRef": "NEC 392",
+      "description": "Commercial extruded aluminum ladder cable tray with I-beam rails, cross rungs, end splice plates, and colored feeder cable bundle.",
+      "dimensionsMm": [
+        1240,
+        102,
+        330
+      ],
+      "glbBytes": 36656,
+      "modelPath": "./cable-tray-ladder/model.glb",
+      "thumbnailPath": "./cable-tray-ladder/thumbnail.png"
+    },
+    {
+      "slug": "ground-rod-acorn-clamp",
+      "name": "Copper-Clad Ground Rod + Acorn Clamp & GEC",
+      "category": "conduit-fittings",
+      "necRef": "NEC 250.52(A)(5)",
+      "description": "5/8\" copper-clad grounding electrode rod with solid bronze direct-burial acorn clamp and #6 AWG bare copper grounding electrode conductor.",
+      "dimensionsMm": [
+        164,
+        487,
+        57
+      ],
+      "glbBytes": 39480,
+      "modelPath": "./ground-rod-acorn-clamp/model.glb",
+      "thumbnailPath": "./ground-rod-acorn-clamp/thumbnail.png"
     }
   ]
 }

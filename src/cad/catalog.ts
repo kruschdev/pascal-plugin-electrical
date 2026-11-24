@@ -1,14 +1,14 @@
 /**
- * 30-Item Clean-Room MIT Electrical Materials 3D CAD Catalog.
+ * 50-Item Clean-Room MIT Electrical Materials 3D CAD Catalog.
  * Covers Panels, Breakers, Transformers, Disconnects, Meter Sockets,
- * NEC 314.16 Outlet & Junction Boxes, Wiring Devices, Light Fixtures,
- * and Conduit/Fittings — ready for live Pascal rendering or `.glb` export.
+ * Solar PV, Battery ESS, Backup Transfer Gear, NEC 314.16 Outlet & Junction Boxes,
+ * Wiring Devices, Smart Controls, Light Fixtures, Grounding, and Conduit/Cable Tray —
+ * ready for live Pascal rendering or `.glb` export.
  */
 
 import { Box3, type Group, Vector3 } from 'three'
 import { buildPanelSchedule } from '../nec/panel-schedule'
 import { buildElectricalBoxCad, buildWeatherproofBellBoxCad } from './boxes'
-import { buildWiredPanelInteriorCad } from './panel-interior'
 import {
   buildBreakerTrioCad,
   buildConduitBodyLbCad,
@@ -27,9 +27,33 @@ import {
   buildTransformerCad,
   buildTroffer2x4Cad,
 } from './equipment'
+import {
+  buildBrassFloorBoxCad,
+  buildCeilingFanLightCad,
+  buildCommercialVfdCad,
+  buildConduitBodyTrioCad,
+  buildGroundRodAcornClampCad,
+  buildLadderCableTrayCad,
+  buildSmartDimmerCad,
+  buildSmokeCoAlarmCad,
+  buildType2SpdCad,
+  buildUnderCabinetLedCad,
+  buildUsbDuplexReceptacleCad,
+  buildWeatherproofInUseCoverCad,
+  buildWirewayGutter4x4Cad,
+} from './expansion'
+import { buildWiredPanelInteriorCad } from './panel-interior'
+import {
+  buildAutomaticTransferSwitchCad,
+  buildGeneratorInletBoxCad,
+  buildPvRapidShutdownCad,
+  buildSolarStringInverterCad,
+  buildWallBatteryEssCad,
+} from './solar-backup'
 
 export type ElectricalCadCategory =
   | 'panels-gear'
+  | 'solar-backup'
   | 'outlet-boxes'
   | 'wiring-devices'
   | 'light-fixtures'
@@ -181,6 +205,130 @@ export const ELECTRICAL_CAD_CATALOG: readonly ElectricalCadEntry[] = [
     description: '200A NEMA-3R service meter socket with top hub, glass kWh meter dome, and digital register face.',
     build: () => buildMeterSocketCad(),
   },
+  {
+    slug: 'panel-res-200a-cover-on',
+    name: '200A Load Center (Panel Cover On)',
+    category: 'panels-gear',
+    necRef: 'NEC 408.7 / UL 67',
+    description: '200A residential load center with flush ANSI-61 gray steel panel cover, breaker handles, spare twist-out blanks, NEMA nameplate, and NEC 110.16 arc-flash placard.',
+    build: () => {
+      const panel = {
+        id: 'demo_res_cover_on',
+        type: 'electrical:panel',
+        name: 'MDP-1',
+        occupancy: 'residential',
+        voltageSystem: '120/240V-1P',
+        busRatingAmps: 200,
+        mainBreakerAmps: 200,
+        mainType: 'main-breaker',
+        spaces: 20,
+      }
+      const devices = [
+        { id: 'd1', type: 'electrical:device', name: 'EVSE 50A', panelId: 'demo_res_cover_on', circuitNumber: 1, poles: 2, breakerAmps: 50, loadVa: 9600, wireGauge: '6', gfciProtected: true },
+        { id: 'd2', type: 'electrical:device', name: 'Dryer 30A', panelId: 'demo_res_cover_on', circuitNumber: 2, poles: 2, breakerAmps: 30, loadVa: 5000, wireGauge: '10' },
+        { id: 'd3', type: 'electrical:device', name: 'Kitchen GFCI 1', panelId: 'demo_res_cover_on', circuitNumber: 5, poles: 1, breakerAmps: 20, loadVa: 1500, wireGauge: '12', gfciProtected: true, afciProtected: true },
+        { id: 'd4', type: 'electrical:device', name: 'Kitchen GFCI 2', panelId: 'demo_res_cover_on', circuitNumber: 6, poles: 1, breakerAmps: 20, loadVa: 1500, wireGauge: '12', gfciProtected: true },
+        { id: 'd5', type: 'electrical:device', name: 'Living AFCI', panelId: 'demo_res_cover_on', circuitNumber: 7, poles: 1, breakerAmps: 20, loadVa: 1440, wireGauge: '12', afciProtected: true },
+        { id: 'd6', type: 'electrical:device', name: 'Bath GFCI', panelId: 'demo_res_cover_on', circuitNumber: 8, poles: 1, breakerAmps: 20, loadVa: 1440, wireGauge: '12', gfciProtected: true },
+      ]
+      return buildWiredPanelInteriorCad({
+        schedule: buildPanelSchedule(panel, devices),
+        nemaRating: 'NEMA-1',
+        viewMode: 'panel-cover-on',
+      })
+    },
+  },
+  {
+    slug: 'subpanel-100a-mlo',
+    name: '100A 12-Space MLO Subpanel (Wired)',
+    category: 'panels-gear',
+    necRef: 'NEC 250.24(A)(5) / 408',
+    description: 'Compact 100A Main-Lugs-Only garage/ADU subpanel with isolated neutral and separate equipment grounding bar (no main bonding screw).',
+    build: () => {
+      const panel = {
+        id: 'demo_sub_100a',
+        type: 'electrical:panel',
+        name: 'SUB-1',
+        occupancy: 'residential',
+        voltageSystem: '120/240V-1P',
+        busRatingAmps: 100,
+        mainBreakerAmps: 100,
+        mainType: 'mlo',
+        spaces: 12,
+      }
+      const devices = [
+        { id: 's1', type: 'electrical:device', name: 'Garage EVSE', panelId: 'demo_sub_100a', circuitNumber: 1, poles: 2, breakerAmps: 50, loadVa: 9600, wireGauge: '6', gfciProtected: true },
+        { id: 's2', type: 'electrical:device', name: 'Bench GFCI', panelId: 'demo_sub_100a', circuitNumber: 2, poles: 1, breakerAmps: 20, loadVa: 1440, wireGauge: '12', gfciProtected: true },
+        { id: 's3', type: 'electrical:device', name: 'Shop Lighting', panelId: 'demo_sub_100a', circuitNumber: 4, poles: 1, breakerAmps: 15, loadVa: 720, wireGauge: '14' },
+        { id: 's4', type: 'electrical:device', name: 'Mini-Split 20A', panelId: 'demo_sub_100a', circuitNumber: 5, poles: 2, breakerAmps: 20, loadVa: 3200, wireGauge: '12' },
+      ]
+      return buildWiredPanelInteriorCad({
+        schedule: buildPanelSchedule(panel, devices),
+        width: 0.36,
+        height: 0.62,
+        nemaRating: 'NEMA-1',
+        viewMode: 'cover-off',
+      })
+    },
+  },
+  {
+    slug: 'spd-type2-panel',
+    name: 'Type 2 Whole-Home Surge Protector (SPD)',
+    category: 'panels-gear',
+    necRef: 'NEC 230.67',
+    description: 'NEMA-4X Type 2 panel-mounted Surge Protective Device with 1/2" close-nipple, locknut, twin green diagnostic LEDs, and color-coded leads.',
+    build: () => buildType2SpdCad(),
+  },
+  {
+    slug: 'vfd-drive-commercial',
+    name: 'Commercial 3-Phase VFD Motor Drive',
+    category: 'panels-gear',
+    necRef: 'NEC 430.122',
+    description: 'Industrial Variable Frequency Drive with deep aluminum heatsink fins, front keypad, cyan frequency display, speed pot, and dual bottom EMT hubs.',
+    build: () => buildCommercialVfdCad(),
+  },
+
+  // ─── Solar PV, Battery ESS & Backup Power (5) ────────────────────────────
+  {
+    slug: 'solar-inverter-string',
+    name: 'String Solar PV Inverter (NEC 690)',
+    category: 'solar-backup',
+    necRef: 'NEC 690.15 / 690.31',
+    description: 'Wall-mounted string PV inverter with extruded rear heatsink fins, OLED readout, integrated rotary DC isolator, MC4 inputs, and AC conduit gland.',
+    build: () => buildSolarStringInverterCad(),
+  },
+  {
+    slug: 'battery-wall-ess',
+    name: 'Wall-Mounted Home Battery ESS (13.5 kWh)',
+    category: 'solar-backup',
+    necRef: 'NEC 706.15',
+    description: 'Architectural wall-mounted lithium ESS battery pack with beveled white fascia, glowing charge-status lightpipe, side shutoff toggle, and bottom conduit hub.',
+    build: () => buildWallBatteryEssCad(),
+  },
+  {
+    slug: 'transfer-switch-200a',
+    name: '200A Automatic Transfer Switch (ATS)',
+    category: 'solar-backup',
+    necRef: 'NEC 702.5',
+    description: 'Service-entrance rated 200A NEMA-3R ATS with sloped drip hood, utility/generator/load status LEDs, side throw handle, and feeder hubs.',
+    build: () => buildAutomaticTransferSwitchCad(),
+  },
+  {
+    slug: 'generator-inlet-50a',
+    name: '50A NEMA SS2-50P Generator Inlet Box',
+    category: 'solar-backup',
+    necRef: 'NEC 702.7',
+    description: 'Raintight outdoor 50A generator power inlet box with spring-flip weather lid and recessed twist-lock brass male prongs.',
+    build: () => buildGeneratorInletBoxCad(),
+  },
+  {
+    slug: 'ac-rapid-shutdown',
+    name: 'PV Rapid Shutdown / AC Disconnect Switch',
+    category: 'solar-backup',
+    necRef: 'NEC 690.12',
+    description: 'NEMA-4X polycarbonate rapid-shutdown disconnect with high-visibility yellow escutcheon, red padlockable rotary handle, and watertight glands.',
+    build: () => buildPvRapidShutdownCad(),
+  },
 
   // ─── NEC 314.16 Outlet & Junction Boxes (7) ──────────────────────────────
   {
@@ -318,6 +466,46 @@ export const ELECTRICAL_CAD_CATALOG: readonly ElectricalCadEntry[] = [
         breakerAmps: 40,
       }),
   },
+  {
+    slug: 'device-dimmer-smart',
+    name: 'Smart Decora Slide Dimmer Switch',
+    category: 'wiring-devices',
+    necRef: 'NEC 404.2',
+    description: 'Smart architectural Decora dimmer with rocker paddle, side slide bar, 5-dot cyan brightness LEDs, beveled wallplate, and rough-in box.',
+    build: () => buildSmartDimmerCad(),
+  },
+  {
+    slug: 'device-usb-duplex-20a',
+    name: '20A TR USB-A / USB-C Duplex Receptacle',
+    category: 'wiring-devices',
+    necRef: 'NEC 406.12',
+    description: '20A tamper-resistant T-slot duplex outlet with integrated USB-A and USB-C charging ports, charging LED, wallplate, and deep box.',
+    build: () => buildUsbDuplexReceptacleCad(),
+  },
+  {
+    slug: 'device-weatherproof-inuse',
+    name: 'Extra-Duty Weatherproof In-Use Bubble Cover',
+    category: 'wiring-devices',
+    necRef: 'NEC 406.9(B)(1)',
+    description: 'Wet-location cast-aluminum FS box with 20A WR GFCI behind a hinged translucent polycarbonate extra-duty bubble hood.',
+    build: () => buildWeatherproofInUseCoverCad(),
+  },
+  {
+    slug: 'device-floor-box-brass',
+    name: 'Recessed Solid-Brass Floor Outlet Box',
+    category: 'wiring-devices',
+    necRef: 'NEC 314.27(B)',
+    description: 'Flush brushed-brass floor box assembly with under-floor galvanized rough-in box, conduit hubs, coin-slot plug, and hinged access flap.',
+    build: () => buildBrassFloorBoxCad(),
+  },
+  {
+    slug: 'device-smoke-co-alarm',
+    name: 'Hardwired 120V Interconnected Smoke/CO Alarm',
+    category: 'wiring-devices',
+    necRef: 'IRC R314 / NEC 760',
+    description: 'Ceiling-mounted 120V interconnected smoke and carbon monoxide detector with intake louver ring, test/hush button, and status LEDs.',
+    build: () => buildSmokeCoAlarmCad(),
+  },
 
   // ─── Residential & Commercial Light Fixtures (7) ─────────────────────────
   {
@@ -376,8 +564,24 @@ export const ELECTRICAL_CAD_CATALOG: readonly ElectricalCadEntry[] = [
     description: 'Commercial double-face illuminated EXIT sign with twin swivel emergency bug-eye floodlight heads.',
     build: () => buildExitSignCad(),
   },
+  {
+    slug: 'fixture-ceiling-fan-light',
+    name: '52" Ceiling Fan with Integrated LED Kit',
+    category: 'light-fixtures',
+    necRef: 'NEC 314.27(C)',
+    description: 'Fan-rated ceiling luminaire assembly with canopy, downrod, brushed motor housing, 5 pitched blades, and frosted LED dome.',
+    build: () => buildCeilingFanLightCad(),
+  },
+  {
+    slug: 'fixture-under-cabinet-led',
+    name: '24" Hardwired Under-Cabinet LED Task Bar',
+    category: 'light-fixtures',
+    necRef: 'NEC 410',
+    description: 'Slim anodized aluminum kitchen under-cabinet LED task bar with continuous frosted diffuser, rocker switch, and rear Romex clamp.',
+    build: () => buildUnderCabinetLedCad(),
+  },
 
-  // ─── Conduit Bodies, Fittings & Raceway Assemblies (2) ───────────────────
+  // ─── Conduit Bodies, Raceways, Grounding & Fittings (6) ──────────────────
   {
     slug: 'conduit-body-lb-34',
     name: '3/4" Type LB Conduit Body',
@@ -393,6 +597,38 @@ export const ELECTRICAL_CAD_CATALOG: readonly ElectricalCadEntry[] = [
     necRef: 'NEC 358.30 / 358.42',
     description: 'Set-screw EMT box connector with insulated throat & locknut, set-screw coupling, 1-hole strap, and 1-5/8" Unistrut clamp.',
     build: () => buildEmtFittingsKitCad(),
+  },
+  {
+    slug: 'conduit-body-ll-lr-t-set',
+    name: '3/4" Type LL, LR & T Conduit Body Trio',
+    category: 'conduit-fittings',
+    necRef: 'NEC 314.16(C)(2)',
+    description: 'Cast-aluminum 3/4" Type LL, LR, and Tee conduit bodies with stamped steel covers, neoprene gaskets, and stainless cover screws.',
+    build: () => buildConduitBodyTrioCad(),
+  },
+  {
+    slug: 'wireway-gutter-4x4',
+    name: '4"x4"x4ft Hinged Auxiliary Wireway Gutter',
+    category: 'conduit-fittings',
+    necRef: 'NEC 376',
+    description: 'NEMA-1 ANSI-61 gray steel 4-inch square hinged wiring trough with top piano hinges, quarter-turn latches, end flanges, and knockouts.',
+    build: () => buildWirewayGutter4x4Cad(),
+  },
+  {
+    slug: 'cable-tray-ladder',
+    name: '12" Aluminum Ladder Cable Tray Section',
+    category: 'conduit-fittings',
+    necRef: 'NEC 392',
+    description: 'Commercial extruded aluminum ladder cable tray with I-beam rails, cross rungs, end splice plates, and colored feeder cable bundle.',
+    build: () => buildLadderCableTrayCad(),
+  },
+  {
+    slug: 'ground-rod-acorn-clamp',
+    name: 'Copper-Clad Ground Rod + Acorn Clamp & GEC',
+    category: 'conduit-fittings',
+    necRef: 'NEC 250.52(A)(5)',
+    description: '5/8" copper-clad grounding electrode rod with solid bronze direct-burial acorn clamp and #6 AWG bare copper grounding electrode conductor.',
+    build: () => buildGroundRodAcornClampCad(),
   },
 ]
 
