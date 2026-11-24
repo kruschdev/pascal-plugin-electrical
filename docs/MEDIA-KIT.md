@@ -23,7 +23,7 @@ Ready-to-share video, high-resolution screenshots, 3D CAD contact sheet, OpenGra
 - **Host Compatibility**: Pascal Editor Plugin API v1 (`E-014`, `E-016`, `E-017`), zero upstream core changes required
 - **3D CAD Library**: 50 exported binary `.glb` models + 50 studio thumbnails across 6 categories (Panels & Gear, Solar PV / Battery ESS / Backup, NEC 314.16 Boxes, Smart Devices & Motors, Light Fixtures, Conduit / Cable Tray / Grounding)
 - **Live Editor Equipment**: 25 placeable `electrical:device` kinds with automatic wall/ceiling/floor snapping, room-aware auto-wiring, 2D floorplan symbols, NEC compliance audit, and 2026 supply-house BOM pricing
-- **Verification**: 45/45 deterministic NEC, routing, CAD, and boundary tests (`1,101` assertions), `tsc --noEmit` clean, 4/4 entrypoint boundary gates
+- **Verification**: 46/46 deterministic NEC, Bones stud-snapping, routing, CAD, and boundary tests (`1,125` assertions), `tsc --noEmit` clean, 4/4 entrypoint boundary gates
 
 ## Ready-to-Post Copy
 

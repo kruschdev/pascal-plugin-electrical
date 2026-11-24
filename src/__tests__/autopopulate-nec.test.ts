@@ -4,6 +4,12 @@ import { electricalAgentOperations } from '../agent-operations'
 import { buildWiredPanelInteriorCad } from '../cad/panel-interior'
 import { auditSceneElectrical } from '../nec/audit'
 import { findNextWallPlacement, planDeviceAutoConnection } from '../nec/autopopulate'
+import {
+  computeWallStudPositions,
+  DRESSED_STUD_HALF_M,
+  extractBonesFramingContext,
+  snapWallOffsetToStud,
+} from '../nec/framing-interop'
 import type { SceneNodeLike } from '../nec/load-calc'
 import { buildElectricalTakeoff, buildPanelSchedule } from '../nec/panel-schedule'
 
@@ -660,5 +666,88 @@ describe('NEC Minimum Auto-Populate (Outlets, GFCIs, Doors, Stairs, Circuits, Ho
     expect(longPlan.mode).toBe('joined-existing-run')
     // ~105 ft one-way at 15A -> #12 is 5.2% VD, #10 is 3.26% (> 3%), so NEC 210.19(A) upsizes to #8 AWG (2.04% <= 3%)!
     expect(longPlan.wireGauge).toBe('8')
+  })
+
+  test('Bones framing interop: snaps nail-on wall boxes flush to 16"/24" OC studs, aligns MDP-1 to bones:service, and skips CMU walls', () => {
+    const nodes: Record<string, AnyNode> = {
+      level_0: { id: 'level_0', type: 'level', name: 'Ground', parentId: null, height: 2.5 } as unknown as AnyNode,
+      bones_fr: {
+        id: 'bonesframing_1',
+        type: 'bones:framing',
+        parentId: 'level_0',
+        studSpacingIn: 24,
+        wallOverrides: { wall_cmu: 'cmu' },
+      } as unknown as AnyNode,
+      bones_panel: {
+        id: 'bonesservice_panel_1',
+        type: 'bones:service',
+        parentId: 'level_0',
+        serviceType: 'panel',
+        wallId: 'wall_n',
+        wallT: 0.72,
+        heightAff: 1.55,
+        position: [0, 0, 0],
+      } as unknown as AnyNode,
+      wall_n: { id: 'wall_n', type: 'wall', parentId: 'level_0', start: [0, 0], end: [6, 0], thickness: 0.12 } as unknown as AnyNode,
+      wall_e: { id: 'wall_e', type: 'wall', parentId: 'level_0', start: [6, 0], end: [6, 4], thickness: 0.12 } as unknown as AnyNode,
+      wall_cmu: { id: 'wall_cmu', type: 'wall', parentId: 'level_0', start: [6, 4], end: [0, 4], thickness: 0.2 } as unknown as AnyNode,
+      wall_w: { id: 'wall_w', type: 'wall', parentId: 'level_0', start: [0, 4], end: [0, 0], thickness: 0.12 } as unknown as AnyNode,
+      zone_living: {
+        id: 'zone_living',
+        type: 'zone',
+        name: 'Living Room',
+        parentId: 'level_0',
+        polygon: [[0, 0], [6, 0], [6, 4], [0, 4]],
+      } as unknown as AnyNode,
+    }
+
+    const record = nodes as unknown as Readonly<Record<string, SceneNodeLike>>
+    const ctx = extractBonesFramingContext(record, 'level_0')
+    expect(ctx.present).toBe(true)
+    expect(ctx.defaultSpacingIn).toBe(24)
+    expect(ctx.servicePanel?.wallId).toBe('wall_n')
+
+    // CMU override bypasses stud snapping cleanly
+    const cmuSnap = snapWallOffsetToStud(6, 2.5, {
+      spanMin: 0,
+      spanMax: 6,
+      rule: ctx.wallRules.get('wall_cmu')!,
+    })
+    expect(cmuSnap.snappedToStud).toBe(false)
+    expect(cmuSnap.offsetM).toBe(2.5)
+
+    // Auto-populate places MDP-1 near bones:service (wallT=0.72 -> ~4.32m on 6m wall_n, centered in a 24" OC bay)
+    const out = electricalAgentOperations.electrical_autopopulate_nec(
+      nodes,
+      { levelId: 'level_0', occupancy: 'residential', protectionMode: 'hybrid' },
+      { activeLevelId: 'level_0' },
+    )
+    const panel = out.changes?.create?.find(
+      (c) => (c.node as unknown as { type?: string }).type === 'electrical:panel',
+    )?.node as unknown as SceneNodeLike
+    expect(panel).toBeDefined()
+    const pPos = panel.position as [number, number, number]
+    expect(pPos[0]).toBeGreaterThan(3.8)
+    expect(pPos[0]).toBeLessThan(4.8)
+    expect(pPos[1]).toBeCloseTo(1.55, 2)
+
+    // Every wall_n receptacle sits flush against the side face of an exact 24" OC Bones stud (|uBox - uStud| ~= halfStud + halfBox + 2mm)
+    const studs24 = computeWallStudPositions(6, 24)
+    const expectedFaceDist = DRESSED_STUD_HALF_M + 0.058 / 2 + 0.002
+    const northOutlets = (out.changes?.create ?? [])
+      .map((c) => c.node as unknown as SceneNodeLike)
+      .filter(
+        (n) =>
+          n.type === 'electrical:device' &&
+          (n.deviceKind === 'duplex' || n.deviceKind === 'gfci') &&
+          Array.isArray(n.position) &&
+          Math.abs((n.position[2] as number) - 0.068) < 0.05,
+      )
+    expect(northOutlets.length).toBeGreaterThanOrEqual(2)
+    for (const dev of northOutlets) {
+      const u = (dev.position as [number, number, number])[0]
+      const nearestDist = Math.min(...studs24.map((s) => Math.abs(u - s)))
+      expect(Math.abs(nearestDist - expectedFaceDist)).toBeLessThan(0.004)
+    }
   })
 })

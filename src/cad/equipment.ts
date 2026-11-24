@@ -46,6 +46,7 @@ import {
 import {
   buildPanelNameplatePlacards,
   type CadMaterialPool,
+  circuitRunColor,
   createCadMaterialPool,
   nmbJacketColor,
   voltageAccentMaterial,
@@ -957,6 +958,7 @@ export type ConduitRunCadInput = {
   tradeSize: ConduitTradeSize
   wireGauge: WireGauge
   voltage: number
+  circuitNumber?: number
 }
 
 const UP = new Vector3(0, 1, 0)
@@ -1025,14 +1027,23 @@ export function buildConduitRunCad(
 
   const outerDiam =
     node.racewayType === 'nm-b'
-      ? 0.015
-      : (CONDUIT_OUTER_DIAMETER_M[node.tradeSize] ?? 0.023)
+      ? 0.036
+      : Math.max(0.036, CONDUIT_OUTER_DIAMETER_M[node.tradeSize] ?? 0.036)
   const radius = outerDiam / 2
   // NEC Chapter 9 Table 2 minimum one-shot bend radius (~5.5x trade diameter)
-  const bendRadius = Math.max(0.065, outerDiam * 4.5)
+  const bendRadius = Math.max(0.065, outerDiam * 3.2)
 
   let runMat: MeshStandardMaterial
-  if (node.voltage >= 277) {
+  if (node.circuitNumber && node.circuitNumber > 0) {
+    const cktCol = circuitRunColor(node.circuitNumber)
+    runMat = new MeshStandardMaterial({
+      color: cktCol.num,
+      emissive: cktCol.num,
+      emissiveIntensity: 0.36,
+      metalness: node.racewayType === 'nm-b' ? 0.08 : 0.35,
+      roughness: node.racewayType === 'nm-b' ? 0.42 : 0.32,
+    })
+  } else if (node.voltage >= 277) {
     runMat = mats.accentRed
   } else if (node.racewayType === 'nm-b') {
     runMat = new MeshStandardMaterial({

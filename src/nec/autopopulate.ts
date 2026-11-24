@@ -17,6 +17,12 @@
  *   (Device 1 -> Device 2 -> ... -> Device N), yielding around Plumbing, HVAC, and Structural obstacles.
  */
 
+import {
+  extractBonesFramingContext,
+  resolveWallFramingRule,
+  snapPanelOffsetToStudBay,
+  snapWallOffsetToStud,
+} from './framing-interop'
 import type { SceneNodeLike } from './load-calc'
 import { findNextFreePanelCircuit } from './panel-schedule'
 import {
@@ -499,8 +505,10 @@ export function planNecAutoPopulate(
   // Extract bathtub/shower fixture footprints on this level so auto-populate keeps outlets >= 3 ft (0.95 m) clear (NEC 406.9(C))
   const tubBoxes = extractTubBoxes(nodes, levelId)
   const distToNearestTub = (x: number, z: number): number => minDistToTubBoxes(tubBoxes, x, z)
+  const bonesCtx = extractBonesFramingContext(nodes, levelId)
 
-  // 1. Resolve or plan Panelboard (strictly respecting NEC 240.24(D)/(E) — never inside bathrooms, closets, or outdoors)
+  // 1. Resolve or plan Panelboard (honoring authoritative `bones:service` panel anchor if present,
+  //    centering cleanly inside a stud bay, and strictly respecting NEC 240.24(D)/(E))
   let panelNode: SceneNodeLike | null = existingPanels[0] ?? null
   let createdPanel: AutoPopulatePlan['createdPanel'] = null
   if (!panelNode) {
@@ -509,35 +517,85 @@ export function planNecAutoPopulate(
     let panelRot = 0
     let bestPanelScore = -Infinity
 
-    for (const w of walls) {
-      for (const frac of [0.5, 0.25, 0.75]) {
-        const px = w.start[0] + (w.end[0] - w.start[0]) * frac
-        const pz = w.start[1] + (w.end[1] - w.start[1]) * frac
+    // 1a. Honor an explicit `bones:service` (`serviceType: 'panel'`) point when present on this level
+    if (bonesCtx.servicePanel) {
+      const sp = bonesCtx.servicePanel
+      const hostWall = sp.wallId ? walls.find((w) => w.id === sp.wallId) : undefined
+      if (hostWall && typeof sp.wallT === 'number') {
+        const rawT = Math.max(0.25, Math.min(hostWall.length - 0.25, sp.wallT * hostWall.length))
+        const spans = wallRoomSpans(hostWall, walls, true)
+        const enclosing = spans.find(([a, b]) => rawT >= a && rawT <= b) ?? [0, hostWall.length]
+        const bayT = snapPanelOffsetToStudBay(hostWall.length, rawT, {
+          spanMin: enclosing[0],
+          spanMax: enclosing[1],
+          rule: resolveWallFramingRule(bonesCtx, hostWall.id),
+        })
+        const px = hostWall.start[0] + hostWall.dx * bayT
+        const pz = hostWall.start[1] + hostWall.dz * bayT
         for (const side of [1, -1] as const) {
-          const nx = w.nx * side
-          const nz = w.nz * side
-          const probeX = px + nx * 0.45
-          const probeZ = pz + nz * 0.45
-          const zProbe = zoneAtPoint(zones, probeX, probeZ)
+          const nx = hostWall.nx * side
+          const nz = hostWall.nz * side
+          const zProbe = zoneAtPoint(zones, px + nx * 0.45, pz + nz * 0.45)
           if (!zProbe) continue
-          const cat = zProbe.category
-          if (isBathroom(cat) || /closet|wardrobe/.test(cat) || isOutdoorCategory(cat)) continue
-          const score =
-            isGarage(cat) || isBasementOrUtility(cat)
-              ? 100
-              : isHallway(cat)
-                ? 80
-                : /living|family|dining|bed|office|study|den/.test(cat)
-                  ? 65
-                  : 40
-          if (score > bestPanelScore) {
-            bestPanelScore = score
-            panelPos = [
-              round3(px + nx * (w.thickness / 2 + 0.072)),
-              1.52,
-              round3(pz + nz * (w.thickness / 2 + 0.072)),
-            ]
-            panelRot = side === 1 ? w.yaw : w.yaw + Math.PI
+          if (isBathroom(zProbe.category) || /closet|wardrobe/.test(zProbe.category) || isOutdoorCategory(zProbe.category)) {
+            continue
+          }
+          bestPanelScore = 500
+          panelPos = [
+            round3(px + nx * (hostWall.thickness / 2 + 0.072)),
+            round3(sp.heightAff ?? 1.52),
+            round3(pz + nz * (hostWall.thickness / 2 + 0.072)),
+          ]
+          panelRot = side === 1 ? hostWall.yaw : hostWall.yaw + Math.PI
+          break
+        }
+      } else if (sp.position) {
+        bestPanelScore = 500
+        panelPos = [round3(sp.position[0]), round3(sp.position[1] || 1.52), round3(sp.position[2])]
+        panelRot = 0
+      }
+    }
+
+    if (bestPanelScore < 500) {
+      for (const w of walls) {
+        const wRule = resolveWallFramingRule(bonesCtx, w.id)
+        const wSpans = wallRoomSpans(w, walls, true)
+        for (const frac of [0.5, 0.25, 0.75]) {
+          const rawT = w.length * frac
+          const enclosing = wSpans.find(([a, b]) => rawT >= a && rawT <= b) ?? [0, w.length]
+          const bayT = snapPanelOffsetToStudBay(w.length, rawT, {
+            spanMin: enclosing[0],
+            spanMax: enclosing[1],
+            rule: wRule,
+          })
+          const px = w.start[0] + w.dx * bayT
+          const pz = w.start[1] + w.dz * bayT
+          for (const side of [1, -1] as const) {
+            const nx = w.nx * side
+            const nz = w.nz * side
+            const probeX = px + nx * 0.45
+            const probeZ = pz + nz * 0.45
+            const zProbe = zoneAtPoint(zones, probeX, probeZ)
+            if (!zProbe) continue
+            const cat = zProbe.category
+            if (isBathroom(cat) || /closet|wardrobe/.test(cat) || isOutdoorCategory(cat)) continue
+            const score =
+              isGarage(cat) || isBasementOrUtility(cat)
+                ? 100
+                : isHallway(cat)
+                  ? 80
+                  : /living|family|dining|bed|office|study|den/.test(cat)
+                    ? 65
+                    : 40
+            if (score > bestPanelScore) {
+              bestPanelScore = score
+              panelPos = [
+                round3(px + nx * (w.thickness / 2 + 0.072)),
+                1.52,
+                round3(pz + nz * (w.thickness / 2 + 0.072)),
+              ]
+              panelRot = side === 1 ? w.yaw : w.yaw + Math.PI
+            }
           }
         }
       }
@@ -728,7 +786,12 @@ export function planNecAutoPopulate(
         const spanLen = s1 - s0
         if (spanLen < 0.28) continue
         for (const frac of [0.5, 0.25, 0.75, 0.15, 0.85]) {
-          const t = s0 + spanLen * frac
+          const rawT = s0 + spanLen * frac
+          const t = snapWallOffsetToStud(wall.length, rawT, {
+            spanMin: s0,
+            spanMax: s1,
+            rule: resolveWallFramingRule(bonesCtx, wall.id),
+          }).offsetM
           const cxW = wall.start[0] + wall.dx * t
           const czW = wall.start[1] + wall.dz * t
           for (const sign of [1, -1] as const) {
@@ -972,7 +1035,12 @@ export function planNecAutoPopulate(
         // For garage/laundry/basement, place at most 1 receptacle per wall span (min 1 required by NEC)
         const count = gar || laun || bsmt ? 1 : Math.max(1, Math.ceil(spanLen / maxSpacingM))
         for (let i = 0; i < count; i++) {
-          const t = s0 + ((i + 0.5) / count) * spanLen
+          const rawT = s0 + ((i + 0.5) / count) * spanLen
+          const t = snapWallOffsetToStud(wall.length, rawT, {
+            spanMin: s0,
+            spanMax: s1,
+            rule: resolveWallFramingRule(bonesCtx, wall.id),
+          }).offsetM
           const wx = round3(wall.start[0] + wall.dx * t + wall.nx * sign * faceOff)
           const wz = round3(wall.start[1] + wall.dz * t + wall.nz * sign * faceOff)
           const rot = sign === 1 ? wall.yaw : wall.yaw + Math.PI
@@ -1874,16 +1942,23 @@ export function findNextWallPlacement(
     }
   }
 
+  const bonesCtx = extractBonesFramingContext(nodes, levelId)
   let best: { pos: Vec3; rot: number; zoneName: string | null; score: number } | null = null
   for (const wall of walls) {
     const faceOff = wall.thickness / 2 + 0.008
     const probeOff = wall.thickness / 2 + 0.3
     const spans = wallRoomSpans(wall, walls, mountY >= 0.95)
+    const wRule = resolveWallFramingRule(bonesCtx, wall.id)
     for (const [s0, s1] of spans) {
       const spanLen = s1 - s0
       if (spanLen < 0.35) continue
       for (const frac of [0.3, 0.7, 0.5, 0.18, 0.82]) {
-        const t = s0 + spanLen * frac
+        const rawT = s0 + spanLen * frac
+        const t = snapWallOffsetToStud(wall.length, rawT, {
+          spanMin: s0,
+          spanMax: s1,
+          rule: wRule,
+        }).offsetM
         const cx = wall.start[0] + wall.dx * t
         const cz = wall.start[1] + wall.dz * t
         for (const sign of [1, -1] as const) {

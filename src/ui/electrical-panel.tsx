@@ -7,8 +7,10 @@ import { type AnyNode, runAsSingleSceneHistoryStep } from '@pascal-app/core'
 import { openEditorView, useScene, useViewer } from '@pascal-app/editor'
 import { useMemo, useState } from 'react'
 import { electricalAgentOperations } from '../agent-operations'
+import { circuitRunColor } from '../cad/materials'
 import { auditSceneElectrical } from '../nec/audit'
 import { findNextWallPlacement, type ProtectionMode } from '../nec/autopopulate'
+import { extractBonesFramingContext } from '../nec/framing-interop'
 import type { SceneNodeLike } from '../nec/load-calc'
 import {
   detectRunTradeClashes,
@@ -119,6 +121,10 @@ export default function ElectricalRailPanel() {
   const audit = useMemo(() => auditSceneElectrical(record), [record])
   const obstacles = useMemo(
     () => extractTradeObstacles(record, activeLevelId),
+    [record, activeLevelId],
+  )
+  const bonesCtx = useMemo(
+    () => extractBonesFramingContext(record, activeLevelId),
     [record, activeLevelId],
   )
 
@@ -617,7 +623,23 @@ export default function ElectricalRailPanel() {
           gap: 6,
         }}
       >
-        <div style={{ fontWeight: 600 }}>In-Wall Wiring View</div>
+        <div style={{ fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>In-Wall Wiring View</span>
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 600,
+              padding: '1px 6px',
+              borderRadius: 999,
+              background: bonesCtx.present ? 'rgba(16,185,129,0.18)' : 'rgba(148,163,184,0.14)',
+              color: bonesCtx.present ? '#34d399' : '#94a3b8',
+            }}
+          >
+            {bonesCtx.present
+              ? `Bones ${bonesCtx.defaultSpacingIn}" OC`
+              : `${bonesCtx.defaultSpacingIn}" OC Stud-Snap`}
+          </span>
+        </div>
         <div style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.35 }}>
           Cables route concealed inside wall cavities. Use Pascal&apos;s native viewer modes to inspect in-wall runs:
         </div>
@@ -692,6 +714,48 @@ export default function ElectricalRailPanel() {
             X-Ray Wiring
           </button>
         </div>
+        {runs.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 2 }}>
+            {Array.from(
+              new Set(
+                runs
+                  .map((r) => Number((r as Record<string, unknown>).circuitNumber ?? 1))
+                  .filter((n) => Number.isFinite(n) && n > 0),
+              ),
+            )
+              .sort((a, b) => a - b)
+              .map((ckt) => {
+                const c = circuitRunColor(ckt)
+                return (
+                  <span
+                    key={ckt}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                      padding: '2px 6px',
+                      borderRadius: 999,
+                      fontSize: 10,
+                      fontWeight: 600,
+                      background: 'rgba(255,255,255,0.06)',
+                      border: `1px solid ${c.hex}66`,
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 7,
+                        height: 7,
+                        borderRadius: '50%',
+                        background: c.hex,
+                        display: 'inline-block',
+                      }}
+                    />
+                    CKT-{ckt}
+                  </span>
+                )
+              })}
+          </div>
+        )}
       </div>
 
       {/* Trade-Priority Routing Action */}

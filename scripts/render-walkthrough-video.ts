@@ -174,8 +174,16 @@ if (!electricalPanelOpen) {
 }
 await new Promise((r) => setTimeout(r, 2000))
 
-// Inject subtle non-intrusive chapter banner + visual click cursor ring for walkthrough clarity
+// Inject clean CSS hiding Next.js dev overlay badges (e.g. "N 2 Issues"), plus non-intrusive
+// chapter banner and visual click cursor ring for walkthrough clarity.
 await page.evaluate(() => {
+  const hideDevStyle = document.createElement('style')
+  hideDevStyle.textContent =
+    'nextjs-portal, #__next-build-indicator, [data-nextjs-toast], [data-nextjs-dialog-overlay] {' +
+    '  display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important;' +
+    '}'
+  document.head.appendChild(hideDevStyle)
+
   const pill = document.createElement('div')
   pill.id = '__walkthrough_banner'
   pill.style.cssText =
@@ -195,6 +203,32 @@ await page.evaluate(() => {
     'transition:transform 0.14s ease;'
   document.body.appendChild(cursor)
 })
+
+// Collapse narrow left icon menu before recording so the 3D Two-Bedroom House fills the widescreen viewport
+await page.evaluate(() => {
+  const b = Array.from(document.querySelectorAll('button')).find(
+    (x) => x.getAttribute('aria-label') === 'Hide menu' || x.innerText.trim() === 'Hide menu',
+  )
+  if (b) b.click()
+})
+await new Promise((r) => setTimeout(r, 600))
+
+// Pre-frame the entire Two-Bedroom House cleanly in a crisp 3/4 architectural overview before frame 1
+const initCanvasCenter = await page.evaluate(() => {
+  const c = Array.from(document.querySelectorAll('canvas')).find((x) => x.getBoundingClientRect().width > 300)
+  const r = c?.getBoundingClientRect()
+  return r ? { cx: Math.round(r.x + r.width / 2), cy: Math.round(r.y + r.height / 2) } : { cx: 920, cy: 420 }
+})
+await page.mouse.move(initCanvasCenter.cx, initCanvasCenter.cy)
+await page.mouse.wheel({ deltaY: 65 })
+await new Promise((r) => setTimeout(r, 180))
+await page.mouse.down({ button: 'right' })
+for (let i = 1; i <= 5; i++) {
+  await page.mouse.move(initCanvasCenter.cx + i * 24, initCanvasCenter.cy + i * 14)
+  await new Promise((r) => setTimeout(r, 60))
+}
+await page.mouse.up({ button: 'right' })
+await new Promise((r) => setTimeout(r, 900))
 
 const ffmpeg = Bun.spawn(
   [
@@ -411,26 +445,37 @@ await page.evaluate(() => {
 })
 await smoothClickButton('+ Place', true, 4, 16, '02c_place_catalog_fan')
 
-// ─── CHAPTER 2: Inspect Concealed In-Wall Wiring via Native Pascal useViewer Modes ──
-console.log('Recording Chapter 2: Native Pascal useViewer Low Walls & X-Ray In-Wall Inspection...')
-await setBanner('2 / 5 · Full Walls: Concealed In-Wall Wiring & Flush Wall Faceplates (0 Errors · NEC PASS)')
-await captureFrames(10, 90, '03a_full_walls', true)
+// ─── CHAPTER 2: Low Walls + Extended Multi-Angle Color-Coded X-Ray Circuits + 2D Blueprint ──
+console.log('Recording Chapter 2: Low Walls, Extended X-Ray Color-Coded Circuits & 2D Floorplan...')
+await setBanner('2 / 5 · Full Walls: Concealed Stud-Snapped Wiring & Flush Faceplates (Bones 16" OC · NEC PASS)')
+await captureFrames(12, 90, '03a_full_walls', true)
 
-await setBanner('2 / 5 · Pascal Native Low Walls Mode: Inspect Concealed Wiring Running Inside Wall Centerlines')
-await smoothClickButton('Low Walls', true, 5, 16, '03_orbit_3d')
-
-await page.mouse.move(960, 440)
-await moveCursor(960, 440)
-for (let i = 0; i < 4; i++) {
-  await page.mouse.wheel({ deltaY: -150 })
-  await captureFrames(2, 70)
-}
-await dragOrbit(980, 440, -160, -30, 10, 'right', '03b_low_walls_orbit')
+await setBanner('2 / 5 · Pascal Native Low Walls Mode: Inspect Color-Coded Circuits Inside Wall Centerlines')
+await smoothClickButton('Low Walls', true, 5, 18, '03_orbit_3d')
+await dragOrbit(initCanvasCenter.cx + 40, initCanvasCenter.cy, -120, -15, 10, 'right', '03b_low_walls_orbit')
 await captureCleanShot('02-pascal-inwall-low-walls.png', 'demo-3d-trade-routing.png')
 
-await setBanner('2 / 5 · Pascal Native X-Ray Wiring Mode: Full 3D Electrical System Isolation')
-await smoothClickButton('X-Ray Wiring', true, 5, 16, '03c_xray_wiring')
+await setBanner('2 / 5 · Pascal Native X-Ray Wiring Mode: Every Color-Coded Circuit Isolated in 3D')
+await smoothClickButton('X-Ray Wiring', true, 5, 22, '03c_xray_wiring')
 await captureCleanShot('03-pascal-xray-wiring.png')
+
+// Extended X-Ray Showcase: zoom gently into the full wired house & perform a smooth multi-angle 3D orbit
+await page.mouse.move(initCanvasCenter.cx, initCanvasCenter.cy)
+await moveCursor(initCanvasCenter.cx, initCanvasCenter.cy)
+for (let i = 0; i < 2; i++) {
+  await page.mouse.wheel({ deltaY: -85 })
+  await captureFrames(3, 80)
+}
+await setBanner('2 / 5 · X-Ray 3D Orbit: Trace Every Circuit (CKT-1..CKT-9), Stud Box & Home Run to MDP-1')
+await dragOrbit(initCanvasCenter.cx - 80, initCanvasCenter.cy + 10, 220, -20, 18, 'right', '03d_xray_orbit_1')
+await captureFrames(12, 90, undefined, true)
+await dragOrbit(initCanvasCenter.cx + 120, initCanvasCenter.cy - 10, -160, 25, 14, 'right', '03e_xray_orbit_2')
+await captureFrames(10, 90, undefined, true)
+
+// Brief 2D Blueprint peek showing exact color-matched 2D electrical schematic symbols & circuit runs
+await setBanner('2 / 5 · Live Color-Matched 2D Electrical Floorplan Schematic')
+await smoothClickButton('2D', true, 4, 20, '03f_2d_blueprint')
+await smoothClickButton('3D', true, 3, 10)
 await smoothClickButton('Full Walls', true, 4, 8)
 
 // ─── CHAPTER 3: Zoom-In Cover-Off 3D Panel Interior Wiring View ─────────────

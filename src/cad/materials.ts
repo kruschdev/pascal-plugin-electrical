@@ -159,6 +159,25 @@ export function nmbJacketColor(gauge: WireGauge): number {
   return 0x1e293b // 8/6 AWG NM-B black
 }
 
+/** High-contrast 10-color per-circuit palette for 3D X-Ray, Low Walls & 2D Floorplan tracing. */
+export const CIRCUIT_COLOR_PALETTE: ReadonlyArray<{ hex: string; num: number; label: string }> = [
+  { hex: '#f59e0b', num: 0xf59e0b, label: 'Amber' },
+  { hex: '#0284c7', num: 0x0284c7, label: 'Sky' },
+  { hex: '#10b981', num: 0x10b981, label: 'Emerald' },
+  { hex: '#8b5cf6', num: 0x8b5cf6, label: 'Violet' },
+  { hex: '#ef4444', num: 0xef4444, label: 'Red' },
+  { hex: '#06b6d4', num: 0x06b6d4, label: 'Cyan' },
+  { hex: '#ec4899', num: 0xec4899, label: 'Magenta' },
+  { hex: '#84cc16', num: 0x84cc16, label: 'Lime' },
+  { hex: '#f97316', num: 0xf97316, label: 'Orange' },
+  { hex: '#3b82f6', num: 0x3b82f6, label: 'Blue' },
+]
+
+export function circuitRunColor(circuitNumber: number): { hex: string; num: number; label: string } {
+  const idx = Math.max(0, Math.floor(circuitNumber) - 1) % CIRCUIT_COLOR_PALETTE.length
+  return CIRCUIT_COLOR_PALETTE[idx]!
+}
+
 /**
  * Build realistic engraved NEMA panelboard nameplate + compact NEC 110.16 arc-flash warning placard.
  * Replaces wide abstract color stripes with authentic phenolic nameplate & ANSI Z535 safety label geometry.

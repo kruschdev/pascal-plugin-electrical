@@ -158,9 +158,7 @@ const html = `<!doctype html>
     width: 100%;
     height: 332px;
     object-fit: cover;
-    object-position: 100% 30%;
-    transform: scale(1.12);
-    transform-origin: right top;
+    object-position: center 45%;
     display: block;
   }
   .badge-cap {
@@ -218,12 +216,12 @@ const html = `<!doctype html>
     <div class="stats">
       <div class="stat"><div class="num amber">50</div><div class="lbl">MIT 3D CAD .glb Models</div></div>
       <div class="stat"><div class="num sky">25</div><div class="lbl">Live Equipment Kinds</div></div>
-      <div class="stat"><div class="num emerald">45/45</div><div class="lbl">NEC &amp; CAD Tests</div></div>
+      <div class="stat"><div class="num emerald">46/46</div><div class="lbl">NEC &amp; CAD Tests</div></div>
     </div>
     <div class="tags">
-      <span class="tag">In-Wall Manhattan Routing</span>
+      <span class="tag">Bones 16&quot; OC Stud-Snap</span>
+      <span class="tag">10-Color X-Ray Circuits</span>
       <span class="tag">Solar PV / ESS / ATS</span>
-      <span class="tag">NEC 220 &amp; 314.16</span>
       <span class="tag">8 Pure Zod Agent Tools</span>
     </div>
     <div class="footer"><strong>github.com/kruschdev/pascal-plugin-electrical</strong> · @kruschdev</div>

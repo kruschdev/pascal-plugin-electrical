@@ -16,6 +16,7 @@ import {
 import { z } from 'zod'
 import { Group } from 'three'
 import { buildConduitRunCad } from '../cad/equipment'
+import { circuitRunColor } from '../cad/materials'
 import type { ConduitTradeSize, RacewayType, WireGauge } from '../nec/tables'
 
 const Vec3Schema = z.tuple([z.number(), z.number(), z.number()])
@@ -55,6 +56,10 @@ export const ElectricalConduitRunNode = BaseNode.extend({
 export type ElectricalConduitRunNode = z.infer<typeof ElectricalConduitRunNode>
 
 function colorForRun(node: ElectricalConduitRunNode): { hex: string; num: number } {
+  if (node.circuitNumber > 0) {
+    const ckt = circuitRunColor(node.circuitNumber)
+    return { hex: ckt.hex, num: ckt.num }
+  }
   if (node.voltage >= 277) return { hex: '#dc2626', num: 0xdc2626 } // 277/480V commercial red
   if (node.racewayType === 'nm-b') {
     const g = node.wireGauge as WireGauge
@@ -106,6 +111,7 @@ export function buildElectricalConduitRunGeometry(
     tradeSize: node.tradeSize as ConduitTradeSize,
     wireGauge: node.wireGauge as WireGauge,
     voltage: node.voltage,
+    circuitNumber: node.circuitNumber,
   })
 }
 
