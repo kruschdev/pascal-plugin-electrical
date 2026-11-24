@@ -15,11 +15,11 @@ I built this as a standalone external plugin implementing Pascal's full Plugin A
 
 **[Watch Full 720p HD Walkthrough Video Recorded in Pascal Editor (`assets/demo-walkthrough.mp4`)](./assets/demo-walkthrough.mp4)**
 
-1. **NEC Minimum Auto-Populate and Smart Outlet Auto-Wiring**: One click inside Pascal Editor scans the built-in two-bedroom house (walls, T-junctions, doors, and rooms) to place a 200A panelboard (`MDP-1`), flush wall-snapped 6 ft / 12 ft outlets, kitchen GFCIs, bathroom vanity GFCI, front-door entry and outdoor WR GFCIs, door-jamb wall switches, ceiling lights, balanced circuits, Home Runs, and Outlet-to-Outlet Daisy-Chain runs with `0` NEC errors. Adding another outlet in an existing room automatically snaps it to a wall and extends that room's circuit run, while adding an outlet in a new room automatically allocates a balanced circuit and creates a Home Run from the panel.
-2. **Concealed In-Wall 3D Manhattan Routing and Native Pascal Viewer Inspection**: Cables route dead-center inside wall cavities (horizontal stud chases between same-wall outlets, vertical risers climbing inside stud bays over doors, and 90-degree wall top-plate runs, never cutting across open rooms). The Electrical rail integrates directly with Pascal's native `useViewer` (`Full Walls`, `Cutaway`, `Low Walls`, and `X-Ray Wiring`) so walls stay clean in finished view and peel away in one click to inspect every concealed run inside the walls.
-3. **Zoom-In Cover-Off 3D Panel Interior View**: Opens inside Pascal's split-pane `Electrical Schedule` view to show the live open 200A load center with copper busbar stabs, AFCI/GFCI breakers, neutral/ground bars, and every 90-degree-bent conductor landing on its lug, with live *Full Open Panel*, *Zoom: Breakers & Lugs*, and *Panel Cover On / Cover Off* toggles.
-4. **Live Panelboard Schedule and NEC 220 Load Calc**: Inspects populated Odd/Even `L1/L2` breaker circuits, wire gauges, phase balance, and Residential Standard / Optional (`220.82`) service load calculations.
-5. **Takeoff and Cost Live Price Calculator plus NEC Audit**: Adjusts live Labor (`$/hr`), Material Markup (`%`), and Material Tax (`%`) right inside Pascal Editor to recalculate BOM totals and CSV exports alongside the live NEC compliance audit.
+1. **NEC Minimum Auto-Populate and Smart Room-Aware Auto-Wiring**: One click inside Pascal Editor scans each level (walls, T-junctions, doors, bathtubs/showers, and rooms) to place a 200A panelboard (`MDP-1`), flush wall-snapped 6 ft / 12 ft outlets, kitchen GFCIs, bathroom vanity GFCI, front-door entry and outdoor WR GFCIs, door-jamb wall switches, ceiling lights, balanced circuits, Home Runs, and Outlet-to-Outlet Daisy-Chain runs with `0` NEC errors. Adding another outlet in an existing room automatically snaps it to a wall, extends that room's circuit run, upsizes spliced anchor boxes per NEC 314.16, and checks NEC 210.19(A) voltage drop, while adding an outlet in a new room (or any dedicated load) allocates a balanced circuit and creates a Home Run from the panel.
+2. **Concealed In-Wall 3D Manhattan Routing and Native Pascal Viewer Inspection**: Cables route dead-center inside wall cavities (horizontal stud chases between same-wall outlets, vertical risers climbing inside stud bays over doors, and 90-degree wall top-plate runs, never climbing above wall caps or cutting across open rooms). The Electrical rail integrates directly with Pascal's native `useViewer` (`Full Walls`, `Cutaway`, `Low Walls`, and `X-Ray Wiring`) so walls stay clean in finished view and peel away in one click to inspect every concealed run inside the walls.
+3. **Zoom-In 3D Panel Interior View (`Cover Off`, `Panel Cover On`, and `Cover Closed`)**: Opens inside Pascal's split-pane `Electrical Schedule` view to show the live open load center with copper busbar stabs, AFCI/GFCI breakers, neutral/ground bars, and every 90-degree-bent conductor landing cleanly on its lug. Toggling **Panel Cover On** seats a flush ANSI-61 gray steel cover with an engraved NEMA phenolic nameplate, compact NEC 110.16 arc-flash warning placard, main breaker cutout, white circuit index strips, and UL 67 galvanized spare twist-out filler plates over all live parts.
+4. **25 Live Placeable Equipment Kinds and 50 Clean-Room MIT 3D CAD Models**: Place any of 25 live equipment and device kinds directly from the Electrical rail's **Catalog Equipment** picker or `electrical_place_device` agent tool (including Solar PV Inverter, 13.5 kWh Wall Battery ESS, 200A ATS, 50A Generator Inlet, PV Rapid Shutdown, Type 2 SPD, 3-Phase VFD, Smart Slide Dimmer, 20A USB-A/USB-C Duplex, Weatherproof In-Use Bubble GFCI, Recessed Brass Floor Box, Hardwired Smoke/CO Alarm, 52" Ceiling Fan with LED Kit, and 24" Under-Cabinet LED Bar) with automatic wall/ceiling/floor placement, 2D floorplan symbols, room-aware auto-wiring, NEC compliance auditing, and BOM pricing.
+5. **Live Panelboard Schedule, NEC 220 Load Calc, and Priced BOM Takeoff**: Inspects populated Odd/Even `L1/L2` or `A/B/C` breaker circuits, wire gauges, phase balance, Residential Standard / Optional (`220.82`) and Commercial 3-phase service loads, plus live Labor (`$/hr`), Material Markup (`%`), and Material Tax (`%`) BOM totals and CSV exports alongside the live NEC compliance audit.
 
 ## Showcase Gallery
 
@@ -30,6 +30,17 @@ I built this as a standalone external plugin implementing Pascal's full Plugin A
 ![Split 3D Viewport, Electrical Rail Panel, and Full-Pane 3-Phase Panelboard Schedule View](./assets/demo-panel-schedule.png)
 
 ![50 Clean-Room MIT Electrical CAD Material Models (.glb): Load Centers, Open-Cover and Panel-Cover-On Panels, Solar Inverters, Battery ESS, Automatic Transfer Switches, VFDs, SPDs, Dry-Type Transformers, NEC 314.16 Boxes, Smart Wiring Devices, Light Fixtures, Cable Tray, Wireways, and Grounding Hardware](./assets/cad-material-catalog.png)
+
+### 50-Model Clean-Room MIT CAD Library (6 Categories)
+
+| Category | Count | Included Highlights |
+|---|---|---|
+| **Panels, Breakers and Distribution Gear** | 12 | 200A Load Centers (`Closed`, `Cover Off`, `Panel Cover On`), 400A 277/480V 3P Panelboard, 100A MLO Subpanel, NEMA-3R Outdoor Panel, 75 kVA Transformer, 100A Safety Disconnect, 200A Meter Base, Breaker Trio, Type 2 SPD, Commercial 3P VFD |
+| **Solar PV, Battery ESS and Backup Power** | 5 | String Solar PV Inverter (`NEC 690`), 13.5 kWh Wall Battery ESS (`NEC 706`), 200A NEMA-3R Automatic Transfer Switch (`NEC 702`), 50A SS2-50P Generator Inlet Box, PV Rapid Shutdown / AC Disconnect (`NEC 690.12`) |
+| **NEC 314.16 Outlet and Junction Boxes** | 7 | 1/2/3-Gang Blue PVC Nail-On Boxes, 4" Square Deep 1900 Steel Box, 4-11/16" Commercial J-Box, 4" Octagon Ceiling Box, NEMA-3R Cast Weatherproof Bell Box |
+| **Wiring Devices, Smart Controls and Motors** | 11 | 20A Duplex, 20A GFCI, 50A NEMA 14-50R, Decora Rocker Switch, Smart Slide Dimmer, 20A USB-A/USB-C Duplex, Weatherproof In-Use Bubble Cover, Recessed Solid-Brass Floor Box, Hardwired 120V Smoke/CO Alarm, 48A Level 2 EVSE, 3-Phase TEFC Motor |
+| **Residential and Commercial Light Fixtures** | 9 | 6" IC Recessed Can, 2x4 LED Troffer, Warehouse UFO High-Bay, 4 ft LED Strip, Exterior LED Wall Pack, Flush Ceiling Drum, Emergency EXIT Sign + Twin Floods, 52" Ceiling Fan with LED Kit, 24" Under-Cabinet LED Task Bar |
+| **Conduit, Cable Tray and Grounding** | 6 | 3/4" Type LB Conduit Body, Type LL/LR/T Conduit Body Trio, 3/4" EMT Fittings and Unistrut Clamp Kit, 4"x4"x4ft Hinged Auxiliary Wireway Gutter (`NEC 376`), 12" Aluminum Ladder Cable Tray (`NEC 392`), Copper-Clad Ground Rod + Bronze Acorn Clamp and #6 GEC (`NEC 250.52`) |
 
 > **Drafting and engineering aid, not stamped engineering.** Always verify calculations, conductor sizing, and local AHJ amendments with a licensed electrical engineer or inspector before construction.
 
@@ -51,7 +62,7 @@ The one code exception where foreign systems cannot invade electrical is **NEC 1
 | **[Architecture Guide](./docs/ARCHITECTURE.md)** | System diagram, 6 entrypoint boundary gates, 4 `electrical:*` node kinds, local-yaw 2D SAT clearances, and cover-off 3D panel pipeline |
 | **[NEC Engineering Reference](./docs/NEC-REFERENCE.md)** | Every implemented NEC Article and Table (`220`, `210.8`, `210.11`, `210.12`, `210.19`, `210.52`, `210.70`, `240.4(D)`, `240.24`, `310.16`, `312.2`, `314.16`, `358.26`, `404.4(C)`, `406.5(E)`, `406.9(C)`, `410.10(D)`, `410.16(C)`, `450.3(B)`, `705.12`, `110.26`, `Ch. 9`) |
 | **[50-Model MIT 3D CAD Catalog](./docs/CAD-CATALOG.md)** | Full inventory of all 50 `.glb` models across 6 categories (including Solar/ESS/ATS, Smart Controls, VFDs, Cable Tray, and Grounding), dimensions in mm, NEC references, and programmatic `./cad` usage |
-| **[Agent Tools Reference (`E-016`)](./docs/AGENT-TOOLS.md)** | All 8 pure Zod agent tools and pure scene operations for MCP servers, chat workflows, and headless automation |
+| **[Agent Tools Reference (`E-016`)](./docs/AGENT-TOOLS.md)** | All 8 pure Zod agent tools (including 25 live placeable device/equipment kinds and `wallPlacement` routing) and pure scene operations for MCP servers, chat workflows, and headless automation |
 | **[Contributing Guide](./CONTRIBUTING.md)** | Local setup, boundary gates, CAD `.glb` regeneration, and PR guidelines |
 
 ## Package Entrypoints
@@ -94,8 +105,9 @@ setPluginDiscovery(async () => [electricalRenderPlugin])
 
 ```bash
 bun install
-bun run check              # tsc --noEmit + bun test src + all 4 boundary gates
-bun run export:cad         # Regenerate all 30 binary .glb models in assets/cad/
+bun run check              # tsc --noEmit + bun test src (45/45 tests) + all 4 boundary gates
+bun run export:cad         # Regenerate all 50 binary .glb models in assets/cad/
+bun scripts/render-cad-thumbnails.ts # Re-render all 50 thumbnails + 5x10 contact sheet
 bun run render:walkthrough # Re-render assets/demo-walkthrough.mp4 and .gif
 ```
 
