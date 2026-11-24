@@ -23,11 +23,11 @@ I built this as a standalone external plugin implementing Pascal's full Plugin A
 
 ## Showcase Gallery
 
-![Cover-Off 3D Panel Interior View: Copper Busbars, Main & Branch Breakers, Neutral/Ground Bars, and Every Individual NEC Phase-Colored Wire Landed on Its Terminal](./assets/demo-panel-wired-interior.png)
+![4-Panel 3D Panel Interior Showcase: Residential 200A Cover Off, Zoomed Breakers/Lugs/Gutters, Rebuilt Panel Cover On with Engraved NEMA Nameplate and NEC 110.16 Arc-Flash Placard, and Commercial 400A 277/480V 3-Phase Panelboard](./assets/demo-panel-wired-interior.png)
 
-![Live 3D Trade-Priority Routing in Pascal Editor: EMT conduit runs yielding cleanly around a 4-inch plumbing pipe and 18x10 HVAC trunk, with NEC 110.26 working-space clearance envelopes on LP-1 and TX-1](./assets/demo-3d-trade-routing.png)
+![Live Pascal Editor Electrical Rail and Native Low Walls Inspection View: Concealed In-Wall 3D Manhattan Routing, Catalog Equipment Picker, and Trade-Priority Obstacle Detection](./assets/demo-3d-trade-routing.png)
 
-![Split 3D Viewport, Electrical Rail Panel, and Full-Pane 3-Phase Panelboard Schedule View](./assets/demo-panel-schedule.png)
+![Split-Pane Pascal Editor 3D Viewport and Live Populated Panelboard Schedule with NEC Audit (0/0)](./assets/demo-panel-schedule.png)
 
 ![50 Clean-Room MIT Electrical CAD Material Models (.glb): Load Centers, Open-Cover and Panel-Cover-On Panels, Solar Inverters, Battery ESS, Automatic Transfer Switches, VFDs, SPDs, Dry-Type Transformers, NEC 314.16 Boxes, Smart Wiring Devices, Light Fixtures, Cable Tray, Wireways, and Grounding Hardware](./assets/cad-material-catalog.png)
 
@@ -63,6 +63,8 @@ The one code exception where foreign systems cannot invade electrical is **NEC 1
 | **[NEC Engineering Reference](./docs/NEC-REFERENCE.md)** | Every implemented NEC Article and Table (`220`, `210.8`, `210.11`, `210.12`, `210.19`, `210.52`, `210.70`, `240.4(D)`, `240.24`, `310.16`, `312.2`, `314.16`, `358.26`, `404.4(C)`, `406.5(E)`, `406.9(C)`, `410.10(D)`, `410.16(C)`, `450.3(B)`, `705.12`, `110.26`, `Ch. 9`) |
 | **[50-Model MIT 3D CAD Catalog](./docs/CAD-CATALOG.md)** | Full inventory of all 50 `.glb` models across 6 categories (including Solar/ESS/ATS, Smart Controls, VFDs, Cable Tray, and Grounding), dimensions in mm, NEC references, and programmatic `./cad` usage |
 | **[Agent Tools Reference (`E-016`)](./docs/AGENT-TOOLS.md)** | All 8 pure Zod agent tools (including 25 live placeable device/equipment kinds and `wallPlacement` routing) and pure scene operations for MCP servers, chat workflows, and headless automation |
+| **[Media Kit & Launch Copy](./docs/MEDIA-KIT.md)** | Ready-to-share social preview (`1280 x 640`), HD walkthrough video, high-res screenshots, CAD contact sheet, and X / LinkedIn / Show HN launch copy |
+| **[Walkthrough Voiceover Script](./docs/WALKTHROUGH-SCRIPT.md)** | Timed 48-second narration beat sheet and one-command Gemini TTS (`gemini-3.8-flash-tts`) + `ffmpeg` muxing script (`scripts/add-voiceover.sh`) |
 | **[Contributing Guide](./CONTRIBUTING.md)** | Local setup, boundary gates, CAD `.glb` regeneration, and PR guidelines |
 
 ## Package Entrypoints

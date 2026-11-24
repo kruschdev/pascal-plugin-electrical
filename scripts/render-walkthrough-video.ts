@@ -27,7 +27,7 @@ type PuppeteerPageLike = {
   setViewport: (v: { width: number; height: number; deviceScaleFactor: number }) => Promise<void>
   goto: (url: string, opts: { waitUntil: string; timeout: number }) => Promise<void>
   evaluate: <R = unknown, A = unknown>(fn: (arg: A) => R, arg?: A) => Promise<R>
-  screenshot: (opts: { type: 'jpeg'; quality: number }) => Promise<Uint8Array>
+  screenshot: (opts: { type: 'jpeg' | 'png'; quality?: number }) => Promise<Uint8Array>
   mouse: {
     move: (x: number, y: number, opts?: { steps?: number }) => Promise<void>
     down: (opts?: { button?: 'left' | 'right' | 'middle' }) => Promise<void>
@@ -49,6 +49,9 @@ const rootDir = fileURLToPath(new URL('..', import.meta.url))
 const outMp4 = path.join(rootDir, 'assets', 'demo-walkthrough.mp4')
 const outGif = path.join(rootDir, 'assets', 'demo-walkthrough.gif')
 const keyframesDir = path.join(os.tmpdir(), 'pascal_real_walkthrough_keyframes')
+const mediaShotsDir = process.env.MEDIA_SHOTS_DIR ?? ''
+const refreshRepoShots = process.env.REFRESH_REPO_SHOTS !== '0'
+if (mediaShotsDir) fs.mkdirSync(mediaShotsDir, { recursive: true })
 
 const targetUrl = process.env.PASCAL_EDITOR_URL
 if (!targetUrl) {
@@ -87,38 +90,88 @@ await page.setViewport({ width: VIEW_W, height: VIEW_H, deviceScaleFactor: 1 })
 page.on('pageerror', (e) => console.error('PAGEERROR:', e.message))
 
 console.log(`Opening real Pascal Editor at ${targetUrl}...`)
-await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 })
-for (let i = 0; i < 40; i++) {
-  const ready = await page.evaluate(() => document.body.innerText.includes('Bedroom 1'))
-  if (ready) break
+await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 90000 })
+// Wait until the 3D canvas AND the Electrical plugin button (or Plugins rail) are mounted & hydrated
+let sceneReady = false
+for (let i = 0; i < 120; i++) {
+  const state = await page
+    .evaluate(() => {
+      const canvases = Array.from(document.querySelectorAll('canvas'))
+      const hasCanvas = canvases.some((c) => c.getBoundingClientRect().width > 300)
+      const btns = Array.from(document.querySelectorAll('button'))
+      const hasElectrical = btns.some(
+        (b) => b.innerText.trim() === 'Electrical' || b.getAttribute('aria-label') === 'Electrical',
+      )
+      const hasPlugins = btns.some(
+        (b) => b.innerText.trim() === 'Plugins' || b.getAttribute('aria-label') === 'Plugins',
+      )
+      return { hasCanvas, hasElectrical, hasPlugins }
+    })
+    .catch(() => ({ hasCanvas: false, hasElectrical: false, hasPlugins: false }))
+  if (state.hasCanvas && state.hasElectrical) {
+    sceneReady = true
+    break
+  }
+  if (i > 20 && state.hasCanvas && state.hasPlugins) {
+    sceneReady = true
+    break
+  }
   await new Promise((r) => setTimeout(r, 500))
 }
-await new Promise((r) => setTimeout(r, 2500))
+if (!sceneReady) {
+  throw new Error('Timed out waiting for Pascal Editor 3D canvas and plugin rail to hydrate')
+}
+// Allow SwiftShader WebGL scene geometry & materials to finish compiling first frames
+await new Promise((r) => setTimeout(r, 4000))
 
 // Dismiss the "Pan / Rotate / Zoom" hint pill if present
-await page.evaluate(() => {
-  const btns = Array.from(document.querySelectorAll('button'))
-  for (const b of btns) {
-    const parentText = b.parentElement?.innerText ?? ''
-    if (parentText.includes('Pan') && parentText.includes('Rotate') && parentText.includes('Zoom')) {
-      b.click()
-      break
+await page
+  .evaluate(() => {
+    const btns = Array.from(document.querySelectorAll('button'))
+    for (const b of btns) {
+      const parentText = b.parentElement?.innerText ?? ''
+      if (parentText.includes('Pan') && parentText.includes('Rotate') && parentText.includes('Zoom')) {
+        b.click()
+        break
+      }
     }
-  }
-})
+  })
+  .catch(() => {})
 await new Promise((r) => setTimeout(r, 600))
 
-// Open Plugins -> Electrical panel so the walkthrough begins cleanly in Pascal Editor with the Electrical rail open
-await page.evaluate(() => {
-  const p = document.querySelector<HTMLButtonElement>('button[aria-label="Plugins"]')
-  if (p) p.click()
-})
-await new Promise((r) => setTimeout(r, 1200))
-await page.evaluate(() => {
-  const btns = Array.from(document.querySelectorAll('button'))
-  const elec = btns.find((b) => b.innerText.trim() === 'Electrical' || b.getAttribute('aria-label') === 'Electrical')
-  if (elec) elec.click()
-})
+// Open Electrical rail panel (either directly in Plugins section or via Plugins -> Install/Open Electrical)
+let electricalPanelOpen = false
+for (let attempt = 0; attempt < 25; attempt++) {
+  const hasAutoPop = await page
+    .evaluate(() =>
+      Array.from(document.querySelectorAll('button')).some((b) => b.innerText.includes('Auto-Populate NEC Layout')),
+    )
+    .catch(() => false)
+  if (hasAutoPop) {
+    electricalPanelOpen = true
+    break
+  }
+  await page
+    .evaluate(() => {
+      const btns = Array.from(document.querySelectorAll('button'))
+      const elec = btns.find(
+        (b) => b.innerText.trim() === 'Electrical' || b.getAttribute('aria-label') === 'Electrical',
+      )
+      if (elec) {
+        elec.click()
+        return
+      }
+      const plug = btns.find(
+        (b) => b.innerText.trim() === 'Plugins' || b.getAttribute('aria-label') === 'Plugins',
+      )
+      if (plug) plug.click()
+    })
+    .catch(() => {})
+  await new Promise((r) => setTimeout(r, 800))
+}
+if (!electricalPanelOpen) {
+  throw new Error('Electrical plugin panel did not open (Auto-Populate NEC Layout button not found)')
+}
 await new Promise((r) => setTimeout(r, 2000))
 
 // Inject subtle non-intrusive chapter banner + visual click cursor ring for walkthrough clarity
@@ -202,6 +255,30 @@ async function pulseCursor(active: boolean) {
     const el = document.getElementById('__walkthrough_cursor')
     if (el) el.style.transform = on ? 'scale(1.55)' : 'scale(1)'
   }, active)
+}
+
+async function captureCleanShot(mediaFilename: string, repoAssetFilename?: string) {
+  if (!mediaShotsDir && (!refreshRepoShots || !repoAssetFilename)) return
+  await page.evaluate(() => {
+    const b = document.getElementById('__walkthrough_banner')
+    const c = document.getElementById('__walkthrough_cursor')
+    if (b) b.style.display = 'none'
+    if (c) c.style.display = 'none'
+  })
+  await new Promise((r) => setTimeout(r, 120))
+  const png = await page.screenshot({ type: 'png' })
+  if (mediaShotsDir) {
+    fs.writeFileSync(path.join(mediaShotsDir, mediaFilename), png)
+  }
+  if (refreshRepoShots && repoAssetFilename) {
+    fs.writeFileSync(path.join(rootDir, 'assets', repoAssetFilename), png)
+  }
+  await page.evaluate(() => {
+    const b = document.getElementById('__walkthrough_banner')
+    const c = document.getElementById('__walkthrough_cursor')
+    if (b) b.style.display = ''
+    if (c) c.style.display = ''
+  })
 }
 
 async function captureFrames(
@@ -320,7 +397,19 @@ await smoothClickButton('Auto-Populate NEC Layout', false, 6, 26, '02_after_auto
 
 // Demonstrate adding an outlet: snaps flush to wall & joins existing room circuit run automatically!
 await setBanner('1 / 5 · Add Outlet -> Snaps to Wall & Auto-Joins Existing Room Circuit Run')
-await smoothClickButton('+ Receptacle', true, 5, 18, '02b_add_outlet')
+await smoothClickButton('+ Receptacle', true, 5, 16, '02b_add_outlet')
+
+// Demonstrate 1-click Catalog Equipment placement (52" Ceiling Fan w/ LED Kit -> centers in room & joins lighting!)
+await setBanner('1 / 5 · 50-Model CAD Catalog -> 1-Click Place 52" Ceiling Fan w/ LED Kit')
+await page.evaluate(() => {
+  const sel = document.querySelector<HTMLSelectElement>('select[aria-label="Catalog Equipment Model"]')
+  if (sel) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set
+    setter?.call(sel, 'ceiling-fan')
+    sel.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+})
+await smoothClickButton('+ Place', true, 4, 16, '02c_place_catalog_fan')
 
 // ─── CHAPTER 2: Inspect Concealed In-Wall Wiring via Native Pascal useViewer Modes ──
 console.log('Recording Chapter 2: Native Pascal useViewer Low Walls & X-Ray In-Wall Inspection...')
@@ -337,9 +426,11 @@ for (let i = 0; i < 4; i++) {
   await captureFrames(2, 70)
 }
 await dragOrbit(980, 440, -160, -30, 10, 'right', '03b_low_walls_orbit')
+await captureCleanShot('02-pascal-inwall-low-walls.png', 'demo-3d-trade-routing.png')
 
 await setBanner('2 / 5 · Pascal Native X-Ray Wiring Mode: Full 3D Electrical System Isolation')
 await smoothClickButton('X-Ray Wiring', true, 5, 16, '03c_xray_wiring')
+await captureCleanShot('03-pascal-xray-wiring.png')
 await smoothClickButton('Full Walls', true, 4, 8)
 
 // ─── CHAPTER 3: Zoom-In Cover-Off 3D Panel Interior Wiring View ─────────────
@@ -364,6 +455,7 @@ await captureFrames(18, 90, '04_panel_breakers_zoom', true)
 // Click Full Open Panel, then Zoom: Breakers & Lugs, then orbit the live 3D open panel canvas!
 await setBanner('3 / 5 · Cover-Off 3D Panel Interior · Full Open Panel & Copper Busbars')
 await smoothClickButton('Full Open Panel', true, 5, 16, '04b_panel_full')
+await captureCleanShot('05a-pascal-panel-cover-off-split.png')
 
 await setBanner('3 / 5 · Extreme Zoom: Individual 90°-Bent Wires Landed on Circuit Breakers & Brass Lugs')
 await smoothClickButton('Zoom: Breakers & Lugs', true, 5, 12)
@@ -383,14 +475,17 @@ if (panelCanvasRect) {
   await dragOrbit(panelCanvasRect.x - 40, panelCanvasRect.y, 110, -25, 12, 'left', '05_panel_orbit')
 }
 
-await setBanner('3 / 5 · Toggle Panel Cover On / Cover Off Live Inside Pascal Editor')
-await smoothClickButton('Panel Cover On', true, 4, 12)
-await smoothClickButton('Cover Off (Wired)', true, 4, 14)
+await setBanner('3 / 5 · Panel Cover On: Flush ANSI-61 Steel Cover, NEMA Nameplate, NEC 110.16 Placard & Spare Blanks')
+await smoothClickButton('Full Open Panel', true, 3, 6)
+await smoothClickButton('Panel Cover On', true, 4, 18, '05b_panel_cover_on')
+await captureCleanShot('05-pascal-panel-cover-on-split.png')
+await smoothClickButton('Cover Off (Wired)', true, 4, 12)
 
 // ─── CHAPTER 4: Live Panelboard Schedule & NEC 220 Load Calculation ─────────
 console.log('Recording Chapter 4: Panel Schedule & NEC 220 Load Calc...')
 await setBanner('4 / 5 · Live Split-Phase Panelboard Schedule (Odd/Even L1/L2, Wire Gauges & Phase Balance)')
 await smoothClickButton('Panel Schedule', true, 5, 24, '06_panel_schedule')
+await captureCleanShot('06-pascal-panel-schedule.png', 'demo-panel-schedule.png')
 
 await setBanner('4 / 5 · Deterministic NEC Article 220 Service Load Calculation (Standard & Optional 220.82)')
 await smoothClickButton('NEC 220 Load Calc', true, 5, 20)
@@ -418,9 +513,11 @@ await page.evaluate(() => {
 })
 await moveCursor(-40, -40)
 await captureFrames(24, 90, '07_takeoff_cost', true)
+await captureCleanShot('07-pascal-bom-takeoff.png')
 
 await setBanner('5 / 5 · Live NEC Compliance Audit: 0 Errors, 0 Warnings (NEC PASS)')
 await smoothClickButton('NEC Audit', false, 5, 22, '08_nec_audit')
+await captureCleanShot('08-pascal-nec-audit.png')
 
 // Finish encoding
 ffmpeg.stdin.end()

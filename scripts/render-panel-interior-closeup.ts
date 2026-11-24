@@ -1,7 +1,8 @@
 /**
- * Renders a high-resolution 3-panel close-up showcase (`assets/demo-panel-wired-interior.png`)
- * of the Cover-Off Wired Panel Interior CAD models (Full 200A Residential, Zoomed Breakers & Lugs,
- * and 400A 277/480V 3-Phase Commercial Brown/Orange/Yellow wiring) via Three.js GLTFLoader in Chrome.
+ * Renders a high-resolution 4-panel showcase (`assets/demo-panel-wired-interior.png`)
+ * of the 3D Panel Interior CAD models (200A Cover Off, Extreme Zoom Breakers & Lugs,
+ * 200A Panel Cover On with NEMA nameplate & arc-flash placard, and 400A 277/480V 3-Phase)
+ * via Three.js GLTFLoader in headless Chrome.
  */
 
 import fs from 'node:fs'
@@ -37,8 +38,8 @@ const html = `<!doctype html>
   .sub { font-size: 12px; color: #94a3b8; }
   .grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
   }
   .panel {
     background: #111c32;
@@ -46,7 +47,7 @@ const html = `<!doctype html>
     border-radius: 12px;
     overflow: hidden;
   }
-  img { width: 100%; height: 640px; object-fit: cover; display: block; background: #0b1220; }
+  img { width: 100%; height: 590px; object-fit: cover; display: block; background: #0b1220; }
   .cap { padding: 10px 14px; }
   .cap strong { display: block; font-size: 13px; color: #f8fafc; margin-bottom: 3px; }
   .cap span { font-size: 11px; color: #94a3b8; }
@@ -62,8 +63,8 @@ const html = `<!doctype html>
 </head>
 <body>
   <header>
-    <h1>Cover-Off Panel Interior 3D View — Live Busbars, Breakers & Individual Branch Conductors</h1>
-    <div class="sub">Interactive in Pascal Schedule View ("Panel Interior (3D)") & In-Scene Panel Parameter (coverRemoved = true)</div>
+    <h1>3D Panel Interior View: Cover Off, Panel Cover On, and 400A 3-Phase Commercial</h1>
+    <div class="sub">Interactive in Pascal Schedule View ("Panel Interior (3D)") with engraved NEMA nameplate, NEC 110.16 arc-flash placard, and UL 67 spare blanks</div>
   </header>
   <div id="grid" class="grid"></div>
   <script type="module">
@@ -73,29 +74,36 @@ const html = `<!doctype html>
     const shots = [
       {
         slug: 'panel-res-200a-open',
-        title: '1. Residential 200A 120/240V (Full Cover Off)',
-        sub: 'Black L1 / Red L2 hots, White neutrals, Bare Cu grounds, Main Breaker, & copper bus stabs',
+        title: '1. Residential 200A (Cover Off)',
+        sub: 'L1/L2 hots, white neutrals, bare Cu EGC, main breaker, and copper bus stabs',
         camOffset: [0.22, 0.04, 1.38],
         targetOffset: [0, 0.0, 0.02],
       },
       {
         slug: 'panel-res-200a-open',
-        title: '2. Extreme Zoom: Breakers, Brass Lugs & Gutters',
-        sub: 'Every individual branch wire makes a 90° bend from the side gutter straight into its exact breaker terminal',
+        title: '2. Zoom: Breakers, Lugs & Gutters',
+        sub: 'Individual 90-degree bent conductors landing on breaker terminals and bus bars',
         camOffset: [0.16, 0.02, 0.56],
         targetOffset: [0.02, -0.04, 0.03],
       },
       {
+        slug: 'panel-res-200a-cover-on',
+        title: '3. Residential 200A (Panel Cover On)',
+        sub: 'Flush ANSI-61 steel cover, NEMA nameplate, NEC 110.16 placard & spare blanks',
+        camOffset: [0.14, 0.03, 1.38],
+        targetOffset: [0, 0.0, 0.02],
+      },
+      {
         slug: 'panel-comm-400a-3p',
-        title: '3. Commercial 400A 277/480V 3Φ (Cover Off)',
-        sub: '3-bus copper interior, Brown/Orange/Yellow phase feeders & 3-pole motor breakers, Gray neutrals, Green EGC',
-        camOffset: [-0.24, 0.04, 1.48],
+        title: '4. Commercial 400A 277/480V 3-Phase',
+        sub: '3-bus copper interior, Brown/Orange/Yellow phase feeders & 3-pole breakers',
+        camOffset: [-0.24, 0.04, 1.54],
         targetOffset: [0, 0.02, 0.02],
       },
     ];
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-    renderer.setSize(520, 680);
+    renderer.setSize(460, 620);
     renderer.setPixelRatio(1);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -123,7 +131,7 @@ const html = `<!doctype html>
       box.getSize(size);
       box.getCenter(center);
 
-      const camera = new THREE.PerspectiveCamera(36, 520 / 680, 0.01, 20);
+      const camera = new THREE.PerspectiveCamera(36, 460 / 620, 0.01, 20);
       const target = new THREE.Vector3(
         center.x + size.x * s.targetOffset[0],
         center.y + size.y * s.targetOffset[1],
@@ -182,7 +190,7 @@ const proc = Bun.spawn(
     '--enable-webgl',
     '--ignore-gpu-blocklist',
     '--virtual-time-budget=20000',
-    '--window-size=1640,800',
+    '--window-size=1920,760',
     `--screenshot=${outImg}`,
     `http://127.0.0.1:${server.port}/`,
   ],
