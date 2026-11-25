@@ -9,6 +9,7 @@ import type { AgentContext, AgentOperations, SceneNodes } from '@pascal-app/core
 import { refuse } from '@pascal-app/core/agent-tools'
 import { auditSceneElectrical } from './nec/audit'
 import {
+  type BonesIngestionMode,
   planDeviceAutoConnection,
   planNecAutoPopulate,
   type ProtectionMode,
@@ -701,6 +702,7 @@ export const electricalAgentOperations = {
       includeSmokeAlarms?: boolean
       includeWiring?: boolean
       routingStrategy?: 'auto' | 'wall-only'
+      bonesMode?: BonesIngestionMode
     },
     context: AgentContext,
   ) => {
@@ -715,6 +717,7 @@ export const electricalAgentOperations = {
       includeSmokeAlarms: input.includeSmokeAlarms,
       includeWiring: input.includeWiring ?? true,
       routingStrategy: input.routingStrategy ?? 'auto',
+      bonesMode: input.bonesMode ?? 'auto',
     })
 
     const creates: Array<{ node: AnyNode; parentId?: string }> = []
@@ -776,6 +779,10 @@ export const electricalAgentOperations = {
           necRef: dev.necRef,
           circuitGroup: dev.circuitGroup,
           isExterior: dev.isExterior === true,
+          ...(dev.bonesSourceId ? { bonesSourceId: dev.bonesSourceId } : {}),
+          ...(dev.bonesDeviceId ? { bonesDeviceId: dev.bonesDeviceId } : {}),
+          ...(dev.bonesServiceType ? { bonesServiceType: dev.bonesServiceType } : {}),
+          ...(dev.bonesUserMoved ? { bonesUserMoved: true } : {}),
         },
         position: dev.position,
         rotation: dev.rotation,

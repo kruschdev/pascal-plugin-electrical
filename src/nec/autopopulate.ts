@@ -19,6 +19,7 @@
 
 import {
   extractBonesFramingContext,
+  extractBonesSchematic,
   resolveWallFramingRule,
   snapPanelOffsetToStudBay,
   snapWallOffsetToStud,
@@ -55,6 +56,8 @@ import {
 
 export type ProtectionMode = 'hybrid' | 'gfci-breakers' | 'gfci-receptacles'
 
+export type BonesIngestionMode = 'auto' | 'import-only' | 'ignore'
+
 export type AutoPopulateOptions = {
   levelId?: string | null
   occupancy?: OccupancyType
@@ -65,6 +68,14 @@ export type AutoPopulateOptions = {
   includeSmokeAlarms?: boolean
   includeWiring?: boolean
   routingStrategy?: 'auto' | 'wall-only'
+  /**
+   * Controls how persisted `@pascal-app/plugin-bones` nodes (`bones:device` and electrical `bones:service`)
+   * are ingested:
+   * - `'auto'` (default): import persisted Bones devices & services first (preserving user drags), then fill remaining NEC gaps.
+   * - `'import-only'`: import and wire only the persisted Bones schematic without generating additional devices.
+   * - `'ignore'`: skip `bones:device` / equipment service import (still honors `bones:framing` stud spacing).
+   */
+  bonesMode?: BonesIngestionMode
 }
 
 export type PlannedDeviceSpec = {
@@ -76,6 +87,8 @@ export type PlannedDeviceSpec = {
     | 'duplex'
     | 'gfci'
     | 'afci'
+    | 'weatherproof-gfci'
+    | 'dedicated-240v'
     | 'switch-1p'
     | 'switch-3way'
     | 'luminaire'
@@ -93,6 +106,10 @@ export type PlannedDeviceSpec = {
   wireGauge: WireGauge
   conductorCount: number
   isExterior?: boolean
+  bonesSourceId?: string
+  bonesDeviceId?: string
+  bonesServiceType?: string
+  bonesUserMoved?: boolean
   panelId: string
   circuitNumber: number
   gfciProtected: boolean
@@ -154,6 +171,9 @@ export type AutoPopulatePlan = {
     homeRunsPlanned: number
     daisyChainRunsPlanned: number
     obstaclesAvoided: number
+    bonesDevicesImported: number
+    bonesServicesImported: number
+    bonesUserMovedPreserved: number
   }
 }
 
@@ -512,10 +532,12 @@ export function planNecAutoPopulate(
   // Extract bathtub/shower fixture footprints on this level so auto-populate keeps outlets >= 3 ft (0.95 m) clear (NEC 406.9(C))
   const tubBoxes = extractTubBoxes(nodes, levelId)
   const distToNearestTub = (x: number, z: number): number => minDistToTubBoxes(tubBoxes, x, z)
-  const bonesCtx = extractBonesFramingContext(nodes, levelId)
+  const bonesMode: BonesIngestionMode = options.bonesMode ?? 'auto'
+  const bonesSchematic = extractBonesSchematic(nodes, levelId)
+  const bonesCtx = bonesSchematic.framing
 
-  // 1. Resolve or plan Panelboard (honoring authoritative `bones:service` panel anchor if present,
-  //    centering cleanly inside a stud bay, and strictly respecting NEC 240.24(D)/(E))
+  // 1. Resolve or plan Panelboard (honoring authoritative `bones:service` panel or back-to-back meter/entry
+  //    anchor if present, centering cleanly inside a stud bay, and strictly respecting NEC 240.24(D)/(E))
   let panelNode: SceneNodeLike | null = existingPanels[0] ?? null
   let createdPanel: AutoPopulatePlan['createdPanel'] = null
   if (!panelNode) {
@@ -524,9 +546,15 @@ export function planNecAutoPopulate(
     let panelRot = 0
     let bestPanelScore = -Infinity
 
-    // 1a. Honor an explicit `bones:service` (`serviceType: 'panel'`) point when present on this level
-    if (bonesCtx.servicePanel) {
-      const sp = bonesCtx.servicePanel
+    // 1a. Honor an explicit `bones:service` (`serviceType: 'panel'`), or back-to-back `electric-meter` / `power-entry`
+    const panelAnchor =
+      bonesCtx.servicePanel ??
+      bonesSchematic.services.find(
+        (s) => s.serviceType === 'electric-meter' || s.serviceType === 'power-entry',
+      ) ??
+      null
+    if (panelAnchor) {
+      const sp = panelAnchor
       const hostWall = sp.wallId ? walls.find((w) => w.id === sp.wallId) : undefined
       if (hostWall && typeof sp.wallT === 'number') {
         const rawT = Math.max(0.25, Math.min(hostWall.length - 0.25, sp.wallT * hostWall.length))
@@ -556,7 +584,7 @@ export function planNecAutoPopulate(
           panelRot = side === 1 ? hostWall.yaw : hostWall.yaw + Math.PI
           break
         }
-      } else if (sp.position) {
+      } else if (sp.position && bonesCtx.servicePanel) {
         bestPanelScore = 500
         panelPos = [round3(sp.position[0]), round3(sp.position[1] || 1.52), round3(sp.position[2])]
         panelRot = 0
@@ -662,8 +690,19 @@ export function planNecAutoPopulate(
   }
 
   const addPlanned = (
-    spec: Omit<PlannedDeviceSpec, 'tempId' | 'panelId' | 'circuitNumber' | 'gfciProtected' | 'afciProtected' | 'conductorCount' | 'occupancy' | 'poles' | 'continuous'>,
-  ) => {
+    spec: Omit<
+      PlannedDeviceSpec,
+      | 'tempId'
+      | 'panelId'
+      | 'circuitNumber'
+      | 'gfciProtected'
+      | 'afciProtected'
+      | 'conductorCount'
+      | 'occupancy'
+      | 'poles'
+      | 'continuous'
+    > & { poles?: 1 | 2; continuous?: boolean },
+  ): boolean => {
     if (
       isNearExisting(
         spec.position,
@@ -671,14 +710,14 @@ export function planNecAutoPopulate(
         spec.deviceKind === 'switch-1p' || spec.deviceKind === 'switch-3way' ? 0.3 : 0.48,
       )
     ) {
-      return
+      return false
     }
     const resolved = { ...spec }
     const isRecept =
       resolved.deviceKind === 'duplex' ||
       resolved.deviceKind === 'gfci' ||
       resolved.deviceKind === 'afci'
-    if (isRecept && !resolved.isExterior) {
+    if (isRecept && !resolved.isExterior && !resolved.bonesSourceId) {
       const actualZone = zoneAtPoint(zones, resolved.position[0], resolved.position[2])
       if (actualZone && isKitchen(actualZone.category)) {
         resolved.requiresGfci = true
@@ -720,10 +759,11 @@ export function planNecAutoPopulate(
     planned.push({
       tempId: `auto_dev_${devSeq++}`,
       occupancy,
-      poles: 1,
-      continuous: resolved.deviceKind === 'luminaire' && occupancy === 'commercial',
       ...resolved,
+      poles: resolved.poles ?? 1,
+      continuous: resolved.continuous ?? (resolved.deviceKind === 'luminaire' && occupancy === 'commercial'),
     })
+    return true
   }
 
   // Helper: snap any room-level wall-mounted device (Switch, Bathroom Vanity GFCI, Hallway Outlet, Outdoor WR GFCI)
@@ -912,10 +952,346 @@ export function planNecAutoPopulate(
     return { position: [round3(px), mountY, round3(pz)], rotation: fallbackRot }
   }
 
-  // 2. Walk Walls: NEC 210.52(A)/(C) Wall-Perimeter & Kitchen Countertop Receptacles + Exterior Door Front/Back Rules
+  // Pre-compute interior zones & NFPA 72 A.29.9.4 pilot lighting zone so both Bones switch
+  // ingestion (Step 1c) and Step 3 room lighting share the exact same Smoke/CO pilot circuit.
+  const interiorZones = zones.filter((z) => !isOutdoorCategory(z.category))
+  const pilotLightZone: ZoneInfo | null = includeSmokeAlarms
+    ? interiorZones.find((z) => isHallway(z.category)) ??
+      interiorZones.find((z) => isPrimaryCommonZone(z.category)) ??
+      interiorZones.find(
+        (z) => !isBathroom(z.category) && !isKitchen(z.category) && !/closet/.test(z.category) && !isBedroom(z.category),
+      ) ??
+      interiorZones.find((z) => !isBathroom(z.category) && !isKitchen(z.category) && !/closet/.test(z.category)) ??
+      null
+    : null
+  const smokeCircuitGroup =
+    includeLighting && pilotLightZone ? 'Smoke/CO & Lighting' : 'Smoke/CO Alarms'
+  const bonesSwitchZoneIds = new Set<string>()
+  const lineToLineVolts = getVoltageLineToLine(panelVoltageSystem)
+
+  // 1c. Bones Schematic Ingestion (`bones:device` and electrical `bones:service` nodes):
+  //     When `@pascal-app/plugin-bones` has persisted wall receptacles, GFCIs, switches, or major
+  //     service anchors (`water-heater`, `heat-pump`), promote them directly into engineered
+  //     `electrical:device` specs (preserving user-dragged anchors and preventing duplicates on re-run).
   let kitchenCounterIdx = 0
   let exteriorDoorCount = 0
+  let bonesDevicesImported = 0
+  let bonesServicesImported = 0
+  let bonesUserMovedPreserved = 0
 
+  if (bonesMode !== 'ignore' && bonesSchematic.hasElectricalSchematic) {
+    const importedBonesSourceIds = new Set<string>()
+    for (const d of existingDevices) {
+      const meta = d.metadata as Record<string, unknown> | undefined
+      if (meta && typeof meta.bonesSourceId === 'string' && meta.bonesSourceId.length > 0) {
+        importedBonesSourceIds.add(meta.bonesSourceId)
+      }
+    }
+
+    const resolveBonesWallPoint = (anchor: {
+      wallId?: string
+      wallT?: number
+      heightAff?: number
+      position?: readonly [number, number, number]
+      rotation?: readonly [number, number, number]
+      faceSideHint?: 1 | -1 | null
+      preferExterior?: boolean
+      defaultHeightM: number
+    }): { position: Vec3; rotation: number; roomZone: ZoneInfo | null } | null => {
+      if (anchor.position) {
+        const pos: Vec3 = [
+          round3(anchor.position[0]),
+          round3(anchor.position[1] > 0.01 ? anchor.position[1] : anchor.defaultHeightM),
+          round3(anchor.position[2]),
+        ]
+        const rot = anchor.rotation ? anchor.rotation[1] : 0
+        const roomZone =
+          zoneAtPoint(zones, pos[0] + Math.sin(rot) * 0.35, pos[2] + Math.cos(rot) * 0.35) ??
+          zoneAtPoint(zones, pos[0], pos[2])
+        return { position: pos, rotation: rot, roomZone }
+      }
+      const hostWall = anchor.wallId ? walls.find((w) => w.id === anchor.wallId) : undefined
+      if (!hostWall || typeof anchor.wallT !== 'number') return null
+      const u = Math.max(0.08, Math.min(hostWall.length - 0.08, anchor.wallT * hostWall.length))
+      const mountY = round3(
+        anchor.heightAff !== undefined && anchor.heightAff > 0.01
+          ? anchor.heightAff
+          : anchor.defaultHeightM,
+      )
+      const cx = hostWall.start[0] + hostWall.dx * u
+      const cz = hostWall.start[1] + hostWall.dz * u
+      const probeOff = hostWall.thickness / 2 + 0.35
+      const zPos = zoneAtPoint(zones, cx + hostWall.nx * probeOff, cz + hostWall.nz * probeOff)
+      const zNeg = zoneAtPoint(zones, cx - hostWall.nx * probeOff, cz - hostWall.nz * probeOff)
+
+      let side: 1 | -1 = 1
+      if (anchor.faceSideHint === 1 || anchor.faceSideHint === -1) {
+        side = anchor.faceSideHint
+      } else if (anchor.preferExterior) {
+        const posIsOut = zPos === null || isOutdoorCategory(zPos.category)
+        const negIsOut = zNeg === null || isOutdoorCategory(zNeg.category)
+        side = posIsOut && !negIsOut ? 1 : negIsOut && !posIsOut ? -1 : -1
+      } else {
+        const posIsIn = zPos !== null && !isOutdoorCategory(zPos.category)
+        const negIsIn = zNeg !== null && !isOutdoorCategory(zNeg.category)
+        side = posIsIn ? 1 : negIsIn ? -1 : 1
+      }
+
+      const faceOff = hostWall.thickness / 2 + WALL_DEVICE_OFFSET_M
+      const pos: Vec3 = [
+        round3(cx + hostWall.nx * side * faceOff),
+        mountY,
+        round3(cz + hostWall.nz * side * faceOff),
+      ]
+      const rotation = side === 1 ? hostWall.yaw : hostWall.yaw + Math.PI
+      const roomZone = side === 1 ? zPos : zNeg
+      return { position: pos, rotation, roomZone }
+    }
+
+    for (const bDev of bonesSchematic.devices) {
+      if (importedBonesSourceIds.has(bDev.nodeId)) continue
+      const resolved = resolveBonesWallPoint({
+        wallId: bDev.wallId,
+        wallT: bDev.wallT,
+        heightAff: bDev.heightAff,
+        position: bDev.position,
+        rotation: bDev.rotation,
+        faceSideHint: bDev.faceSideHint,
+        preferExterior: bDev.isOutdoor,
+        defaultHeightM:
+          bDev.deviceKind === 'switch' ? 1.22 : bDev.isCountertop ? 1.12 : bDev.isOutdoor ? 0.45 : 0.38,
+      })
+      if (!resolved) continue
+
+      const z = resolved.roomZone
+      const zName = z?.name ?? 'General'
+      const zCat = z?.category ?? ''
+      let added = false
+
+      if (bDev.deviceKind === 'switch') {
+        const isPilotSwitch = Boolean(
+          includeLighting && includeSmokeAlarms && pilotLightZone && z && z.id === pilotLightZone.id,
+        )
+        added = addPlanned({
+          name: `${zName} Switch (Bones)`,
+          position: resolved.position,
+          rotation: resolved.rotation,
+          deviceKind: 'switch-1p',
+          circuitGroup: isPilotSwitch ? smokeCircuitGroup : 'Lighting & Entries',
+          necRef: isPilotSwitch
+            ? 'NEC 210.70(A) / NFPA 72 A.29.9.4 (Imported from Bones)'
+            : 'NEC 210.70(A) (Imported from Bones)',
+          requiresGfci: false,
+          requiresAfci: occupancy === 'residential',
+          breakerAmps: occupancy === 'commercial' ? 20 : 15,
+          loadVa: 0,
+          boxType: occupancy === 'commercial' ? '4-sq-1.5' : 'single-gang-standard',
+          wireGauge: occupancy === 'commercial' ? '12' : '14',
+          bonesSourceId: bDev.nodeId,
+          bonesDeviceId: bDev.deviceId,
+          bonesUserMoved: bDev.userMoved,
+        })
+        if (added && z) bonesSwitchZoneIds.add(z.id)
+      } else if (bDev.deviceKind === 'receptacle-wr-gfci' || bDev.isOutdoor) {
+        // NEC 406.9(B)(1): Outdoor wet-location receptacles always retain weatherproof extra-duty in-use enclosures
+        added = addPlanned({
+          name: 'Outdoor WR GFCI (Bones)',
+          position: resolved.position,
+          rotation: resolved.rotation,
+          deviceKind: 'weatherproof-gfci',
+          circuitGroup: 'Outdoor GFCI',
+          necRef: 'NEC 210.52(E) / 210.8(A)(3) / 406.9(B)(1) (Imported from Bones)',
+          requiresGfci: true,
+          requiresAfci: false,
+          breakerAmps: 20,
+          loadVa: 180,
+          boxType: 'single-gang-deep',
+          wireGauge: '12',
+          isExterior: true,
+          bonesSourceId: bDev.nodeId,
+          bonesDeviceId: bDev.deviceId,
+          bonesUserMoved: bDev.userMoved,
+        })
+      } else if (bDev.isCountertop || (z && isKitchen(zCat))) {
+        kitchenCounterIdx += 1
+        const sabNum = kitchenCounterIdx % 2 === 1 ? 1 : 2
+        added = addPlanned({
+          name: `${zName} Counter GFCI #${kitchenCounterIdx} (Bones)`,
+          position: resolved.position,
+          rotation: resolved.rotation,
+          deviceKind: protectionMode === 'gfci-breakers' ? 'duplex' : 'gfci',
+          circuitGroup: `Kitchen SAB-${sabNum} (20A)`,
+          necRef: 'NEC 210.52(C) / 210.11(C)(1) (Imported from Bones)',
+          requiresGfci: true,
+          requiresAfci: occupancy === 'residential',
+          breakerAmps: 20,
+          loadVa: 180,
+          boxType: occupancy === 'commercial' ? '4-sq-2.125' : 'single-gang-deep',
+          wireGauge: '12',
+          bonesSourceId: bDev.nodeId,
+          bonesDeviceId: bDev.deviceId,
+          bonesUserMoved: bDev.userMoved,
+        })
+      } else if (bDev.isBasin || (z && isBathroom(zCat))) {
+        added = addPlanned({
+          name: `${zName} Vanity GFCI (Bones)`,
+          position: resolved.position,
+          rotation: resolved.rotation,
+          deviceKind: protectionMode === 'gfci-breakers' ? 'duplex' : 'gfci',
+          circuitGroup: 'Bathroom GFCI (20A)',
+          necRef: 'NEC 210.52(D) / 210.11(C)(3) (Imported from Bones)',
+          requiresGfci: true,
+          requiresAfci: false,
+          breakerAmps: 20,
+          loadVa: 180,
+          boxType: occupancy === 'commercial' ? '4-sq-2.125' : 'single-gang-deep',
+          wireGauge: '12',
+          bonesSourceId: bDev.nodeId,
+          bonesDeviceId: bDev.deviceId,
+          bonesUserMoved: bDev.userMoved,
+        })
+      } else if (z && isLaundry(zCat)) {
+        added = addPlanned({
+          name: `${zName} Laundry GFCI (Bones)`,
+          position: resolved.position,
+          rotation: resolved.rotation,
+          deviceKind: protectionMode === 'gfci-breakers' ? 'duplex' : 'gfci',
+          circuitGroup: 'Laundry GFCI (20A)',
+          necRef: 'NEC 210.52(F) / 210.11(C)(2) (Imported from Bones)',
+          requiresGfci: true,
+          requiresAfci: occupancy === 'residential',
+          breakerAmps: 20,
+          loadVa: 180,
+          boxType: 'single-gang-deep',
+          wireGauge: '12',
+          bonesSourceId: bDev.nodeId,
+          bonesDeviceId: bDev.deviceId,
+          bonesUserMoved: bDev.userMoved,
+        })
+      } else if (z && isGarage(zCat)) {
+        added = addPlanned({
+          name: `${zName} Garage GFCI (Bones)`,
+          position: resolved.position,
+          rotation: resolved.rotation,
+          deviceKind: protectionMode === 'gfci-breakers' ? 'duplex' : 'gfci',
+          circuitGroup: 'Garage GFCI (20A)',
+          necRef: 'NEC 210.52(G)(1) / 210.11(C)(4) (Imported from Bones)',
+          requiresGfci: true,
+          requiresAfci: false,
+          breakerAmps: 20,
+          loadVa: 180,
+          boxType: 'single-gang-deep',
+          wireGauge: '12',
+          bonesSourceId: bDev.nodeId,
+          bonesDeviceId: bDev.deviceId,
+          bonesUserMoved: bDev.userMoved,
+        })
+      } else if (bDev.deviceKind === 'receptacle-gfci' || (z && isBasementOrUtility(zCat))) {
+        added = addPlanned({
+          name: `${zName} GFCI Receptacle (Bones)`,
+          position: resolved.position,
+          rotation: resolved.rotation,
+          deviceKind: protectionMode === 'gfci-breakers' ? 'duplex' : 'gfci',
+          circuitGroup: 'General GFCI (20A)',
+          necRef: 'NEC 210.8(A) (Imported from Bones)',
+          requiresGfci: true,
+          requiresAfci: false,
+          breakerAmps: 20,
+          loadVa: 180,
+          boxType: 'single-gang-deep',
+          wireGauge: '12',
+          bonesSourceId: bDev.nodeId,
+          bonesDeviceId: bDev.deviceId,
+          bonesUserMoved: bDev.userMoved,
+        })
+      } else {
+        added = addPlanned({
+          name: `${zName} Receptacle (Bones)`,
+          position: resolved.position,
+          rotation: resolved.rotation,
+          deviceKind: 'duplex',
+          circuitGroup: `${zName} Receptacles`,
+          necRef: 'NEC 210.52(A) (Imported from Bones)',
+          requiresGfci: false,
+          requiresAfci: occupancy === 'residential',
+          breakerAmps: occupancy === 'commercial' ? 20 : 15,
+          loadVa: 180,
+          boxType: occupancy === 'commercial' ? '4-sq-2.125' : 'single-gang-standard',
+          wireGauge: occupancy === 'commercial' ? '12' : '14',
+          bonesSourceId: bDev.nodeId,
+          bonesDeviceId: bDev.deviceId,
+          bonesUserMoved: bDev.userMoved,
+        })
+      }
+
+      if (added) {
+        bonesDevicesImported += 1
+        if (bDev.userMoved) bonesUserMovedPreserved += 1
+      }
+    }
+
+    for (const bSvc of bonesSchematic.services) {
+      if (importedBonesSourceIds.has(bSvc.nodeId)) continue
+      if (bSvc.serviceType !== 'water-heater' && bSvc.serviceType !== 'heat-pump') continue
+
+      const isHeatPump = bSvc.serviceType === 'heat-pump'
+      const resolved = resolveBonesWallPoint({
+        wallId: bSvc.wallId,
+        wallT: bSvc.wallT,
+        heightAff: bSvc.heightAff,
+        position: bSvc.position,
+        rotation: bSvc.rotation,
+        preferExterior: isHeatPump,
+        defaultHeightM: isHeatPump ? 0.6 : 1.0,
+      })
+      if (!resolved) continue
+
+      const added = addPlanned(
+        isHeatPump
+          ? {
+              name: 'Heat Pump Condenser (Bones)',
+              position: resolved.position,
+              rotation: bSvc.yawOverride ?? resolved.rotation,
+              deviceKind: 'dedicated-240v',
+              circuitGroup: `Heat Pump HVAC (${lineToLineVolts}V 30A)`,
+              necRef: 'NEC 440.32 / 210.8(F) / 220.82(C)(2) (Imported from Bones)',
+              requiresGfci: true,
+              requiresAfci: false,
+              poles: 2,
+              breakerAmps: 30,
+              loadVa: 4800,
+              continuous: false,
+              boxType: '4-sq-2.125',
+              wireGauge: '10',
+              isExterior: true,
+              bonesSourceId: bSvc.nodeId,
+              bonesServiceType: bSvc.serviceType,
+            }
+          : {
+              name: 'Electric Water Heater (Bones)',
+              position: resolved.position,
+              rotation: resolved.rotation,
+              deviceKind: 'dedicated-240v',
+              circuitGroup: `Water Heater (${lineToLineVolts}V 30A)`,
+              necRef: 'NEC 422.13 / 210.8(A) / 220.53 (Imported from Bones)',
+              requiresGfci: true,
+              requiresAfci: false,
+              poles: 2,
+              breakerAmps: 30,
+              loadVa: 4500,
+              continuous: false,
+              boxType: '4-sq-2.125',
+              wireGauge: '10',
+              bonesSourceId: bSvc.nodeId,
+              bonesServiceType: bSvc.serviceType,
+            },
+      )
+      if (added) bonesServicesImported += 1
+    }
+  }
+
+  // 2. Walk Walls: NEC 210.52(A)/(C) Wall-Perimeter & Kitchen Countertop Receptacles + Exterior Door Front/Back Rules
+  if (bonesMode !== 'import-only') {
   for (const wall of walls) {
     const probeOffset = wall.thickness / 2 + 0.35
     const faceOff = wall.thickness / 2 + WALL_DEVICE_OFFSET_M
@@ -1118,20 +1494,6 @@ export function planNecAutoPopulate(
   }
 
   // 3. Per-Zone Guaranteed NEC Minimums (Wall-Snapped Bathroom GFCI, Hallway Outlet, Outdoor Patio GFCI, & Room Luminaires/Switches)
-  // Pick a frequently-used common/hallway pilot lighting zone to share the 15A AFCI Smoke/CO circuit (NFPA 72 A.29.9.4 best practice)
-  const interiorZones = zones.filter((z) => !isOutdoorCategory(z.category))
-  const pilotLightZone: ZoneInfo | null = includeSmokeAlarms
-    ? interiorZones.find((z) => isHallway(z.category)) ??
-      interiorZones.find((z) => isPrimaryCommonZone(z.category)) ??
-      interiorZones.find(
-        (z) => !isBathroom(z.category) && !isKitchen(z.category) && !/closet/.test(z.category) && !isBedroom(z.category),
-      ) ??
-      interiorZones.find((z) => !isBathroom(z.category) && !isKitchen(z.category) && !/closet/.test(z.category)) ??
-      null
-    : null
-  const smokeCircuitGroup =
-    includeLighting && pilotLightZone ? 'Smoke/CO & Lighting' : 'Smoke/CO Alarms'
-
   for (const z of zones) {
     const [cx, cz] = z.centroid
     const cat = z.category
@@ -1218,29 +1580,31 @@ export function planNecAutoPopulate(
         wireGauge: occupancy === 'commercial' ? '12' : '14',
       })
 
-      const switchSpot = snapToZoneWall(z, {
-        mountY: 1.22,
-        preferNearDoor: true,
-        minTubDistM: isBathroom(cat) ? 0.96 : undefined,
-        avoidWindows: true,
-      })
-      addPlanned({
-        name: `${z.name} Wall Switch`,
-        position: switchSpot.position,
-        rotation: switchSpot.rotation,
-        deviceKind: 'switch-1p',
-        circuitGroup: lightingGroup,
-        necRef:
-          lightingGroup === smokeCircuitGroup
-            ? 'NEC 210.70(A)(1) / NFPA 72 A.29.9.4'
-            : 'NEC 210.70(A)(1)',
-        requiresGfci: false,
-        requiresAfci: occupancy === 'residential',
-        breakerAmps: occupancy === 'commercial' ? 20 : 15,
-        loadVa: 0,
-        boxType: occupancy === 'commercial' ? '4-sq-1.5' : 'single-gang-standard',
-        wireGauge: occupancy === 'commercial' ? '12' : '14',
-      })
+      if (!bonesSwitchZoneIds.has(z.id)) {
+        const switchSpot = snapToZoneWall(z, {
+          mountY: 1.22,
+          preferNearDoor: true,
+          minTubDistM: isBathroom(cat) ? 0.96 : undefined,
+          avoidWindows: true,
+        })
+        addPlanned({
+          name: `${z.name} Wall Switch`,
+          position: switchSpot.position,
+          rotation: switchSpot.rotation,
+          deviceKind: 'switch-1p',
+          circuitGroup: lightingGroup,
+          necRef:
+            lightingGroup === smokeCircuitGroup
+              ? 'NEC 210.70(A)(1) / NFPA 72 A.29.9.4'
+              : 'NEC 210.70(A)(1)',
+          requiresGfci: false,
+          requiresAfci: occupancy === 'residential',
+          breakerAmps: occupancy === 'commercial' ? 20 : 15,
+          loadVa: 0,
+          boxType: occupancy === 'commercial' ? '4-sq-1.5' : 'single-gang-standard',
+          wireGauge: occupancy === 'commercial' ? '12' : '14',
+        })
+      }
     }
   }
 
@@ -1457,6 +1821,7 @@ export function planNecAutoPopulate(
       isExterior: true,
     })
   }
+  }
 
   // 5. Group Devices into NEC Branch Circuits (<= 10 devices per circuit), Order Nearest-Neighbor Chain,
   //    Assign Balanced Panel Circuits, & Route Home Runs + Outlet-to-Outlet Daisy-Chain Runs!
@@ -1507,15 +1872,44 @@ export function planNecAutoPopulate(
     }
   }
 
-  const pickBalancedFreeCircuit = (loadVa: number): number => {
+  const pickBalancedFreeCircuit = (loadVa: number, poles: 1 | 2 = 1): number => {
     const occupied = new Set<number>()
     for (const d of virtualDeviceList) {
       if (d.panelId !== panelNode!.id) continue
       const c = typeof d.circuitNumber === 'number' && d.circuitNumber >= 1 ? Math.floor(d.circuitNumber) : 0
       if (c <= 0) continue
-      const poles = d.poles === 3 ? 3 : d.poles === 2 ? 2 : 1
-      for (let p = 0; p < poles; p++) occupied.add(c + p * 2)
+      const dPoles = d.poles === 3 ? 3 : d.poles === 2 ? 2 : 1
+      for (let p = 0; p < dPoles; p++) occupied.add(c + p * 2)
     }
+
+    if (poles === 2) {
+      let bestSlot: number | null = null
+      let bestScore = Infinity
+      for (let slot = 1; slot + 2 <= maxPanelSpaces; slot++) {
+        if (occupied.has(slot) || occupied.has(slot + 2)) continue
+        const p0 = Math.floor((slot - 1) / 2) % phaseCount
+        const p1 = (p0 + 1) % phaseCount
+        const score = (phaseLoadVa[p0] ?? 0) + (phaseLoadVa[p1] ?? 0)
+        if (score < bestScore) {
+          bestScore = score
+          bestSlot = slot
+        }
+      }
+      if (bestSlot !== null) {
+        const p0 = Math.floor((bestSlot - 1) / 2) % phaseCount
+        const p1 = (p0 + 1) % phaseCount
+        phaseLoadVa[p0] = (phaseLoadVa[p0] ?? 0) + loadVa / 2
+        phaseLoadVa[p1] = (phaseLoadVa[p1] ?? 0) + loadVa / 2
+        return bestSlot
+      }
+      const fallback = findNextFreePanelCircuit(panelNode, virtualDeviceList, 2)
+      const fb0 = Math.floor((fallback - 1) / 2) % phaseCount
+      const fb1 = (fb0 + 1) % phaseCount
+      phaseLoadVa[fb0] = (phaseLoadVa[fb0] ?? 0) + loadVa / 2
+      phaseLoadVa[fb1] = (phaseLoadVa[fb1] ?? 0) + loadVa / 2
+      return fallback
+    }
+
     // Order phases lightest-first
     const phaseOrder = Array.from({ length: phaseCount }, (_, i) => i).sort(
       (a, b) => (phaseLoadVa[a] ?? 0) - (phaseLoadVa[b] ?? 0),
@@ -1548,12 +1942,14 @@ export function planNecAutoPopulate(
   for (const bucket of circuitBuckets) {
     if (bucket.items.length === 0) continue
 
+    const circuitPoles: 1 | 2 = bucket.items.some((d) => d.poles === 2) ? 2 : 1
     const breakerAmps = Math.max(...bucket.items.map((d) => d.breakerAmps))
     const anyGfci = bucket.items.some((d) => d.requiresGfci)
     const anyAfci = bucket.items.some((d) => d.requiresAfci)
     const totalLoadVa = bucket.items.reduce((s, d) => s + d.loadVa, 0)
-    const circuitLoadAmps = Math.max(1, Math.round((totalLoadVa / vLN) * 100) / 100)
-    const ckt = pickBalancedFreeCircuit(totalLoadVa)
+    const voltage = circuitPoles === 2 ? getVoltageLineToLine(panelVoltageSystem) : vLN
+    const circuitLoadAmps = Math.max(1, Math.round((totalLoadVa / voltage) * 100) / 100)
+    const ckt = pickBalancedFreeCircuit(totalLoadVa, circuitPoles)
 
     // Order chain: start with device closest to panel, then greedy nearest-neighbor outlet-to-outlet!
     // For Smoke/CO & Lighting circuits, route constant hot through the pilot switch/light first,
@@ -1592,9 +1988,17 @@ export function planNecAutoPopulate(
 
     // Pre-route Home Run & Daisy-Chain Hops so final voltage-drop / ampacity wireGauge propagates to EVERY device box!
     const anyContinuous = ordered.some((d) => d.continuous)
-    const voltage = vLN
     const phases: 1 | 3 = 1
-    let circuitWireGauge: WireGauge = breakerAmps >= 20 ? '12' : '14'
+    let circuitWireGauge: WireGauge =
+      breakerAmps >= 50
+        ? '6'
+        : breakerAmps >= 40
+          ? '8'
+          : breakerAmps >= 30
+            ? '10'
+            : breakerAmps >= 20
+              ? '12'
+              : '14'
     let tradeSize: ConduitTradeSize = '3/4"'
 
     const hrRoute =
@@ -1802,7 +2206,7 @@ export function planNecAutoPopulate(
 
     const protLabel = [
       anyAfci ? 'AFCI' : '',
-      anyGfci && protectionMode === 'gfci-breakers' ? 'GFCI' : '',
+      anyGfci && (protectionMode === 'gfci-breakers' || circuitPoles === 2) ? 'GFCI' : '',
     ]
       .filter(Boolean)
       .join('/')
@@ -1810,7 +2214,7 @@ export function planNecAutoPopulate(
     circuitSummary.push({
       circuitNumber: ckt,
       groupName: bucket.groupName,
-      breakerSpec: `1P-${breakerAmps}A${protLabel ? ` ${protLabel}` : ''}`,
+      breakerSpec: `${circuitPoles}P-${breakerAmps}A${protLabel ? ` ${protLabel}` : ''}`,
       wireGauge: circuitWireGauge,
       deviceCount: circuitDevices.length,
       homeRunCount,
@@ -1831,6 +2235,9 @@ export function planNecAutoPopulate(
       homeRunsPlanned: plannedRuns.filter((r) => r.runKind === 'home-run').length,
       daisyChainRunsPlanned: plannedRuns.filter((r) => r.runKind === 'daisy-chain').length,
       obstaclesAvoided: totalAvoided,
+      bonesDevicesImported,
+      bonesServicesImported,
+      bonesUserMovedPreserved,
     },
   }
 }

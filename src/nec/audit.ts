@@ -845,7 +845,17 @@ export function auditSceneElectrical(
 
         if (occupancy === 'residential') {
           const isHabitable = Array.from(HABITABLE_AFCI_CATEGORIES).some((h) => zoneCat.includes(h))
-          if (isHabitable && dev.afciProtected !== true && dev.deviceKind !== 'afci') {
+          const devPoles = typeof dev.poles === 'number' ? dev.poles : 1
+          const devAmps = typeof dev.breakerAmps === 'number' ? dev.breakerAmps : 15
+          // NEC 210.12(A): Dwelling AFCI applies only to 120V, single-phase, 15A and 20A branch circuits
+          const is120v15Or20Branch =
+            devPoles === 1 && devAmps <= 20 && devKind !== 'dedicated-240v'
+          if (
+            isHabitable &&
+            is120v15Or20Branch &&
+            dev.afciProtected !== true &&
+            dev.deviceKind !== 'afci'
+          ) {
             push({
               severity: 'warning',
               codeRef: 'NEC 210.12(A)',

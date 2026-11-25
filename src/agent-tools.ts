@@ -11,7 +11,7 @@ const Vec3 = z.tuple([z.number(), z.number(), z.number()])
 export const electricalAgentTools: PluginAgentTools = {
   pluginId: 'krusch:electrical',
   apiVersion: 1,
-  version: '0.2.3',
+  version: '0.2.4',
   instructions:
     'Electrical ALWAYS yields to higher-priority trades (1. Structural, 2. Plumbing, 3. HVAC). Never relocate pipes or ducts to make room for electrical runs; use electrical_route_circuit to route around them and electrical_audit_nec to verify NEC 110.26 working/dedicated space, 220 loads, 310.16 ampacity, 314.16 box fill, Ch. 9 conduit fill, 358.26 bend limits, and voltage drop.',
   skills: [
@@ -229,7 +229,7 @@ export const electricalAgentTools: PluginAgentTools = {
       name: 'electrical_autopopulate_nec',
       title: 'Auto-populate NEC minimum layout, circuits, home runs & daisy-chain wiring',
       description:
-        'Analyze Pascal walls, doors, stairs, and room zones to auto-populate NEC minimum receptacles (6ft/12ft wall rule, 4ft kitchen countertops on 2x 20A SAB circuits, bathroom/laundry/garage/outdoor WR GFCIs, front-door & stairway outlets/3-way switches/lights), group into balanced panel circuits (with GFCI outlets or GFCI/AFCI breakers), and route home runs plus outlet-to-outlet daisy-chain branch wiring around plumbing, HVAC, and structural obstacles.',
+        'Analyze Pascal walls, doors, stairs, room zones, and optional @pascal-app/plugin-bones nodes (`bones:framing`, `bones:device`, `bones:service`) to import Bones rough-ins and/or auto-populate NEC minimum receptacles (6ft/12ft wall rule, 4ft kitchen countertops on 2x 20A SAB circuits, bathroom/laundry/garage/outdoor WR GFCIs, front-door & stairway outlets/3-way switches/lights, 240V water-heater/heat-pump service circuits), group into balanced 1P/2P panel circuits, and route home runs plus outlet-to-outlet daisy-chain branch wiring around plumbing, HVAC, and structural obstacles.',
       runsIn: 'operation',
       input: {
         levelId: z.string().optional(),
@@ -243,6 +243,7 @@ export const electricalAgentTools: PluginAgentTools = {
         includeSmokeAlarms: z.boolean().optional(),
         includeWiring: z.boolean().default(true),
         routingStrategy: z.enum(['auto', 'wall-only']).default('auto'),
+        bonesMode: z.enum(['auto', 'import-only', 'ignore']).default('auto'),
       },
       annotations: { destructiveHint: false, idempotentHint: false },
     },

@@ -1,6 +1,6 @@
 {
   "name": "@kruschdev/pascal-plugin-electrical",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Residential & Commercial NEC electrical authoring, load calculations, panel schedules, and trade-priority obstacle-aware routing plugin for Pascal Editor.",
   "author": "Kevin Ruschman <kruschdev@users.noreply.github.com>",
   "license": "MIT",

@@ -9,8 +9,8 @@ import { useMemo, useState } from 'react'
 import { electricalAgentOperations } from '../agent-operations'
 import { circuitRunColor } from '../cad/materials'
 import { auditSceneElectrical } from '../nec/audit'
-import { findNextWallPlacement, type ProtectionMode } from '../nec/autopopulate'
-import { extractBonesFramingContext } from '../nec/framing-interop'
+import { type BonesIngestionMode, findNextWallPlacement, type ProtectionMode } from '../nec/autopopulate'
+import { extractBonesSchematic, summarizePendingBonesImport } from '../nec/framing-interop'
 import type { SceneNodeLike } from '../nec/load-calc'
 import {
   belongsToLevel,
@@ -109,10 +109,11 @@ export default function ElectricalRailPanel() {
     () => extractTradeObstacles(record, activeLevelId),
     [record, activeLevelId],
   )
-  const bonesCtx = useMemo(
-    () => extractBonesFramingContext(record, activeLevelId),
+  const bonesSchematic = useMemo(
+    () => extractBonesSchematic(record, activeLevelId),
     [record, activeLevelId],
   )
+  const bonesCtx = bonesSchematic.framing
   const cavitiesCtx = useMemo(
     () => extractRoutingCavities(record, activeLevelId),
     [record, activeLevelId],
@@ -125,6 +126,14 @@ export default function ElectricalRailPanel() {
   const devices = useMemo(
     () => Object.values(record).filter((n) => n.type === 'electrical:device'),
     [record],
+  )
+  const levelElectricalDevices = useMemo(
+    () => devices.filter((d) => belongsToLevel(record, d, activeLevelId)),
+    [devices, record, activeLevelId],
+  )
+  const pendingBonesImport = useMemo(
+    () => summarizePendingBonesImport(bonesSchematic, levelElectricalDevices),
+    [bonesSchematic, levelElectricalDevices],
   )
   const runs = useMemo(
     () => Object.values(record).filter((n) => n.type === 'electrical:conduit-run'),
@@ -283,7 +292,7 @@ export default function ElectricalRailPanel() {
     }
   }
 
-  const autoPopulateNec = () => {
+  const runAutoPopulate = (bonesMode: BonesIngestionMode = 'auto') => {
     const levelId = activeLevelOf(nodes, selectedLevelId)
     if (!levelId) {
       setStatusMsg('Create a building level with walls/rooms first before auto-populating NEC electrical.')
@@ -297,12 +306,17 @@ export default function ElectricalRailPanel() {
         protectionMode,
         includeLighting: true,
         includeWiring: true,
+        bonesMode,
       },
       { activeLevelId: levelId },
     )
     const created = outcome.changes?.create ?? []
     if (created.length === 0) {
-      setStatusMsg('No additional NEC minimum outlets or circuits needed for the current walls/zones.')
+      setStatusMsg(
+        bonesMode === 'import-only'
+          ? 'All persisted Bones electrical devices and services on this level are already imported.'
+          : 'No additional NEC minimum outlets or circuits needed for the current walls/zones.',
+      )
       return
     }
     runAsSingleSceneHistoryStep(useScene, () => {
@@ -310,10 +324,17 @@ export default function ElectricalRailPanel() {
         createNode(item.node, item.parentId as never)
       }
     })
+    const bonesImportedTotal =
+      Number(outcome.result.bonesDevicesImported ?? 0) +
+      Number(outcome.result.bonesServicesImported ?? 0)
+    const bonesSuffix =
+      bonesImportedTotal > 0 ? ` (imported ${bonesImportedTotal} from Bones)` : ''
     setStatusMsg(
-      `NEC Auto-Populated ${outcome.result.devicesPlanned} devices across ${outcome.result.circuitsCreated} circuits (${outcome.result.homeRunsPlanned} home runs + ${outcome.result.daisyChainRunsPlanned} outlet-to-outlet runs).`,
+      `${bonesMode === 'import-only' ? 'Imported Bones schematic:' : 'NEC Auto-Populated'} ${outcome.result.devicesPlanned} devices across ${outcome.result.circuitsCreated} circuits (${outcome.result.homeRunsPlanned} home runs + ${outcome.result.daisyChainRunsPlanned} outlet-to-outlet runs)${bonesSuffix}.`,
     )
   }
+
+  const autoPopulateNec = () => runAutoPopulate('auto')
 
   const autoRouteAll = () => {
     const levelId = activeLevelOf(nodes, selectedLevelId)
@@ -608,6 +629,33 @@ export default function ElectricalRailPanel() {
         >
           Auto-Populate NEC Layout &amp; Wiring
         </button>
+        {pendingBonesImport.totalImportable > 0 && (
+          <button
+            type="button"
+            disabled={pendingBonesImport.pendingDevices + pendingBonesImport.pendingServices === 0}
+            onClick={() => runAutoPopulate('import-only')}
+            style={{
+              ...btnStyle,
+              background:
+                pendingBonesImport.pendingDevices + pendingBonesImport.pendingServices === 0
+                  ? 'rgba(148,163,184,0.12)'
+                  : 'rgba(16,185,129,0.2)',
+              borderColor:
+                pendingBonesImport.pendingDevices + pendingBonesImport.pendingServices === 0
+                  ? 'rgba(148,163,184,0.3)'
+                  : 'rgba(16,185,129,0.55)',
+              opacity:
+                pendingBonesImport.pendingDevices + pendingBonesImport.pendingServices === 0 ? 0.7 : 1,
+              cursor:
+                pendingBonesImport.pendingDevices + pendingBonesImport.pendingServices === 0
+                  ? 'default'
+                  : 'pointer',
+              fontWeight: 600,
+            }}
+          >
+            {pendingBonesImport.label}
+          </button>
+        )}
       </div>
 
       {/* Native Pascal useViewer In-Wall Inspection Controls */}

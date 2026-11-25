@@ -28,6 +28,61 @@ export type BonesServicePanelAnchor = {
   position?: readonly [number, number, number]
 }
 
+export type BonesDeviceKind =
+  | 'receptacle'
+  | 'receptacle-gfci'
+  | 'receptacle-wr-gfci'
+  | 'switch'
+
+export type BonesServiceType =
+  | 'panel'
+  | 'water-heater'
+  | 'water-entry'
+  | 'sewer-exit'
+  | 'power-entry'
+  | 'thermostat'
+  | 'heat-pump'
+  | 'electric-meter'
+
+export type BonesDeviceAnchor = {
+  nodeId: string
+  deviceId: string
+  deviceKind: BonesDeviceKind
+  wallId?: string
+  wallT?: number
+  heightAff?: number
+  position?: readonly [number, number, number]
+  rotation?: readonly [number, number, number]
+  /** Parsed from Bones deterministic deviceId suffix (`-p` => +1, `-m` => -1). */
+  faceSideHint: 1 | -1 | null
+  /** True when the user dragged or overrode the device relative to its Bones seed anchor. */
+  userMoved: boolean
+  isCountertop: boolean
+  isBasin: boolean
+  isOutdoor: boolean
+}
+
+export type BonesServiceAnchor = {
+  nodeId: string
+  serviceType: BonesServiceType
+  wallId?: string
+  wallT?: number
+  heightAff?: number
+  position?: readonly [number, number, number]
+  rotation?: readonly [number, number, number]
+  yawOverride?: number | null
+}
+
+export type BonesSchematicSnapshot = {
+  framing: BonesFramingContext
+  devices: BonesDeviceAnchor[]
+  services: BonesServiceAnchor[]
+  /** True when persisted `bones:device` or electrical `bones:service` anchors exist on the level. */
+  hasElectricalSchematic: boolean
+  /** Count of persisted `bones:device` nodes whose live anchor differs from their `seed*` derivation. */
+  userMovedDeviceCount: number
+}
+
 export type BonesFramingContext = {
   /** True when a `bones:framing` node exists on the active level. */
   present: boolean
@@ -124,6 +179,227 @@ export function extractBonesFramingContext(
     framingSystem,
     wallRules,
     servicePanel,
+  }
+}
+
+const VALID_BONES_DEVICE_KINDS: ReadonlySet<string> = new Set([
+  'receptacle',
+  'receptacle-gfci',
+  'receptacle-wr-gfci',
+  'switch',
+])
+
+const VALID_BONES_SERVICE_TYPES: ReadonlySet<string> = new Set([
+  'panel',
+  'water-heater',
+  'water-entry',
+  'sewer-exit',
+  'power-entry',
+  'thermostat',
+  'heat-pump',
+  'electric-meter',
+])
+
+const ELECTRICAL_BONES_SERVICES: ReadonlySet<BonesServiceType> = new Set([
+  'panel',
+  'water-heater',
+  'power-entry',
+  'heat-pump',
+  'electric-meter',
+])
+
+function readOptionalVec3(raw: unknown): readonly [number, number, number] | undefined {
+  if (!Array.isArray(raw) || raw.length < 3) return undefined
+  const x = Number(raw[0])
+  const y = Number(raw[1])
+  const z = Number(raw[2])
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return undefined
+  return [x, y, z] as const
+}
+
+function isNonZeroVec3(pos: readonly [number, number, number] | undefined): boolean {
+  return Boolean(pos && (Math.abs(pos[0]) > 1e-4 || Math.abs(pos[1]) > 1e-4 || Math.abs(pos[2]) > 1e-4))
+}
+
+function parseBonesFaceSideHint(deviceId: string): 1 | -1 | null {
+  if (deviceId.endsWith('-p')) return 1
+  if (deviceId.endsWith('-m')) return -1
+  return null
+}
+
+/**
+ * Extract the full persisted `@pascal-app/plugin-bones` schematic snapshot on a level:
+ * - `bones:framing` stud spacing & wall overrides
+ * - `bones:device` wall-mounted receptacles, GFCIs, outdoor WR GFCIs, and switches (preserving user drag overrides)
+ * - `bones:service` anchors (`panel`, `electric-meter`, `power-entry`, `water-heater`, `heat-pump`, etc.)
+ *
+ * Pure TypeScript with zero hard dependency on `@pascal-app/plugin-bones`.
+ */
+export function extractBonesSchematic(
+  nodes: Readonly<Record<string, SceneNodeLike>>,
+  levelId: string | null = null,
+): BonesSchematicSnapshot {
+  const framing = extractBonesFramingContext(nodes, levelId)
+  const all = Object.values(nodes)
+  const devices: BonesDeviceAnchor[] = []
+  const services: BonesServiceAnchor[] = []
+  let userMovedDeviceCount = 0
+
+  for (const n of all) {
+    if (!belongsToLevel(nodes, n, levelId)) continue
+
+    if (n.type === 'bones:device') {
+      const rawKind = typeof n.deviceKind === 'string' ? n.deviceKind : ''
+      if (!VALID_BONES_DEVICE_KINDS.has(rawKind)) continue
+      const deviceKind = rawKind as BonesDeviceKind
+      const deviceId = typeof n.deviceId === 'string' && n.deviceId.length > 0 ? n.deviceId : n.id
+      const wallId = typeof n.wallId === 'string' ? n.wallId : undefined
+      const wallT = typeof n.wallT === 'number' && Number.isFinite(n.wallT) ? n.wallT : undefined
+      const heightAff =
+        typeof n.heightAff === 'number' && Number.isFinite(n.heightAff) ? n.heightAff : undefined
+      const rawPos = readOptionalVec3(n.position)
+      const position = isNonZeroVec3(rawPos) ? rawPos : undefined
+      const rotation = readOptionalVec3(n.rotation)
+
+      const seedWallId = typeof n.seedWallId === 'string' ? n.seedWallId : undefined
+      const seedWallT =
+        typeof n.seedWallT === 'number' && Number.isFinite(n.seedWallT) ? n.seedWallT : undefined
+      const seedHeightAff =
+        typeof n.seedHeightAff === 'number' && Number.isFinite(n.seedHeightAff)
+          ? n.seedHeightAff
+          : undefined
+
+      const movedWall = Boolean(seedWallId && wallId && seedWallId !== wallId)
+      const movedT = Boolean(
+        seedWallT !== undefined && wallT !== undefined && Math.abs(wallT - seedWallT) > 1e-3,
+      )
+      const movedH = Boolean(
+        seedHeightAff !== undefined &&
+          heightAff !== undefined &&
+          Math.abs(heightAff - seedHeightAff) > 1e-3,
+      )
+      const userMoved = Boolean(position || movedWall || movedT || movedH)
+      if (userMoved) userMovedDeviceCount += 1
+
+      const isOutdoor = deviceKind === 'receptacle-wr-gfci' || deviceId.includes('-out-')
+      const isCountertop = deviceId.includes('-ctr-')
+      const isBasin = deviceId.includes('-basin-')
+
+      devices.push({
+        nodeId: n.id,
+        deviceId,
+        deviceKind,
+        wallId,
+        wallT,
+        heightAff,
+        position,
+        rotation,
+        faceSideHint: parseBonesFaceSideHint(deviceId),
+        userMoved,
+        isCountertop,
+        isBasin,
+        isOutdoor,
+      })
+    } else if (n.type === 'bones:service') {
+      const rawSvc = typeof n.serviceType === 'string' ? n.serviceType : ''
+      if (!VALID_BONES_SERVICE_TYPES.has(rawSvc)) continue
+      const serviceType = rawSvc as BonesServiceType
+      const rawPos = readOptionalVec3(n.position)
+      services.push({
+        nodeId: n.id,
+        serviceType,
+        wallId: typeof n.wallId === 'string' ? n.wallId : undefined,
+        wallT: typeof n.wallT === 'number' && Number.isFinite(n.wallT) ? n.wallT : undefined,
+        heightAff:
+          typeof n.heightAff === 'number' && Number.isFinite(n.heightAff) ? n.heightAff : undefined,
+        position: isNonZeroVec3(rawPos) ? rawPos : undefined,
+        rotation: readOptionalVec3(n.rotation),
+        yawOverride: typeof n.yawOverride === 'number' ? n.yawOverride : null,
+      })
+    }
+  }
+
+  const hasElectricalService = services.some((s) => ELECTRICAL_BONES_SERVICES.has(s.serviceType))
+  return {
+    framing,
+    devices,
+    services,
+    hasElectricalSchematic: devices.length > 0 || hasElectricalService,
+    userMovedDeviceCount,
+  }
+}
+
+export type PendingBonesImportSummary = {
+  totalImportable: number
+  pendingDevices: number
+  pendingServices: number
+  pendingUserMoved: number
+  alreadyImported: number
+  label: string
+}
+
+/**
+ * Summarize remaining un-imported Bones electrical devices (`bones:device`) and load-bearing
+ * equipment services (`water-heater`, `heat-pump`) against already-imported `electrical:device`
+ * nodes (`metadata.bonesSourceId`) for clean UI labels and button state.
+ */
+export function summarizePendingBonesImport(
+  schematic: BonesSchematicSnapshot,
+  existingElectricalDevices: readonly SceneNodeLike[],
+): PendingBonesImportSummary {
+  const importedIds = new Set<string>()
+  for (const d of existingElectricalDevices) {
+    const meta = d.metadata as Record<string, unknown> | undefined
+    if (meta && typeof meta.bonesSourceId === 'string' && meta.bonesSourceId.length > 0) {
+      importedIds.add(meta.bonesSourceId)
+    }
+  }
+
+  const importableServices = schematic.services.filter(
+    (s) => s.serviceType === 'water-heater' || s.serviceType === 'heat-pump',
+  )
+  const pendingDevs = schematic.devices.filter((d) => !importedIds.has(d.nodeId))
+  const pendingSvcs = importableServices.filter((s) => !importedIds.has(s.nodeId))
+  const pendingUserMoved = pendingDevs.filter((d) => d.userMoved).length
+  const totalImportable = schematic.devices.length + importableServices.length
+  const remaining = pendingDevs.length + pendingSvcs.length
+  const alreadyImported = totalImportable - remaining
+
+  if (totalImportable === 0) {
+    return {
+      totalImportable: 0,
+      pendingDevices: 0,
+      pendingServices: 0,
+      pendingUserMoved: 0,
+      alreadyImported: 0,
+      label: '',
+    }
+  }
+
+  if (remaining === 0) {
+    return {
+      totalImportable,
+      pendingDevices: 0,
+      pendingServices: 0,
+      pendingUserMoved: 0,
+      alreadyImported,
+      label: `Bones Schematic Imported (${alreadyImported}/${totalImportable})`,
+    }
+  }
+
+  const parts = [
+    pendingDevs.length > 0 ? `${pendingDevs.length} dev` : '',
+    pendingSvcs.length > 0 ? `${pendingSvcs.length} svc` : '',
+    pendingUserMoved > 0 ? `${pendingUserMoved} moved` : '',
+  ].filter(Boolean)
+
+  return {
+    totalImportable,
+    pendingDevices: pendingDevs.length,
+    pendingServices: pendingSvcs.length,
+    pendingUserMoved,
+    alreadyImported,
+    label: `Import & Wire Bones Schematic (${parts.join(', ')})`,
   }
 }
 
