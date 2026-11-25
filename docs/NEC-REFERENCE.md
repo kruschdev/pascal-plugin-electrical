@@ -19,9 +19,9 @@ All calculations in [`@kruschdev/pascal-plugin-electrical/nec`](../src/nec/index
 - Sums general lighting (`3 VA/sq ft`), small appliances, laundry, fixed appliances, range, and dryer: applies `100%` to the first `10,000 VA` and `40%` to the remainder (`220.82(B)`).
 - Applies **NEC 220.82(C)** HVAC demand factors (`100%` for A/C and heat pump compressor loads per `220.82(C)(2)`, `65%` for 4+ separately controlled electric space heaters, `40%` for central electric furnace).
 
-### Solar PV 120% Busbar Rule (`NEC 705.12(B)(3)(2)`)
+### Solar PV 120% Busbar Rule (`NEC 705.12(B)(3)(2)`) and Scene Load Aggregation
 $$\text{Max PV Backfeed Breaker} = 1.2 \times I_{\text{bus}} - I_{\text{main}}$$
-Flags an error whenever `solarBackfeedAmps` exceeds the permitted busbar backfeed limit.
+Flags an error whenever `solarBackfeedAmps` exceeds the permitted busbar backfeed limit. `calculateSceneLoad` aggregates all 25 live equipment kinds (including `usb-duplex`, `weatherproof-gfci`, `floor-box`, `vfd`, `battery-ess`, and `solar-inverter`) and automatically infers `solarBackfeedAmps` from placed `solar-inverter` nodes when the panel's explicit backfeed field is unset.
 
 ### Commercial Load Calculations (`calculateCommercialLoad`)
 - **NEC Table 220.12**: Lighting VA/sq ft by occupancy (`office`, `retail`, `warehouse`, `restaurant`, `school`, `healthcare`, `industrial`, `garage`) multiplied by `125%` continuous load factor (`NEC 215.2`).
@@ -35,7 +35,7 @@ Flags an error whenever `solarBackfeedAmps` exceeds the permitted busbar backfee
 |---|---|---|
 | `calculateDeratedAmpacity` | Table 310.16, 310.15(B)(1), 310.15(C)(1), 334.80, 240.4(D) | Copper and Aluminum `60C`/`75C`/`90C` base ratings; ambient temperature correction; rooftop `+33C` adder; bundling derating (`4-6: 80%`, `7-9: 70%`, `10-20: 50%`); NM-B derates from `90C` but caps final allowable ampacity at `60C` (`334.80`); small-conductor OCPD limits (`#14 Cu <= 15A`, `#12 Cu <= 20A`, `#10 Cu <= 30A`, `240.4(D)`) |
 | `calculateConduitFill` | Chapter 9 Tables 1, 4, and 5 | `53%` (1 wire), `31%` (2 wires), `40%` (3+ wires), and `60%` nipple exception (`<= 24"`) for `EMT`, `PVC-40`, and `RMC` (`1/2"` through `4"`) |
-| `calculateBoxFill` | Table 314.16(A) and 314.16(B) | Counts current-carrying conductors, `2x` allowance per device yoke, `1x` internal clamp allowance (largest wire), `1x` equipment ground allowance (up to 4 EGCs, `+0.25x` per additional EGC per 2020/2023 NEC) |
+| `calculateBoxFill` | Table 314.16(A) and 314.16(B) | Counts current-carrying conductors across `#14` through `750kcmil` (`clampToBoxFillGauge`), `2x` allowance per device yoke, `1x` internal clamp allowance (largest wire), `1x` equipment ground allowance (up to 4 EGCs, `+0.25x` per additional EGC per 2020/2023 NEC). Integral-enclosure gear (`usesSeparateRoughInBox`: `evse`, `battery-ess`, `solar-inverter`, `transfer-switch`, `weatherproof-gfci`, `floor-box`, `vfd`, `spd-type2`, `generator-inlet`, `pv-rapid-shutdown`, `motor-3p`) skips gang-box fill and rough-in box BOM counts |
 | `calculateVoltageDrop` | Chapter 9 Table 8 / NEC 210.19 & 215.2 | Single-phase (`2 * K * I * L / CM`) and three-phase (`1.732 * K * I * L / CM`) drop using actual 3D routed path length; recommends upsized gauge above `3%` |
 
 ## 3. NEC Minimum Auto-Populate (`src/nec/autopopulate.ts`)
@@ -51,11 +51,12 @@ Flags an error whenever `solarBackfeedAmps` exceeds the permitted busbar backfee
 | Exterior / Outdoor / Front Door | `NEC 210.52(E)` & `210.70(A)(2)(b)` | Weather-resistant outdoor GFCI receptacle, front-door interior entry outlet, entry switch, and exterior sconce/light |
 | Stairways | `NEC 210.70(A)(2)(c)` | Top and bottom 3-way switches (`switch-3way`), stairway luminaire, and landing receptacle |
 | Protection Modes | `NEC 210.8` & `210.12` | Selectable `hybrid` (GFCI receptacles + AFCI breakers), `gfci-breakers` (panel GFCI/AFCI breakers), or `gfci-receptacles` (point-of-use GFCI devices) |
-| Branch Circuit Wiring | `NEC 358.26` & Trade Priority | Automatically generates **Home Runs** (`Panel -> First Device`) and **Outlet-to-Outlet Daisy-Chain Runs** (`Device i -> Device i+1`) that detour around plumbing, HVAC, and structural obstacles |
+| Framing & Stud-Bay Alignment | `@pascal-app/plugin-bones` & `NEC 210.52` | Reads optional `bones:framing` (`16" OC` / `24" OC`, `wallOverrides` including `cmu` bypass) and `bones:service` (`panel`) nodes to mount `MDP-1` cleanly inside a stud bay and snap every nail-on outlet, GFCI, and switch flush against the side face of a stud, clamped to remaining `NEC 210.52(A)/(C)` spacing slack |
+| Branch Circuit Wiring | `NEC 358.26` & Trade Priority | Automatically generates 10-color-coded **Home Runs** (`Panel -> First Device`) and **Outlet-to-Outlet Daisy-Chain Runs** (`Device i -> Device i+1`) that detour around plumbing, HVAC, and structural obstacles |
 
 ## 4. Live Prohibited-Location and Code Compliance Auditor (`src/nec/audit.ts`)
 
-`auditSceneElectrical` runs continuously in the Inspector card and Left-Rail Panel to catch non-code placements immediately:
+`auditSceneElectrical` runs continuously in the Inspector card and Left-Rail Panel to catch non-code placements immediately. All room, wet-fixture, stairway, dedicated-circuit, and trade-obstacle checks are strictly scoped to each node's owning level (`resolveNodeLevelId` / `belongsToLevel`), and both `gfci` and `weatherproof-gfci` satisfy wet-zone GFCI requirements:
 
 | NEC Reference | Category | Condition Flagged |
 |---|---|---|

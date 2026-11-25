@@ -11,7 +11,7 @@ const Vec3 = z.tuple([z.number(), z.number(), z.number()])
 export const electricalAgentTools: PluginAgentTools = {
   pluginId: 'krusch:electrical',
   apiVersion: 1,
-  version: '0.1.0',
+  version: '0.2.0',
   instructions:
     'Electrical ALWAYS yields to higher-priority trades (1. Structural, 2. Plumbing, 3. HVAC). Never relocate pipes or ducts to make room for electrical runs; use electrical_route_circuit to route around them and electrical_audit_nec to verify NEC 110.26 working/dedicated space, 220 loads, 310.16 ampacity, 314.16 box fill, Ch. 9 conduit fill, 358.26 bend limits, and voltage drop.',
   skills: [
