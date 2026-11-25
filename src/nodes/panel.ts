@@ -54,12 +54,6 @@ export const ElectricalPanelNode = BaseNode.extend({
 
 export type ElectricalPanelNode = z.infer<typeof ElectricalPanelNode>
 
-const VOLTAGE_ACCENT: Record<VoltageSystem, number> = {
-  '120/240V-1P': 0xf59e0b, // amber (residential split-phase)
-  '120/208V-3P': 0x2563eb, // blue (commercial 208V)
-  '277/480V-3P': 0xdc2626, // red (commercial 480V)
-}
-
 export function getElectricalPanelPorts(node: ElectricalPanelNode): NodePort[] {
   const [x, y, zPos] = node.position
   const topY = y + node.height / 2

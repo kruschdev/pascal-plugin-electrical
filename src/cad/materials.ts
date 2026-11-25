@@ -28,6 +28,7 @@ export type CadMaterialPool = {
   ledGreen: MeshStandardMaterial
   diffuserWhite: MeshStandardMaterial
   glassDome: MeshStandardMaterial
+  walnutWood: MeshStandardMaterial
 }
 
 export function createCadMaterialPool(): CadMaterialPool {
@@ -139,6 +140,11 @@ export function createCadMaterialPool(): CadMaterialPool {
       roughness: 0.08,
       transparent: true,
       opacity: 0.45,
+    }),
+    walnutWood: new MeshStandardMaterial({
+      color: 0x3b2f2f,
+      metalness: 0.08,
+      roughness: 0.55,
     }),
   }
 }

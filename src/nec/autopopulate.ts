@@ -26,6 +26,7 @@ import {
 import type { SceneNodeLike } from './load-calc'
 import { findNextFreePanelCircuit } from './panel-schedule'
 import {
+  belongsToLevel,
   extractRoutingWalls,
   extractTradeObstacles,
   polylineLengthM,
@@ -271,22 +272,6 @@ function largerGauge(a: WireGauge, b: WireGauge): WireGauge {
 
 function round3(n: number): number {
   return Math.round(n * 1000) / 1000
-}
-
-function belongsToLevel(
-  nodes: Readonly<Record<string, SceneNodeLike>>,
-  node: SceneNodeLike,
-  levelId: string | null,
-): boolean {
-  if (!levelId) return true
-  let cur: SceneNodeLike | undefined = node
-  const seen = new Set<string>()
-  while (cur && !seen.has(cur.id)) {
-    seen.add(cur.id)
-    if (cur.id === levelId || cur.parentId === levelId) return true
-    cur = cur.parentId ? nodes[cur.parentId] : undefined
-  }
-  return node.parentId == null
 }
 
 type TubBox = { minX: number; maxX: number; minZ: number; maxZ: number }
@@ -1034,12 +1019,19 @@ export function planNecAutoPopulate(
         const mountY = isCountertopWall ? 1.12 : gar ? 1.22 : 0.38
         // For garage/laundry/basement, place at most 1 receptacle per wall span (min 1 required by NEC)
         const count = gar || laun || bsmt ? 1 : Math.max(1, Math.ceil(spanLen / maxSpacingM))
+        const wRule = resolveWallFramingRule(bonesCtx, wall.id)
+        // Clamp stud-snap shift strictly within remaining NEC 210.52(A) 6ft/12ft or 210.52(C) 2ft/4ft slack
+        const necSlackM =
+          gar || laun || bsmt
+            ? wRule.spacingIn * 0.0254 * 0.75
+            : Math.max(0, (maxSpacingM - spanLen / count) / 2 - 0.01)
         for (let i = 0; i < count; i++) {
           const rawT = s0 + ((i + 0.5) / count) * spanLen
           const t = snapWallOffsetToStud(wall.length, rawT, {
             spanMin: s0,
             spanMax: s1,
-            rule: resolveWallFramingRule(bonesCtx, wall.id),
+            rule: wRule,
+            maxShiftM: necSlackM,
           }).offsetM
           const wx = round3(wall.start[0] + wall.dx * t + wall.nx * sign * faceOff)
           const wz = round3(wall.start[1] + wall.dz * t + wall.nz * sign * faceOff)

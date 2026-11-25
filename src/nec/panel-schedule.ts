@@ -30,6 +30,8 @@ import {
   getVoltageLineToNeutral,
   isThreePhaseSystem,
   round2,
+  sanitizeCsvCell,
+  usesSeparateRoughInBox,
 } from './tables'
 
 export type PanelSlotEntry = {
@@ -239,7 +241,13 @@ export function buildPanelSchedule(
     const protectionSet = new Set<'AFCI' | 'GFCI'>()
     for (const d of devs) {
       if (d.afciProtected === true || d.deviceKind === 'afci') protectionSet.add('AFCI')
-      if (d.gfciProtected === true || d.deviceKind === 'gfci') protectionSet.add('GFCI')
+      if (
+        d.gfciProtected === true ||
+        d.deviceKind === 'gfci' ||
+        d.deviceKind === 'weatherproof-gfci'
+      ) {
+        protectionSet.add('GFCI')
+      }
     }
     const label =
       devs.length === 1
@@ -404,7 +412,6 @@ export function buildPanelSchedule(
 export function formatPanelScheduleCsv(schedule: PanelSchedule): string {
   const header =
     'Left Ckt,Left Description,Left Poles,Left Breaker (A),Left Wire,Left VA,Phase,Right VA,Right Wire,Right Breaker (A),Right Poles,Right Description,Right Ckt'
-  const esc = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s)
   const lines = [header]
   for (const row of schedule.rows) {
     const l = row.left
@@ -412,7 +419,7 @@ export function formatPanelScheduleCsv(schedule: PanelSchedule): string {
     lines.push(
       [
         row.leftCircuit,
-        l ? esc(l.description) : 'SPARE',
+        l ? sanitizeCsvCell(l.description) : 'SPARE',
         l ? l.poles : '',
         l ? l.breakerAmps : '',
         l ? `#${l.wireGauge}` : '',
@@ -422,7 +429,7 @@ export function formatPanelScheduleCsv(schedule: PanelSchedule): string {
         r ? `#${r.wireGauge}` : '',
         r ? r.breakerAmps : '',
         r ? r.poles : '',
-        r ? esc(r.description) : 'SPARE',
+        r ? sanitizeCsvCell(r.description) : 'SPARE',
         row.rightCircuit,
       ].join(','),
     )
@@ -477,10 +484,11 @@ export function buildElectricalTakeoff(
 
   const seenCircuitBreakers = new Set<string>()
   for (const dev of devices) {
-    const bType = typeof dev.boxType === 'string' ? dev.boxType : 'single-gang-standard'
-    boxesByType[bType] = (boxesByType[bType] ?? 0) + 1
-
     const dKind = typeof dev.deviceKind === 'string' ? dev.deviceKind : 'duplex'
+    if (usesSeparateRoughInBox(dKind)) {
+      const bType = typeof dev.boxType === 'string' ? dev.boxType : 'single-gang-standard'
+      boxesByType[bType] = (boxesByType[bType] ?? 0) + 1
+    }
     const occ = dev.occupancy === 'commercial' ? 'commercial' : 'residential'
     const dKey = `${dKind}:${occ}`
     const prev = devicesByKind[dKey]
@@ -495,7 +503,9 @@ export function buildElectricalTakeoff(
       const amps = typeof dev.breakerAmps === 'number' ? dev.breakerAmps : 20
       const prot = [
         dev.afciProtected || dev.deviceKind === 'afci' ? 'AFCI' : '',
-        dev.gfciProtected || dev.deviceKind === 'gfci' ? 'GFCI' : '',
+        dev.gfciProtected || dev.deviceKind === 'gfci' || dev.deviceKind === 'weatherproof-gfci'
+          ? 'GFCI'
+          : '',
       ]
         .filter(Boolean)
         .join('/')

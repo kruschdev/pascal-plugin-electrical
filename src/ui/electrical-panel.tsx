@@ -13,6 +13,7 @@ import { findNextWallPlacement, type ProtectionMode } from '../nec/autopopulate'
 import { extractBonesFramingContext } from '../nec/framing-interop'
 import type { SceneNodeLike } from '../nec/load-calc'
 import {
+  belongsToLevel,
   detectRunTradeClashes,
   extractRoutingWalls,
   extractTradeObstacles,
@@ -30,22 +31,6 @@ function activeLevelOf(nodes: Readonly<Record<string, AnyNode>>, selectedLevelId
     if (n.type === 'level') return n.id
   }
   return null
-}
-
-function belongsToLevel(
-  record: Readonly<Record<string, SceneNodeLike>>,
-  node: SceneNodeLike,
-  levelId: string | null,
-): boolean {
-  if (!levelId) return true
-  let cur: SceneNodeLike | undefined = node
-  const seen = new Set<string>()
-  while (cur && !seen.has(cur.id)) {
-    seen.add(cur.id)
-    if (cur.id === levelId || cur.parentId === levelId) return true
-    cur = cur.parentId ? record[cur.parentId] : undefined
-  }
-  return node.parentId == null
 }
 
 function pathsNearlyEqual(a: readonly Vec3[], b: readonly Vec3[]): boolean {

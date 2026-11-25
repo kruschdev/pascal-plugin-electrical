@@ -191,7 +191,7 @@ export const electricalConduitRunRenderDefinition: NodeDefinition<typeof Electri
     snappable: {},
   },
   geometry: buildElectricalConduitRunGeometry,
-  geometryKey: (n) => JSON.stringify([n.path, n.racewayType, n.tradeSize, n.wireGauge, n.voltage]),
+  geometryKey: (n) => JSON.stringify([n.path, n.racewayType, n.tradeSize, n.wireGauge, n.voltage, n.circuitNumber]),
   ports: getElectricalConduitRunPorts,
   floorplan: buildElectricalConduitRunFloorplan,
   presentation: {

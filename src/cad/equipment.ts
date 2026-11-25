@@ -1030,8 +1030,10 @@ export function buildConduitRunCad(
       ? 0.036
       : Math.max(0.036, CONDUIT_OUTER_DIAMETER_M[node.tradeSize] ?? 0.036)
   const radius = outerDiam / 2
-  // NEC Chapter 9 Table 2 minimum one-shot bend radius (~5.5x trade diameter)
-  const bendRadius = Math.max(0.065, outerDiam * 3.2)
+  // Concealed NM-B uses a tighter corner fillet so sweeps stay cleanly inside thin 70-90mm partition corners;
+  // rigid conduits preserve full NEC Chapter 9 Table 2 minimum one-shot bend radii.
+  const bendRadius =
+    node.racewayType === 'nm-b' ? 0.045 : Math.max(0.065, outerDiam * 3.2)
 
   let runMat: MeshStandardMaterial
   if (node.circuitNumber && node.circuitNumber > 0) {

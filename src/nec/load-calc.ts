@@ -505,25 +505,33 @@ export function calculateSceneLoad(
       (d) =>
         d.deviceKind === 'duplex' ||
         d.deviceKind === 'gfci' ||
-        d.deviceKind === 'afci',
+        d.deviceKind === 'afci' ||
+        d.deviceKind === 'usb-duplex' ||
+        d.deviceKind === 'weatherproof-gfci' ||
+        d.deviceKind === 'floor-box',
     )
     const motors = devices
-      .filter((d) => d.deviceKind === 'motor-load' || d.isMotor === true)
+      .filter((d) => d.deviceKind === 'motor-load' || d.deviceKind === 'vfd' || d.isMotor === true)
       .map((d) => ({
         name: (typeof d.name === 'string' && d.name) || d.id,
-        va: typeof d.loadVa === 'number' ? d.loadVa : 1500,
+        va: typeof d.loadVa === 'number' ? d.loadVa : d.deviceKind === 'vfd' ? 12000 : 1500,
       }))
     const dedicatedLoads = devices
       .filter(
         (d) =>
           d.deviceKind === 'dedicated-240v' ||
           d.deviceKind === 'evse' ||
-          d.deviceKind === 'exit-sign',
+          d.deviceKind === 'exit-sign' ||
+          d.deviceKind === 'battery-ess',
       )
       .map((d) => ({
         name: (typeof d.name === 'string' && d.name) || d.id,
-        va: typeof d.loadVa === 'number' ? d.loadVa : 0,
-        continuous: d.continuous === true || d.deviceKind === 'evse' || d.deviceKind === 'exit-sign',
+        va: typeof d.loadVa === 'number' ? d.loadVa : d.deviceKind === 'battery-ess' ? 11500 : 0,
+        continuous:
+          d.continuous === true ||
+          d.deviceKind === 'evse' ||
+          d.deviceKind === 'exit-sign' ||
+          d.deviceKind === 'battery-ess',
       }))
 
     return calculateCommercialLoad({
@@ -539,22 +547,44 @@ export function calculateSceneLoad(
 
   // Residential scene extraction
   const appliances: ResidentialApplianceLoad[] = []
+  let inferredSolarBackfeedAmps = 0
   for (const d of devices) {
     const kind = typeof d.deviceKind === 'string' ? d.deviceKind : ''
     const loadVa = typeof d.loadVa === 'number' ? d.loadVa : 0
-    if (kind === 'dedicated-240v' || kind === 'evse' || kind === 'motor-load') {
+    if (kind === 'solar-inverter') {
+      const bAmps = typeof d.breakerAmps === 'number' && d.breakerAmps > 0 ? d.breakerAmps : 40
+      inferredSolarBackfeedAmps += bAmps
+      continue
+    }
+    if (
+      kind === 'dedicated-240v' ||
+      kind === 'evse' ||
+      kind === 'motor-load' ||
+      kind === 'vfd' ||
+      kind === 'battery-ess'
+    ) {
       appliances.push({
         name: (typeof d.name === 'string' && d.name) || kind,
-        watts: loadVa > 0 ? loadVa : kind === 'evse' ? 9600 : 5000,
-        isMotor: d.isMotor === true || kind === 'motor-load',
+        watts:
+          loadVa > 0
+            ? loadVa
+            : kind === 'evse'
+              ? 9600
+              : kind === 'battery-ess'
+                ? 11500
+                : kind === 'vfd'
+                  ? 12000
+                  : 5000,
+        isMotor: d.isMotor === true || kind === 'motor-load' || kind === 'vfd',
         category: kind === 'evse' ? 'evse' : undefined,
       })
     }
   }
 
   const primaryPanel = panels[0]
-  const solarBackfeedAmps =
+  const panelSolarBackfeed =
     typeof primaryPanel?.solarBackfeedAmps === 'number' ? primaryPanel.solarBackfeedAmps : 0
+  const solarBackfeedAmps = panelSolarBackfeed > 0 ? panelSolarBackfeed : inferredSolarBackfeedAmps
   const busRatingAmps =
     typeof primaryPanel?.busRatingAmps === 'number' ? primaryPanel.busRatingAmps : undefined
   const mainBreakerAmps =

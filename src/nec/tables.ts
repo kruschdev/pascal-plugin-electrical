@@ -459,3 +459,45 @@ export function nextStandardService(amps: number): number {
 export function round2(value: number): number {
   return Math.round(value * 100) / 100
 }
+
+/**
+ * Equipment & wiring devices that ship with an integral enclosure or floor/weatherproof box
+ * rather than mounting inside a separate wall gang rough-in box (NEC 314.16 & BOM takeoff).
+ */
+const INTEGRAL_ENCLOSURE_KINDS = new Set<string>([
+  'evse',
+  'motor-load',
+  'exit-sign',
+  'solar-inverter',
+  'battery-ess',
+  'transfer-switch',
+  'generator-inlet',
+  'rapid-shutdown',
+  'spd',
+  'vfd',
+  'weatherproof-gfci',
+  'floor-box',
+  'under-cabinet-led',
+])
+
+export function usesSeparateRoughInBox(deviceKind: string): boolean {
+  return !INTEGRAL_ENCLOSURE_KINDS.has(deviceKind)
+}
+
+const BOX_FILL_GAUGE_SET = new Set<string>(['18', '16', '14', '12', '10', '8', '6'])
+
+/** Clamp feeder gauges (#4..750kcmil) to a valid NEC Table 314.16(B) box-fill gauge ('6'). */
+export function clampToBoxFillGauge(gauge: string | undefined): BoxFillGauge {
+  if (gauge && BOX_FILL_GAUGE_SET.has(gauge)) return gauge as BoxFillGauge
+  if (gauge && (WIRE_GAUGE_ORDER as readonly string[]).includes(gauge)) return '6'
+  return '12'
+}
+
+/**
+ * RFC-4180 CSV cell escaping with spreadsheet formula-injection neutralization
+ * (prefixes leading =, +, -, @, tab, or CR triggers with a single quote).
+ */
+export function sanitizeCsvCell(raw: string): string {
+  const safe = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw
+  return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe
+}

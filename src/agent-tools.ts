@@ -135,7 +135,13 @@ export const electricalAgentTools: PluginAgentTools = {
             '4-oct-2.125',
           ])
           .optional(),
-        wireGauge: z.enum(['18', '16', '14', '12', '10', '8', '6']).optional(),
+        wireGauge: z
+          .enum([
+            '18', '16', '14', '12', '10', '8', '6', '4', '3', '2', '1',
+            '1/0', '2/0', '3/0', '4/0',
+            '250kcmil', '300kcmil', '350kcmil', '400kcmil', '500kcmil', '600kcmil', '750kcmil',
+          ])
+          .optional(),
         conductorCount: z.number().int().min(0).max(40).optional(),
       },
       annotations: { destructiveHint: false, idempotentHint: false },

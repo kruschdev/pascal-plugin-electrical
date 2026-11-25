@@ -83,7 +83,13 @@ export const ElectricalDeviceNode = BaseNode.extend({
       '4-oct-2.125',
     ])
     .default('single-gang-standard'),
-  wireGauge: z.enum(['18', '16', '14', '12', '10', '8', '6']).default('12'),
+  wireGauge: z
+    .enum([
+      '18', '16', '14', '12', '10', '8', '6', '4', '3', '2', '1',
+      '1/0', '2/0', '3/0', '4/0',
+      '250kcmil', '300kcmil', '350kcmil', '400kcmil', '500kcmil', '600kcmil', '750kcmil',
+    ])
+    .default('12'),
   conductorCount: z.number().int().min(0).max(40).default(4),
   clampCount: z.number().int().min(0).max(6).default(1),
   yokeCount: z.number().int().min(0).max(4).default(1),

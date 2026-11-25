@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-amber.svg)](./LICENSE)
 [![Pascal Plugin API v1](https://img.shields.io/badge/Pascal_Plugin_API-v1-38bdf8.svg)](https://github.com/pascalorg/editor)
 [![3D CAD Models](https://img.shields.io/badge/MIT_3D_CAD_Models-50_.glb-10b981.svg)](./docs/CAD-CATALOG.md)
-[![NEC Tests](https://img.shields.io/badge/Tests-46%2F46_Passing-22c55e.svg)](./src/__tests__)
+[![NEC Tests](https://img.shields.io/badge/Tests-53%2F53_Passing-22c55e.svg)](./src/__tests__)
 
 An open-source, MIT-licensed **Residential and Commercial NEC Electrical** plugin for [Pascal Editor](https://github.com/pascalorg/editor).
 
@@ -107,7 +107,7 @@ setPluginDiscovery(async () => [electricalRenderPlugin])
 
 ```bash
 bun install
-bun run check              # tsc --noEmit + bun test src (45/45 tests) + all 4 boundary gates
+bun run check              # tsc --noEmit + bun test src (53/53 tests) + all 4 boundary gates
 bun run export:cad         # Regenerate all 50 binary .glb models in assets/cad/
 bun scripts/render-cad-thumbnails.ts # Re-render all 50 thumbnails + 5x10 contact sheet
 bun run render:walkthrough # Re-render assets/demo-walkthrough.mp4 and .gif

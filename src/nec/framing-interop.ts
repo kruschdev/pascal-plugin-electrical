@@ -10,6 +10,7 @@
  */
 
 import type { SceneNodeLike } from './load-calc'
+import { belongsToLevel } from './routing'
 
 export type BonesWallConstruction = 'framed' | 'lgs' | 'cmu' | 'skip'
 
@@ -45,22 +46,6 @@ export const DRESSED_STUD_THICKNESS_M = 0.0381
 export const DRESSED_STUD_HALF_M = DRESSED_STUD_THICKNESS_M / 2
 const INCH_TO_M = 0.0254
 const EPS = 1e-4
-
-function belongsToLevel(
-  nodes: Readonly<Record<string, SceneNodeLike>>,
-  node: SceneNodeLike,
-  levelId: string | null,
-): boolean {
-  if (!levelId) return true
-  let cur: SceneNodeLike | undefined = node
-  const seen = new Set<string>()
-  while (cur && !seen.has(cur.id)) {
-    seen.add(cur.id)
-    if (cur.id === levelId || cur.parentId === levelId) return true
-    cur = cur.parentId ? nodes[cur.parentId] : undefined
-  }
-  return false
-}
 
 /**
  * Extract framing stud spacing, per-wall overrides, and any authoritative `bones:service`

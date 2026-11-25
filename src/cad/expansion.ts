@@ -12,7 +12,6 @@ import {
   CylinderGeometry,
   Group,
   Mesh,
-  MeshStandardMaterial,
   TorusGeometry,
 } from 'three'
 import { buildElectricalBoxCad, buildWeatherproofBellBoxCad } from './boxes'
@@ -587,12 +586,6 @@ export function buildCeilingFanLightCad(matsInput?: CadMaterialPool): Group {
   const group = new Group()
   group.name = 'cad-fixture-ceiling-fan-light'
 
-  const bladeMat = new MeshStandardMaterial({
-    color: 0x3b2f2f,
-    metalness: 0.08,
-    roughness: 0.55,
-  })
-
   // Ceiling canopy + steel downrod
   const canopy = new Mesh(new CylinderGeometry(0.078, 0.065, 0.056, 24), mats.darkSteel)
   canopy.position.set(0, 0.15, 0)
@@ -616,7 +609,7 @@ export function buildCeilingFanLightCad(matsInput?: CadMaterialPool): Group {
 
     const iron = new Mesh(new BoxGeometry(0.11, 0.008, 0.042), mats.stainlessSteel)
     iron.position.set(0.16, 0, 0)
-    const blade = new Mesh(new BoxGeometry(0.52, 0.009, 0.125), bladeMat)
+    const blade = new Mesh(new BoxGeometry(0.52, 0.009, 0.125), mats.walnutWood)
     blade.position.set(0.4, 0, 0)
     blade.rotation.x = 0.18 // realistic 10° blade pitch
     blade.castShadow = true

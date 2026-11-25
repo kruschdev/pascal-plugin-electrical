@@ -173,6 +173,43 @@ export function aabbIntersects(a: Aabb3, b: Aabb3): boolean {
 }
 
 /**
+ * Resolve the owning Pascal `level` node ID for any scene node by walking its `parentId` chain.
+ */
+export function resolveNodeLevelId(
+  nodes: Readonly<Record<string, SceneNodeLike>>,
+  node: SceneNodeLike,
+): string | null {
+  let cur: SceneNodeLike | undefined = node
+  const seen = new Set<string>()
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id)
+    if (cur.type === 'level') return cur.id
+    cur = cur.parentId ? nodes[cur.parentId] : undefined
+  }
+  return null
+}
+
+/**
+ * Determine whether `node` belongs to `levelId` (returns true when `levelId` is null,
+ * when `node` descends from `levelId`, or when `node.parentId == null` in flat/unparented scenes).
+ */
+export function belongsToLevel(
+  nodes: Readonly<Record<string, SceneNodeLike>>,
+  node: SceneNodeLike,
+  levelId: string | null | undefined,
+): boolean {
+  if (!levelId) return true
+  let cur: SceneNodeLike | undefined = node
+  const seen = new Set<string>()
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id)
+    if (cur.id === levelId || cur.parentId === levelId) return true
+    cur = cur.parentId ? nodes[cur.parentId] : undefined
+  }
+  return node.parentId == null
+}
+
+/**
  * Extract all higher-priority trade obstacles (Structural, Plumbing, HVAC) from a Pascal scene graph.
  * Electrical routes around these — it never relocates plumbing pipes or HVAC ducts.
  */
@@ -182,21 +219,8 @@ export function extractTradeObstacles(
 ): TradeObstacle[] {
   const obstacles: TradeObstacle[] = []
 
-  const belongsToLevel = (node: SceneNodeLike): boolean => {
-    if (!levelId) return true
-    let cur: SceneNodeLike | undefined = node
-    const seen = new Set<string>()
-    while (cur && !seen.has(cur.id)) {
-      seen.add(cur.id)
-      if (cur.id === levelId || cur.parentId === levelId) return true
-      cur = cur.parentId ? nodes[cur.parentId] : undefined
-    }
-    // Include nodes with null parentId only when caller didn't filter or no level hierarchy exists
-    return node.parentId == null
-  }
-
   for (const node of Object.values(nodes)) {
-    if (!belongsToLevel(node)) continue
+    if (!belongsToLevel(nodes, node, levelId)) continue
     const t = node.type
 
     // 2. Plumbing (gravity DWV + supply pipes — first MEP right-of-way)

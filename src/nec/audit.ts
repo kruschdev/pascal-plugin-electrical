@@ -22,11 +22,14 @@ import type { SceneNodeLike } from './load-calc'
 import { buildPanelSchedule } from './panel-schedule'
 import {
   type Aabb3,
+  type TradeObstacle,
   type Vec3,
+  belongsToLevel,
   countPathBendDegrees,
   detectRunTradeClashes,
   extractTradeObstacles,
   polylineLengthM,
+  resolveNodeLevelId,
 } from './routing'
 import {
   calculateBoxFill,
@@ -35,7 +38,6 @@ import {
   calculateVoltageDrop,
 } from './sizing'
 import {
-  type BoxFillGauge,
   type BoxType,
   type ConduitTradeSize,
   type ConductorMaterial,
@@ -46,8 +48,10 @@ import {
   type VoltageSystem,
   type WireGauge,
   type WorkingSpaceCondition,
+  clampToBoxFillGauge,
   getWorkingClearance110_26,
   round2,
+  usesSeparateRoughInBox,
 } from './tables'
 
 export type AuditSeverity = 'error' | 'warning' | 'info'
@@ -103,9 +107,11 @@ function getZoneAt(
   nodes: Readonly<Record<string, SceneNodeLike>>,
   x: number,
   z: number,
+  levelId: string | null = null,
 ): SceneNodeLike | null {
   for (const n of Object.values(nodes)) {
     if (n.type !== 'zone') continue
+    if (!belongsToLevel(nodes, n, levelId)) continue
     if (Array.isArray(n.polygon) && n.polygon.length >= 3) {
       if (pointInPolygon2D(x, z, n.polygon as [number, number][])) return n
     }
@@ -376,20 +382,30 @@ export function auditSceneElectrical(
   const runs = all.filter((n) => n.type === 'electrical:conduit-run')
   const transformers = all.filter((n) => n.type === 'electrical:transformer')
   const stairs = all.filter((n) => n.type === 'stair')
-  const obstacles = extractTradeObstacles(nodes)
+  const obstaclesByLevel = new Map<string, TradeObstacle[]>()
+  const getObstaclesForLevel = (levelId: string | null): TradeObstacle[] => {
+    const key = levelId ?? '__all__'
+    let list = obstaclesByLevel.get(key)
+    if (!list) {
+      list = extractTradeObstacles(nodes, levelId)
+      obstaclesByLevel.set(key, list)
+    }
+    return list
+  }
 
-  const wetFixtures: Array<{ node: SceneNodeLike; kind: 'tub-shower' | 'stove' | 'sink'; box: Aabb3 }> = []
+  const wetFixtures: Array<{ node: SceneNodeLike; levelId: string | null; kind: 'tub-shower' | 'stove' | 'sink'; box: Aabb3 }> = []
   for (const n of all) {
     if (n.type !== 'item' && n.type !== 'procedural-item' && n.type !== 'cabinet') continue
     const txt = fixtureTextOf(n)
     const box = extractObstructionBox(n)
     if (!box) continue
+    const fixLevelId = resolveNodeLevelId(nodes, n)
     if (TUB_SHOWER_FIXTURE_PATTERN.test(txt)) {
-      wetFixtures.push({ node: n, kind: 'tub-shower', box })
+      wetFixtures.push({ node: n, levelId: fixLevelId, kind: 'tub-shower', box })
     } else if (STOVE_FIXTURE_PATTERN.test(txt)) {
-      wetFixtures.push({ node: n, kind: 'stove', box })
+      wetFixtures.push({ node: n, levelId: fixLevelId, kind: 'stove', box })
     } else if (SINK_FIXTURE_PATTERN.test(txt)) {
-      wetFixtures.push({ node: n, kind: 'sink', box })
+      wetFixtures.push({ node: n, levelId: fixLevelId, kind: 'sink', box })
     }
   }
 
@@ -401,11 +417,14 @@ export function auditSceneElectrical(
 
   const auditEquipmentClearances = (equip: SceneNodeLike, kind: 'panel' | 'transformer') => {
     const equipName = (typeof equip.name === 'string' && equip.name) || equip.id
+    const equipLevelId = resolveNodeLevelId(nodes, equip)
+    const levelObstacles = getObstaclesForLevel(equipLevelId)
     const { workingPrism, dedicatedOverheadPrism, depthIn } = getEquipmentSpacePrisms(equip, kind)
 
-    // NEC 110.26(A) Working Space vs furniture / cabinets / HVAC equipment / columns / floor transformers
+    // NEC 110.26(A) Working Space vs same-level furniture / cabinets / HVAC equipment / columns / floor transformers
     for (const other of all) {
       if (other.id === equip.id) continue
+      if (!belongsToLevel(nodes, other, equipLevelId)) continue
       if (
         other.type !== 'item' &&
         other.type !== 'cabinet' &&
@@ -430,8 +449,8 @@ export function auditSceneElectrical(
       }
     }
 
-    // NEC 110.26(E) / 450.21 Dedicated Overhead Space vs foreign plumbing/HVAC directly overhead
-    for (const obs of obstacles) {
+    // NEC 110.26(E) / 450.21 Dedicated Overhead Space vs same-level foreign plumbing/HVAC directly overhead
+    for (const obs of levelObstacles) {
       if (obs.trade !== 'plumbing' && obs.trade !== 'hvac') continue
       if (prismIntersectsAabb(dedicatedOverheadPrism, obs.box)) {
         push({
@@ -469,7 +488,8 @@ export function auditSceneElectrical(
         })
       }
 
-      const pZone = getZoneAt(nodes, pPos[0], pPos[2])
+      const panelLevelId = resolveNodeLevelId(nodes, panel)
+      const pZone = getZoneAt(nodes, pPos[0], pPos[2], panelLevelId)
       const pZoneCat =
         typeof pZone?.category === 'string'
           ? pZone.category.toLowerCase()
@@ -512,6 +532,7 @@ export function auditSceneElectrical(
       }
 
       for (const stair of stairs) {
+        if (!belongsToLevel(nodes, stair, panelLevelId)) continue
         const sBox = extractStairFootprintBox(stair)
         if (sBox && horizontalDistToAabbXZ(pPos[0], pPos[2], sBox) < 0.25) {
           push({
@@ -608,7 +629,8 @@ export function auditSceneElectrical(
     auditEquipmentClearances(tx, 'transformer')
     const txPos = toVec3(tx.position)
     if (txPos) {
-      const txZone = getZoneAt(nodes, txPos[0], txPos[2])
+      const txLevelId = resolveNodeLevelId(nodes, tx)
+      const txZone = getZoneAt(nodes, txPos[0], txPos[2], txLevelId)
       const txZoneCat =
         typeof txZone?.category === 'string'
           ? txZone.category.toLowerCase()
@@ -630,61 +652,54 @@ export function auditSceneElectrical(
     }
   }
 
-  // 2. Audit Devices: NEC 314.16 Box Fill, 210.8 GFCI, 210.12 AFCI
+  // 2. Audit Devices: NEC 314.16 Box Fill (separate rough-in boxes only), 210.8 GFCI, 210.12 AFCI
   for (const dev of devices) {
     const devName = (typeof dev.name === 'string' && dev.name) || dev.id
+    const devLevelId = resolveNodeLevelId(nodes, dev)
+    const devKind = typeof dev.deviceKind === 'string' ? dev.deviceKind : 'duplex'
     const occupancy = dev.occupancy === 'commercial' ? 'commercial' : 'residential'
-    const boxType = (typeof dev.boxType === 'string' ? dev.boxType : 'single-gang-standard') as BoxType
-    const wireGauge = (typeof dev.wireGauge === 'string' ? dev.wireGauge : '12') as BoxFillGauge
-    const validBoxGauge: BoxFillGauge = ['18', '16', '14', '12', '10', '8', '6'].includes(wireGauge)
-      ? wireGauge
-      : '12'
-    const conductorCount = typeof dev.conductorCount === 'number' ? dev.conductorCount : 4
-    const isZeroYokeKind =
-      dev.deviceKind === 'junction-box' ||
-      dev.deviceKind === 'luminaire' ||
-      dev.deviceKind === 'ceiling-fan' ||
-      dev.deviceKind === 'smoke-co' ||
-      dev.deviceKind === 'under-cabinet-led' ||
-      dev.deviceKind === 'solar-inverter' ||
-      dev.deviceKind === 'battery-ess' ||
-      dev.deviceKind === 'transfer-switch' ||
-      dev.deviceKind === 'generator-inlet' ||
-      dev.deviceKind === 'rapid-shutdown' ||
-      dev.deviceKind === 'spd' ||
-      dev.deviceKind === 'vfd'
-    const yokeCount =
-      typeof dev.yokeCount === 'number'
-        ? dev.yokeCount
-        : isZeroYokeKind
-          ? 0
-          : 1
-    const clampCount = typeof dev.clampCount === 'number' ? dev.clampCount : 1
+    if (usesSeparateRoughInBox(devKind)) {
+      const boxType = (typeof dev.boxType === 'string' ? dev.boxType : 'single-gang-standard') as BoxType
+      const validBoxGauge = clampToBoxFillGauge(typeof dev.wireGauge === 'string' ? dev.wireGauge : undefined)
+      const conductorCount = typeof dev.conductorCount === 'number' ? dev.conductorCount : 4
+      const isZeroYokeKind =
+        devKind === 'junction-box' ||
+        devKind === 'luminaire' ||
+        devKind === 'ceiling-fan' ||
+        devKind === 'smoke-co'
+      const yokeCount =
+        typeof dev.yokeCount === 'number'
+          ? dev.yokeCount
+          : isZeroYokeKind
+            ? 0
+            : 1
+      const clampCount = typeof dev.clampCount === 'number' ? dev.clampCount : 1
 
-    const boxFill = calculateBoxFill({
-      boxType,
-      conductors: [{ gauge: validBoxGauge, count: conductorCount }],
-      deviceYokeCount: yokeCount,
-      internalClampCount: clampCount,
-      equipmentGroundCount: 1,
-    })
-    if (!boxFill.compliant) {
-      push({
-        severity: 'error',
-        codeRef: 'NEC 314.16',
-        category: 'box-fill',
-        title: `Box fill exceeded at ${devName} (${boxFill.utilizationPct}%)`,
-        message: `${boxFill.totalRequiredCuIn} cu in required vs ${boxFill.boxVolumeCuIn} cu in capacity (${boxFill.boxLabel}).`,
-        nodeIds: [dev.id],
-        suggestedFix: `Upgrade boxType to "${boxFill.recommendedBoxType}".`,
+      const boxFill = calculateBoxFill({
+        boxType,
+        conductors: [{ gauge: validBoxGauge, count: conductorCount }],
+        deviceYokeCount: yokeCount,
+        internalClampCount: clampCount,
+        equipmentGroundCount: 1,
       })
+      if (!boxFill.compliant) {
+        push({
+          severity: 'error',
+          codeRef: 'NEC 314.16',
+          category: 'box-fill',
+          title: `Box fill exceeded at ${devName} (${boxFill.utilizationPct}%)`,
+          message: `${boxFill.totalRequiredCuIn} cu in required vs ${boxFill.boxVolumeCuIn} cu in capacity (${boxFill.boxLabel}).`,
+          nodeIds: [dev.id],
+          suggestedFix: `Upgrade boxType to "${boxFill.recommendedBoxType}".`,
+        })
+      }
     }
 
     // Zone-based GFCI (210.8) & AFCI (210.12)
     const devPos = toVec3(dev.position)
     if (devPos) {
       const [x, , z] = devPos
-      const zone = getZoneAt(nodes, x, z)
+      const zone = getZoneAt(nodes, x, z, devLevelId)
       const zoneCat =
         typeof zone?.category === 'string'
           ? zone.category.toLowerCase()
@@ -692,29 +707,31 @@ export function auditSceneElectrical(
             ? zone.name.toLowerCase()
             : ''
       const isReceptacle =
-        dev.deviceKind === 'duplex' ||
-        dev.deviceKind === 'gfci' ||
-        dev.deviceKind === 'afci' ||
-        dev.deviceKind === 'dedicated-240v' ||
-        dev.deviceKind === 'usb-duplex' ||
-        dev.deviceKind === 'weatherproof-gfci' ||
-        dev.deviceKind === 'floor-box'
+        devKind === 'duplex' ||
+        devKind === 'gfci' ||
+        devKind === 'afci' ||
+        devKind === 'dedicated-240v' ||
+        devKind === 'usb-duplex' ||
+        devKind === 'weatherproof-gfci' ||
+        devKind === 'floor-box'
       const isSwitch =
-        dev.deviceKind === 'switch-1p' ||
-        dev.deviceKind === 'switch-3way' ||
-        dev.deviceKind === 'dimmer'
+        devKind === 'switch-1p' ||
+        devKind === 'switch-3way' ||
+        devKind === 'dimmer'
       const isLuminaire =
-        dev.deviceKind === 'luminaire' ||
-        dev.deviceKind === 'ceiling-fan' ||
-        dev.deviceKind === 'under-cabinet-led'
+        devKind === 'luminaire' ||
+        devKind === 'ceiling-fan' ||
+        devKind === 'under-cabinet-led'
 
       // NEC 406.9(C), 404.4(C), 410.10(D), & 406.5 Fixture-Proximity Prohibited Zones
-      // Only enforce within the same room zone (solid partition walls separate adjacent rooms)
+      // Only enforce within the same level and same room zone (solid partition walls & floor slabs separate spaces)
       for (const fix of wetFixtures) {
+        if (devLevelId && fix.levelId && devLevelId !== fix.levelId) continue
         const fixZone = getZoneAt(
           nodes,
           (fix.box.min[0] + fix.box.max[0]) / 2,
           (fix.box.min[2] + fix.box.max[2]) / 2,
+          fix.levelId ?? devLevelId,
         )
         if (zone && fixZone && zone.id !== fixZone.id) continue
         const horizDist = horizontalDistToAabbXZ(x, z, fix.box)
@@ -791,7 +808,12 @@ export function auditSceneElectrical(
 
       if (isReceptacle && zoneCat) {
         const isWet = Array.from(WET_ROOM_CATEGORIES).some((w) => zoneCat.includes(w))
-        if (isWet && dev.gfciProtected !== true && dev.deviceKind !== 'gfci') {
+        if (
+          isWet &&
+          dev.gfciProtected !== true &&
+          devKind !== 'gfci' &&
+          devKind !== 'weatherproof-gfci'
+        ) {
           push({
             severity: 'error',
             codeRef: occupancy === 'commercial' ? 'NEC 210.8(B)' : 'NEC 210.8(A)',
@@ -828,7 +850,8 @@ export function auditSceneElectrical(
     if (typeof dev.panelId !== 'string' || typeof dev.circuitNumber !== 'number' || dev.circuitNumber <= 0) continue
     const pos = toVec3(dev.position)
     if (!pos) continue
-    const zone = getZoneAt(nodes, pos[0], pos[2])
+    const devLevelId = resolveNodeLevelId(nodes, dev)
+    const zone = getZoneAt(nodes, pos[0], pos[2], devLevelId)
     const zCat =
       typeof zone?.category === 'string'
         ? zone.category.toLowerCase()
@@ -888,8 +911,9 @@ export function auditSceneElectrical(
     const occupancy = run.occupancy === 'commercial' ? 'commercial' : 'residential'
     const inPlenum = run.inPlenum === true
 
-    // 3a. Trade-priority clashes (electrical must yield to plumbing, HVAC, structural)
-    const clashes = detectRunTradeClashes(path, obstacles)
+    // 3a. Trade-priority clashes (electrical must yield to same-level plumbing, HVAC, structural)
+    const runLevelId = resolveNodeLevelId(nodes, run)
+    const clashes = detectRunTradeClashes(path, getObstaclesForLevel(runLevelId))
     for (const clash of clashes) {
       push({
         severity: 'error',

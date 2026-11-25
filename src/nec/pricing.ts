@@ -3,7 +3,7 @@
  * Pure TypeScript (zero React/Three.js). Supports contractor price-book overrides and labor rate tuning.
  */
 
-import { type ConduitTradeSize, type WireGauge, round2 } from './tables'
+import { type ConduitTradeSize, type WireGauge, round2, sanitizeCsvCell } from './tables'
 
 export type ElectricalBomCategory =
   | 'panels-gear'
@@ -230,15 +230,14 @@ export function formatElectricalBomCsv(
 ): string {
   const header =
     'Category,SKU,Description,CAD Model,Qty,Unit,Unit Material ($),Extended Material ($),Labor (hrs),Extended Labor ($),Line Total ($)'
-  const esc = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s)
   const lines = [header]
   for (const item of pricing.lineItems) {
     const lineTotal = round2(item.extendedMaterialUsd + item.extendedLaborUsd)
     lines.push(
       [
         item.category,
-        item.sku,
-        esc(item.description),
+        sanitizeCsvCell(item.sku),
+        sanitizeCsvCell(item.description),
         item.cadSlug ?? '',
         item.quantity,
         item.unit,

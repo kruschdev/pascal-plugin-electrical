@@ -3,8 +3,8 @@
  */
 
 import type { ParametricDescriptor } from '@pascal-app/core'
-import type { ElectricalConduitRunNode } from './conduit-run'
-import type { ElectricalDeviceNode } from './device'
+import { ElectricalConduitRunNode } from './conduit-run'
+import { DeviceKindEnum, ElectricalDeviceNode } from './device'
 import type { ElectricalPanelNode } from './panel'
 import type { ElectricalTransformerNode } from './transformer'
 
@@ -43,9 +43,9 @@ export const electricalPanelParametrics: ParametricDescriptor<ElectricalPanelNod
       ],
     },
     {
-      label: 'NEC 110.26 Clearance & Inspection',
+      label: 'NEC 110.26 Clearance & Busbar Preview',
       fields: [
-        { key: 'coverRemoved', kind: 'boolean' },
+        { key: 'coverRemoved', kind: 'boolean', label: 'Expose Busbars (3D)' },
         { key: 'showClearanceZone', kind: 'boolean' },
         { key: 'nemaRating', kind: 'enum', options: ['NEMA-1', 'NEMA-3R', 'NEMA-4X'] },
       ],
@@ -61,19 +61,7 @@ export const electricalDeviceParametrics: ParametricDescriptor<ElectricalDeviceN
         {
           key: 'deviceKind',
           kind: 'enum',
-          options: [
-            'duplex',
-            'gfci',
-            'afci',
-            'dedicated-240v',
-            'evse',
-            'switch-1p',
-            'switch-3way',
-            'luminaire',
-            'exit-sign',
-            'motor-load',
-            'junction-box',
-          ],
+          options: [...DeviceKindEnum.options],
         },
         {
           key: 'occupancy',
@@ -111,7 +99,7 @@ export const electricalDeviceParametrics: ParametricDescriptor<ElectricalDeviceN
             '4-oct-2.125',
           ],
         },
-        { key: 'wireGauge', kind: 'enum', options: ['18', '16', '14', '12', '10', '8', '6'] },
+        { key: 'wireGauge', kind: 'enum', options: [...ElectricalDeviceNode.shape.wireGauge.unwrap().options] },
         { key: 'conductorCount', kind: 'number', min: 0, max: 40, step: 1 },
         { key: 'yokeCount', kind: 'number', min: 0, max: 4, step: 1 },
         { key: 'clampCount', kind: 'number', min: 0, max: 6, step: 1 },
@@ -151,7 +139,7 @@ export const electricalConduitRunParametrics: ParametricDescriptor<ElectricalCon
         {
           key: 'wireGauge',
           kind: 'enum',
-          options: ['14', '12', '10', '8', '6', '4', '3', '2', '1', '1/0', '2/0', '3/0', '4/0'],
+          options: [...ElectricalConduitRunNode.shape.wireGauge.unwrap().options],
         },
         { key: 'currentCarryingCount', kind: 'number', min: 1, max: 60, step: 1 },
         { key: 'totalConductorCount', kind: 'number', min: 2, max: 80, step: 1 },

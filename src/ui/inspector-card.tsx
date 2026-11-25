@@ -14,8 +14,6 @@ import { useElectricalUi } from './store'
 import { buildPanelSchedule } from '../nec/panel-schedule'
 import {
   countPathBendDegrees,
-  detectRunTradeClashes,
-  extractTradeObstacles,
   polylineLengthM,
   type Vec3,
 } from '../nec/routing'
@@ -27,7 +25,6 @@ import {
   calculateVoltageDrop,
 } from '../nec/sizing'
 import {
-  type BoxFillGauge,
   type BoxType,
   type ConduitTradeSize,
   type ConductorMaterial,
@@ -37,8 +34,10 @@ import {
   type VoltageSystem,
   type WireGauge,
   type WorkingSpaceCondition,
+  clampToBoxFillGauge,
   getWorkingClearance110_26,
   round2,
+  usesSeparateRoughInBox,
 } from '../nec/tables'
 
 export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
@@ -103,8 +102,18 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
   }
 
   if (raw.type === 'electrical:device') {
+    const devKind = typeof raw.deviceKind === 'string' ? raw.deviceKind : 'duplex'
+    if (!usesSeparateRoughInBox(devKind)) {
+      return (
+        <div style={cardStyle}>
+          <NodeViolationBanner findings={nodeFindings} onOpenAudit={openFullAudit} />
+          <Row label="Enclosure" value="Integral / Self-Contained" />
+          <Row label="Conductor Size" value={`#${typeof raw.wireGauge === 'string' ? raw.wireGauge : '12'} AWG`} />
+        </div>
+      )
+    }
     const boxType = (typeof raw.boxType === 'string' ? raw.boxType : 'single-gang-standard') as BoxType
-    const wireGauge = (typeof raw.wireGauge === 'string' ? raw.wireGauge : '12') as BoxFillGauge
+    const wireGauge = clampToBoxFillGauge(typeof raw.wireGauge === 'string' ? raw.wireGauge : undefined)
     const fill = calculateBoxFill({
       boxType,
       conductors: [{ gauge: wireGauge, count: typeof raw.conductorCount === 'number' ? raw.conductorCount : 4 }],
@@ -129,8 +138,7 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
     const path = Array.isArray(raw.path) ? (raw.path as Vec3[]) : []
     const lenFt = round2(polylineLengthM(path) * METERS_TO_FEET)
     const { totalBendDegrees } = countPathBendDegrees(path)
-    const obstacles = extractTradeObstacles(nodes)
-    const clashes = detectRunTradeClashes(path, obstacles)
+    const clashCount = nodeFindings.filter((f) => f.category === 'trade-clash').length
     const racewayType = (typeof raw.racewayType === 'string' ? raw.racewayType : 'emt') as RacewayType
     const wireGauge = (typeof raw.wireGauge === 'string' ? raw.wireGauge : '12') as WireGauge
     const material = (raw.conductorMaterial === 'al' ? 'al' : 'cu') as ConductorMaterial
@@ -171,7 +179,7 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
         <Row label="Derated Ampacity" value={`${amp.finalAllowableAmpacity} A`} warn={!amp.compliant} />
         <Row label="Voltage Drop" value={`${vd.voltageDropPct}% (${vd.voltageDropVolts}V)`} warn={!vd.compliant} />
         {fill && <Row label="Ch. 9 Conduit Fill" value={`${fill.actualFillPct}% / ${fill.maxAllowedFillPct}%`} warn={!fill.compliant} />}
-        <Row label="Trade Clashes" value={clashes.length === 0 ? 'Clear' : `${clashes.length} clash(es)`} warn={clashes.length > 0} />
+        <Row label="Trade Clashes" value={clashCount === 0 ? 'Clear' : `${clashCount} clash(es)`} warn={clashCount > 0} />
       </div>
     )
   }
