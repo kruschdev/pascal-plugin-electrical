@@ -6,7 +6,7 @@ All calculations in [`@kruschdev/pascal-plugin-electrical/nec`](../src/nec/index
 
 ## 1. Service and Feeder Load Calculations (`src/nec/load-calc.ts`)
 
-### Residential Standard Method (`calculateResidentialStandardLoad`)
+### Residential Standard Method (`calculateResidentialLoad({ method: 'standard' })`)
 - **NEC 220.12 / Table 220.42**: General lighting and receptacles at `3 VA/sq ft`, plus `2 x 1,500 VA` small-appliance circuits (`220.52(A)`) and `1 x 1,500 VA` laundry circuit (`220.52(B)`). Applies Table 220.42 demand tiers (`100%` first `3,000 VA`, `35%` from `3,001` to `120,000 VA`, `25%` remainder).
 - **NEC 220.53**: Fixed-in-place appliances (`75%` demand when 4 or more appliances are connected).
 - **NEC 220.54**: Electric clothes dryer at minimum `5,000 VA` or nameplate rating.
@@ -15,7 +15,7 @@ All calculations in [`@kruschdev/pascal-plugin-electrical/nec`](../src/nec/index
 - **NEC 220.50 / 430.24**: `+25%` of the largest motor load.
 - **NEC 625.41**: EVSE continuous charging load at `125%` (or full nameplate at `100%` service demand as configured).
 
-### Residential Optional Method (`calculateResidentialOptionalLoad`, NEC 220.82)
+### Residential Optional Method (`calculateResidentialLoad({ method: 'optional' })`, NEC 220.82)
 - Sums general lighting (`3 VA/sq ft`), small appliances, laundry, fixed appliances, range, and dryer: applies `100%` to the first `10,000 VA` and `40%` to the remainder (`220.82(B)`).
 - Applies **NEC 220.82(C)** HVAC demand factors (`100%` for A/C and heat pump compressor loads per `220.82(C)(2)`, `65%` for 4+ separately controlled electric space heaters, `40%` for central electric furnace).
 
