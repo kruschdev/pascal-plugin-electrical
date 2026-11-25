@@ -783,6 +783,7 @@ export const electricalAgentOperations = {
           ...(dev.bonesDeviceId ? { bonesDeviceId: dev.bonesDeviceId } : {}),
           ...(dev.bonesServiceType ? { bonesServiceType: dev.bonesServiceType } : {}),
           ...(dev.bonesUserMoved ? { bonesUserMoved: true } : {}),
+          ...(dev.mepSourceNodeId ? { mepSourceNodeId: dev.mepSourceNodeId } : {}),
         },
         position: dev.position,
         rotation: dev.rotation,

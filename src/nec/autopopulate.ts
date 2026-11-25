@@ -110,6 +110,7 @@ export type PlannedDeviceSpec = {
   bonesDeviceId?: string
   bonesServiceType?: string
   bonesUserMoved?: boolean
+  mepSourceNodeId?: string
   panelId: string
   circuitNumber: number
   gfciProtected: boolean
@@ -1288,6 +1289,86 @@ export function planNecAutoPopulate(
       )
       if (added) bonesServicesImported += 1
     }
+  }
+
+  // 1b. Cross-Trade MEP Power Demand Ingestion (`plumbing:equipment`, `plumbing:fixture`, `hvac:equipment`, `hvac-equipment`)
+  // Automatically provisions dedicated/GFCI breakers & 3D power runs for any powered plumbing or HVAC node publishing `electricalDemand`.
+  const wiredMepSourceIds = new Set<string>()
+  for (const existing of existingDevices) {
+    const meta = existing.metadata as { mepSourceNodeId?: string } | undefined
+    if (typeof meta?.mepSourceNodeId === 'string') wiredMepSourceIds.add(meta.mepSourceNodeId)
+  }
+  for (const mepNode of Object.values(nodes)) {
+    if (!belongsToLevel(nodes, mepNode, levelId)) continue
+    if (
+      mepNode.type !== 'plumbing:equipment' &&
+      mepNode.type !== 'plumbing:fixture' &&
+      mepNode.type !== 'hvac:equipment' &&
+      mepNode.type !== 'hvac-equipment'
+    ) {
+      continue
+    }
+    if (wiredMepSourceIds.has(mepNode.id)) continue
+    const rawDemand = mepNode.electricalDemand as
+      | {
+          required?: boolean
+          voltage?: number
+          poles?: number
+          breakerAmps?: number
+          loadVa?: number
+          continuous?: boolean
+          dedicatedCircuit?: boolean
+          gfciRequired?: boolean
+          afciRequired?: boolean
+          label?: string
+        }
+      | null
+      | undefined
+    if (!rawDemand || rawDemand.required !== true) continue
+    if (!Array.isArray(mepNode.position) || mepNode.position.length < 3) continue
+
+    const pos: Vec3 = [
+      Number(mepNode.position[0]),
+      Math.max(0.38, Math.min(1.5, Number(mepNode.position[1]) || 0.9)),
+      Number(mepNode.position[2]),
+    ]
+    const poles: 1 | 2 = rawDemand.poles === 2 || (rawDemand.voltage ?? 120) >= 208 ? 2 : 1
+    const breakerAmps = typeof rawDemand.breakerAmps === 'number' ? rawDemand.breakerAmps : poles === 2 ? 30 : 20
+    const loadVa = typeof rawDemand.loadVa === 'number' ? rawDemand.loadVa : poles === 2 ? 4500 : 1200
+    const wireGauge: WireGauge =
+      breakerAmps >= 60
+        ? '6'
+        : breakerAmps >= 40
+          ? '8'
+          : breakerAmps >= 30
+            ? '10'
+            : breakerAmps >= 20
+              ? '12'
+              : '14'
+    const label = rawDemand.label || (typeof mepNode.name === 'string' && mepNode.name ? mepNode.name : mepNode.id)
+    const circuitGroup = rawDemand.dedicatedCircuit
+      ? `${label} (${poles === 2 ? `${lineToLineVolts}V` : '120V'} ${breakerAmps}A)`
+      : `MEP Aux Loads (120V ${breakerAmps}A)`
+    const devKind: PlannedDeviceSpec['deviceKind'] =
+      poles === 2 ? 'dedicated-240v' : rawDemand.gfciRequired ? 'gfci' : 'duplex'
+
+    addPlanned({
+      name: `${label} Power`,
+      position: pos,
+      rotation: typeof mepNode.rotation === 'number' ? mepNode.rotation : 0,
+      deviceKind: devKind,
+      circuitGroup,
+      necRef: `Cross-Trade MEP Power (${mepNode.type} ${mepNode.id})`,
+      requiresGfci: rawDemand.gfciRequired === true,
+      requiresAfci: rawDemand.afciRequired === true,
+      poles,
+      breakerAmps,
+      loadVa,
+      continuous: rawDemand.continuous === true,
+      boxType: poles === 2 ? '4-sq-2.125' : 'single-gang-deep',
+      wireGauge,
+      mepSourceNodeId: mepNode.id,
+    })
   }
 
   // 2. Walk Walls: NEC 210.52(A)/(C) Wall-Perimeter & Kitchen Countertop Receptacles + Exterior Door Front/Back Rules

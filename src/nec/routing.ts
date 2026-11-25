@@ -266,10 +266,29 @@ export function extractTradeObstacles(
     const t = node.type
 
     // 2. Plumbing (gravity DWV + supply pipes — first MEP right-of-way)
-    if (t === 'pipe-segment' || t === 'liquid-line') {
+    if (t === 'pipe-segment' || t === 'liquid-line' || t === 'plumbing:pipe-run') {
       const path = node.path
       if (Array.isArray(path) && path.length >= 2) {
-        const diamIn = typeof node.diameter === 'number' ? node.diameter : t === 'liquid-line' ? 0.75 : 2
+        const parseNominalIn = (raw: unknown): number | null => {
+          if (typeof raw === 'number' && raw > 0) return raw
+          if (typeof raw !== 'string') return null
+          const cleaned = raw.replace(/"/g, '').trim()
+          if (cleaned.includes('-')) {
+            const [whole, frac] = cleaned.split('-')
+            const [num, den] = (frac ?? '').split('/')
+            if (whole && num && den) return Number(whole) + Number(num) / Number(den)
+          }
+          if (cleaned.includes('/')) {
+            const [num, den] = cleaned.split('/')
+            if (num && den) return Number(num) / Number(den)
+          }
+          const n = Number(cleaned)
+          return Number.isFinite(n) && n > 0 ? n : null
+        }
+        const diamIn =
+          parseNominalIn(node.diameter) ??
+          parseNominalIn(node.nominalSize) ??
+          (t === 'liquid-line' ? 0.75 : 2)
         const halfM = Math.max(0.015, (diamIn * INCHES_TO_METERS) / 2)
         for (let i = 0; i < path.length - 1; i++) {
           const p0 = path[i]
@@ -283,9 +302,28 @@ export function extractTradeObstacles(
             priorityRank: 2,
             box: segmentAabb(p0, p1, halfM, halfM),
             requiredClearanceM: DEFAULT_CLEARANCE_M,
-            label: `${t === 'pipe-segment' ? `${diamIn}" plumbing pipe` : 'water line'} (${node.id})`,
+            label: `${t === 'liquid-line' ? 'water line' : `${diamIn}" plumbing pipe`} (${node.id})`,
           })
         }
+      }
+      continue
+    }
+
+    if (t === 'plumbing:equipment' || t === 'plumbing:manifold') {
+      if (isVec3(node.position)) {
+        const [x, y, z] = node.position
+        const halfW = t === 'plumbing:manifold' ? 0.24 : 0.34
+        const h = t === 'plumbing:manifold' ? 0.7 : 1.55
+        obstacles.push({
+          id: node.id,
+          nodeId: node.id,
+          nodeType: t,
+          trade: 'plumbing',
+          priorityRank: 2,
+          box: { min: [x - halfW, y, z - halfW], max: [x + halfW, y + h, z + halfW] },
+          requiredClearanceM: DEFAULT_CLEARANCE_M,
+          label: `${t === 'plumbing:manifold' ? 'plumbing manifold' : 'plumbing equipment'} (${node.name ?? node.id})`,
+        })
       }
       continue
     }
@@ -310,7 +348,7 @@ export function extractTradeObstacles(
     }
 
     // 3. HVAC (ducts, trunks, equipment, linesets — second MEP right-of-way)
-    if (t === 'duct-segment' || t === 'lineset') {
+    if (t === 'duct-segment' || t === 'lineset' || t === 'hvac:duct-run') {
       const path = node.path
       if (Array.isArray(path) && path.length >= 2) {
         const shape = typeof node.shape === 'string' ? node.shape : 'round'
@@ -353,7 +391,7 @@ export function extractTradeObstacles(
       continue
     }
 
-    if (t === 'hvac-equipment') {
+    if (t === 'hvac-equipment' || t === 'hvac:equipment') {
       if (isVec3(node.position)) {
         const [x, y, z] = node.position
         const w = typeof node.width === 'number' ? node.width : 0.6
