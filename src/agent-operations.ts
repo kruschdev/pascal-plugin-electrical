@@ -659,6 +659,7 @@ export const electricalAgentOperations = {
       racewayType?: RacewayType
       preferredChaseY?: number
       includeLighting?: boolean
+      includeSmokeAlarms?: boolean
       includeWiring?: boolean
     },
     context: AgentContext,
@@ -671,6 +672,7 @@ export const electricalAgentOperations = {
       racewayType: input.racewayType,
       preferredChaseY: input.preferredChaseY ?? 2.55,
       includeLighting: input.includeLighting ?? true,
+      includeSmokeAlarms: input.includeSmokeAlarms,
       includeWiring: input.includeWiring ?? true,
     })
 

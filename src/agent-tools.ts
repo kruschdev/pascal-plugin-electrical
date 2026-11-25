@@ -239,6 +239,7 @@ export const electricalAgentTools: PluginAgentTools = {
         racewayType: z.enum(['nm-b', 'mc', 'emt', 'pvc-40', 'rmc']).optional(),
         preferredChaseY: z.number().min(0.4).max(6).default(2.55),
         includeLighting: z.boolean().default(true),
+        includeSmokeAlarms: z.boolean().optional(),
         includeWiring: z.boolean().default(true),
       },
       annotations: { destructiveHint: false, idempotentHint: false },

@@ -74,6 +74,7 @@ export type NecAuditFinding = {
     | 'gfci-afci'
     | 'panel-load'
     | 'solar-busbar'
+    | 'life-safety'
   title: string
   message: string
   nodeIds: string[]
@@ -889,6 +890,137 @@ export function auditSceneElectrical(
         message: `20A Kitchen Small-Appliance branch circuits cannot supply outlets in bedrooms, living rooms, or hallways (NEC 210.52(B)(2)).`,
         nodeIds: [...bucket.kitchen, ...bucket.general],
         suggestedFix: `Separate non-kitchen room outlets onto a dedicated general-purpose AFCI circuit.`,
+      })
+    }
+  }
+
+  // 2c. IRC R314 / R315 & NFPA 72 Life-Safety Audit: Hardwired 120V Interconnected Smoke/CO Alarms
+  const smokeDevices = devices.filter((d) => d.deviceKind === 'smoke-co')
+  for (const sDev of smokeDevices) {
+    const sName = (typeof sDev.name === 'string' && sDev.name) || sDev.id
+    if (sDev.gfciProtected === true) {
+      push({
+        severity: 'error',
+        codeRef: 'NFPA 72 29.9.4(5)',
+        category: 'life-safety',
+        title: `Smoke/CO alarm ${sName} is on a GFCI-protected circuit`,
+        message: `Hardwired smoke and CO alarms must not be powered through a GFCI breaker or GFCI receptacle load terminals because nuisance trips can silently disable life-safety alarms.`,
+        nodeIds: [sDev.id],
+        suggestedFix: `Move ${sName} to a non-GFCI 15A AFCI circuit shared with a frequently-used hallway or living-area lighting load.`,
+      })
+    }
+  }
+
+  // Group smoke/CO alarms by level + panel to check NFPA 72 A.29.9.4 shared lighting & IRC R314.4 single-circuit interconnect
+  const smokeByLevelAndPanel = new Map<string, { levelId: string; panelId: string; alarms: SceneNodeLike[] }>()
+  for (const sDev of smokeDevices) {
+    if (sDev.occupancy === 'commercial') continue
+    const lvl = resolveNodeLevelId(nodes, sDev) ?? '__root__'
+    const pid = typeof sDev.panelId === 'string' ? sDev.panelId : '__unassigned__'
+    const key = `${lvl}::${pid}`
+    let entry = smokeByLevelAndPanel.get(key)
+    if (!entry) {
+      entry = { levelId: lvl, panelId: pid, alarms: [] }
+      smokeByLevelAndPanel.set(key, entry)
+    }
+    entry.alarms.push(sDev)
+  }
+
+  for (const { levelId: lvl, panelId: pid, alarms } of smokeByLevelAndPanel.values()) {
+    const cktSet = new Set(
+      alarms
+        .map((a) => (typeof a.circuitNumber === 'number' && a.circuitNumber >= 1 ? Math.floor(a.circuitNumber) : 0))
+        .filter((c) => c > 0),
+    )
+    if (cktSet.size > 1) {
+      push({
+        severity: 'warning',
+        codeRef: 'IRC R314.4',
+        category: 'life-safety',
+        title: `Smoke/CO alarms split across ${cktSet.size} circuits (${Array.from(cktSet).map((c) => `CKT-${c}`).join(', ')})`,
+        message: `Residential hardwired smoke/CO alarms must be interconnected on a single 15A AFCI circuit (14/3 interconnect conductor) so all alarms sound together.`,
+        nodeIds: alarms.map((a) => a.id),
+        suggestedFix: `Assign all interconnected smoke/CO alarms on this level to one shared 15A AFCI Smoke/CO & Lighting circuit.`,
+      })
+    }
+    for (const ckt of cktSet) {
+      const cktPeers = devices.filter(
+        (d) =>
+          d.panelId === pid &&
+          Math.floor(Number(d.circuitNumber ?? 0)) === ckt &&
+          (resolveNodeLevelId(nodes, d) ?? '__root__') === lvl,
+      )
+      const hasLightingLoad = cktPeers.some((d) => d.deviceKind === 'luminaire')
+      if (!hasLightingLoad) {
+        const cktAlarms = alarms.filter((a) => Math.floor(Number(a.circuitNumber ?? 0)) === ckt)
+        push({
+          severity: 'warning',
+          codeRef: 'NFPA 72 A.29.9.4',
+          category: 'life-safety',
+          title: `Circuit CKT-${ckt} supplies Smoke/CO alarms without a pilot lighting load`,
+          message: `Best practice is to tie hardwired smoke/CO alarms onto a frequently-used 15A AFCI hallway or living-area lighting circuit (constant hot) so a tripped breaker is immediately visible.`,
+          nodeIds: cktAlarms.map((a) => a.id),
+          suggestedFix: `Share CKT-${ckt} with a frequently-used hallway or living room ceiling light (non-GFCI 15A AFCI).`,
+        })
+      }
+    }
+  }
+
+  // IRC R314.3 / R315.3: On residential levels that have electrical devices AND bedroom zone(s), warn if any bedroom lacks a hardwired smoke/CO alarm
+  const residentialDevicesByLevel = new Map<string, SceneNodeLike[]>()
+  for (const dev of devices) {
+    if (dev.occupancy === 'commercial') continue
+    const lvl = resolveNodeLevelId(nodes, dev) ?? '__root__'
+    const list = residentialDevicesByLevel.get(lvl) ?? []
+    list.push(dev)
+    residentialDevicesByLevel.set(lvl, list)
+  }
+  const BEDROOM_PATTERN = /bed|sleeping|master|guest|nursery/i
+  for (const [lvl, lvlDevices] of residentialDevicesByLevel.entries()) {
+    const lvlZones = all.filter(
+      (n) => n.type === 'zone' && (resolveNodeLevelId(nodes, n) ?? '__root__') === lvl,
+    )
+    const bedroomZones = lvlZones.filter((z) => {
+      const txt = `${typeof z.category === 'string' ? z.category : ''} ${typeof z.name === 'string' ? z.name : ''}`
+      return BEDROOM_PATTERN.test(txt) && Array.isArray(z.polygon) && z.polygon.length >= 3
+    })
+    if (bedroomZones.length === 0) continue
+
+    const lvlSmokes = lvlDevices.filter((d) => d.deviceKind === 'smoke-co')
+    let anySmokeOutsideBedrooms = false
+    const bedroomMatchedSmokeIds = new Set<string>()
+    for (const bz of bedroomZones) {
+      const poly = bz.polygon as [number, number][]
+      const inBed = lvlSmokes.filter((s) => {
+        const sp = toVec3(s.position)
+        return Boolean(sp && pointInPolygon2D(sp[0], sp[2], poly))
+      })
+      for (const s of inBed) bedroomMatchedSmokeIds.add(s.id)
+      if (inBed.length === 0) {
+        const bzName = (typeof bz.name === 'string' && bz.name) || bz.id
+        push({
+          severity: 'warning',
+          codeRef: 'IRC R314.3(1)',
+          category: 'life-safety',
+          title: `Bedroom "${bzName}" is missing a hardwired Smoke/CO alarm`,
+          message: `IRC R314.3(1) requires a hardwired 120V interconnected smoke alarm inside every sleeping room.`,
+          nodeIds: [bz.id],
+          suggestedFix: `Add a ceiling-mounted smoke-co alarm in "${bzName}" interconnected via 14/3 on the 15A AFCI Smoke/CO & Lighting circuit.`,
+        })
+      }
+    }
+    for (const s of lvlSmokes) {
+      if (!bedroomMatchedSmokeIds.has(s.id)) anySmokeOutsideBedrooms = true
+    }
+    if (!anySmokeOutsideBedrooms) {
+      push({
+        severity: 'warning',
+        codeRef: 'IRC R314.3(2) / R315.3',
+        category: 'life-safety',
+        title: `Missing hardwired Smoke/CO alarm outside sleeping area`,
+        message: `IRC R314.3(2) and R315.3 require a hardwired interconnected smoke/CO alarm outside each separate sleeping area in the immediate vicinity of bedrooms.`,
+        nodeIds: bedroomZones.map((b) => b.id),
+        suggestedFix: `Add a ceiling-mounted smoke-co alarm in the hallway or living area outside the bedrooms on the 15A AFCI Smoke/CO & Lighting circuit.`,
       })
     }
   }

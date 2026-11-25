@@ -249,10 +249,22 @@ export function buildPanelSchedule(
         protectionSet.add('GFCI')
       }
     }
+    const smokeDevs = devs.filter((d) => d.deviceKind === 'smoke-co')
+    const lightDevs = devs.filter(
+      (d) =>
+        d.deviceKind === 'luminaire' ||
+        d.deviceKind === 'switch-1p' ||
+        d.deviceKind === 'switch-3way' ||
+        d.deviceKind === 'dimmer',
+    )
     const label =
-      devs.length === 1
-        ? (typeof first.name === 'string' && first.name) || String(first.deviceKind ?? 'Circuit')
-        : `${String(first.name ?? first.deviceKind ?? 'Branch')} (${devs.length} devices)`
+      smokeDevs.length > 0 && lightDevs.length > 0
+        ? `Smoke/CO Alarms & Lighting (${smokeDevs.length} alarms + ${lightDevs.length} lighting)`
+        : smokeDevs.length > 0 && smokeDevs.length === devs.length
+          ? `Smoke/CO Alarms (${smokeDevs.length} interconnected)`
+          : devs.length === 1
+            ? (typeof first.name === 'string' && first.name) || String(first.deviceKind ?? 'Circuit')
+            : `${String(first.name ?? first.deviceKind ?? 'Branch')} (${devs.length} devices)`
 
     const devIds = devs.map((d) => d.id)
     const maxPoleSlot = ckt + (poles - 1) * 2

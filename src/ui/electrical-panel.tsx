@@ -711,6 +711,11 @@ export default function ElectricalRailPanel() {
               .sort((a, b) => a - b)
               .map((ckt) => {
                 const c = circuitRunColor(ckt)
+                const isSmokeCkt = devices.some(
+                  (d) =>
+                    Number((d as Record<string, unknown>).circuitNumber) === ckt &&
+                    (d as Record<string, unknown>).deviceKind === 'smoke-co',
+                )
                 return (
                   <span
                     key={ckt}
@@ -735,7 +740,7 @@ export default function ElectricalRailPanel() {
                         display: 'inline-block',
                       }}
                     />
-                    CKT-{ckt}
+                    CKT-{ckt}{isSmokeCkt ? ' Smoke/CO' : ''}
                   </span>
                 )
               })}

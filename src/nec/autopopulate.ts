@@ -59,6 +59,7 @@ export type AutoPopulateOptions = {
   racewayType?: RacewayType
   preferredChaseY?: number
   includeLighting?: boolean
+  includeSmokeAlarms?: boolean
   includeWiring?: boolean
 }
 
@@ -74,6 +75,7 @@ export type PlannedDeviceSpec = {
     | 'switch-1p'
     | 'switch-3way'
     | 'luminaire'
+    | 'smoke-co'
   occupancy: OccupancyType
   circuitGroup: string
   necRef: string
@@ -252,6 +254,14 @@ function isBasementOrUtility(cat: string): boolean {
 
 function isHallway(cat: string): boolean {
   return /hall|corridor|foyer|entry/.test(cat)
+}
+
+function isBedroom(cat: string): boolean {
+  return /bed|sleeping|master|guest|nursery/.test(cat)
+}
+
+function isPrimaryCommonZone(cat: string): boolean {
+  return /living|great|family|foyer|entry|dining/.test(cat)
 }
 
 function isHabitableAfci(cat: string): boolean {
@@ -473,9 +483,11 @@ export function planNecAutoPopulate(
   const racewayType: RacewayType =
     options.racewayType ?? (occupancy === 'commercial' ? 'emt' : 'nm-b')
   const includeLighting = options.includeLighting !== false
+  const includeSmokeAlarms = options.includeSmokeAlarms ?? occupancy === 'residential'
   const includeWiring = options.includeWiring !== false
   const levelHeight = resolveLevelHeightM(nodes, levelId)
   const ceilingLightY = round3(Math.max(2.1, levelHeight - 0.04))
+  const ceilingSmokeY = round3(Math.max(2.1, levelHeight - 0.03))
   const preferredChaseY = options.preferredChaseY ?? 2.55
   const effectiveChaseY = round3(Math.min(preferredChaseY, levelHeight - 0.06))
 
@@ -1096,6 +1108,20 @@ export function planNecAutoPopulate(
   }
 
   // 3. Per-Zone Guaranteed NEC Minimums (Wall-Snapped Bathroom GFCI, Hallway Outlet, Outdoor Patio GFCI, & Room Luminaires/Switches)
+  // Pick a frequently-used common/hallway pilot lighting zone to share the 15A AFCI Smoke/CO circuit (NFPA 72 A.29.9.4 best practice)
+  const interiorZones = zones.filter((z) => !isOutdoorCategory(z.category))
+  const pilotLightZone: ZoneInfo | null = includeSmokeAlarms
+    ? interiorZones.find((z) => isHallway(z.category)) ??
+      interiorZones.find((z) => isPrimaryCommonZone(z.category)) ??
+      interiorZones.find(
+        (z) => !isBathroom(z.category) && !isKitchen(z.category) && !/closet/.test(z.category) && !isBedroom(z.category),
+      ) ??
+      interiorZones.find((z) => !isBathroom(z.category) && !isKitchen(z.category) && !/closet/.test(z.category)) ??
+      null
+    : null
+  const smokeCircuitGroup =
+    includeLighting && pilotLightZone ? 'Smoke/CO & Lighting' : 'Smoke/CO Alarms'
+
   for (const z of zones) {
     const [cx, cz] = z.centroid
     const cat = z.category
@@ -1158,14 +1184,22 @@ export function planNecAutoPopulate(
     }
 
     // NEC 210.70(A)(1): Wall-switched ceiling luminaire in every interior room (switch snapped flush to room wall beside door!)
+    // Tie the primary Hallway/Living pilot light onto the Smoke/CO 15A AFCI circuit so a tripped breaker is noticed immediately (NFPA 72 A.29.9.4).
     if (includeLighting) {
+      const lightingGroup =
+        includeSmokeAlarms && pilotLightZone && z.id === pilotLightZone.id
+          ? smokeCircuitGroup
+          : 'Lighting & Entries'
       addPlanned({
         name: `${z.name} Ceiling Light`,
         position: [round3(cx), ceilingLightY, round3(cz)],
         rotation: 0,
         deviceKind: 'luminaire',
-        circuitGroup: 'Lighting & Entries',
-        necRef: 'NEC 210.70(A)(1)',
+        circuitGroup: lightingGroup,
+        necRef:
+          lightingGroup === smokeCircuitGroup
+            ? 'NEC 210.70(A)(1) / NFPA 72 A.29.9.4'
+            : 'NEC 210.70(A)(1)',
         requiresGfci: false,
         requiresAfci: occupancy === 'residential',
         breakerAmps: occupancy === 'commercial' ? 20 : 15,
@@ -1185,8 +1219,11 @@ export function planNecAutoPopulate(
         position: switchSpot.position,
         rotation: switchSpot.rotation,
         deviceKind: 'switch-1p',
-        circuitGroup: 'Lighting & Entries',
-        necRef: 'NEC 210.70(A)(1)',
+        circuitGroup: lightingGroup,
+        necRef:
+          lightingGroup === smokeCircuitGroup
+            ? 'NEC 210.70(A)(1) / NFPA 72 A.29.9.4'
+            : 'NEC 210.70(A)(1)',
         requiresGfci: false,
         requiresAfci: occupancy === 'residential',
         breakerAmps: occupancy === 'commercial' ? 20 : 15,
@@ -1300,6 +1337,94 @@ export function planNecAutoPopulate(
     }
   }
 
+  // 4b. IRC R314.3 / R314.4 / R315.3 & NFPA 72: Hardwired 120V Interconnected Smoke/CO Alarms
+  // Placed inside every bedroom, outside sleeping areas (hallway/living), and at least 1 per residential story,
+  // wired with 14/3 interconnect on a single non-GFCI 15A AFCI circuit shared with a frequently-used pilot light.
+  if (includeSmokeAlarms) {
+    const findCleanCeilingPoint = (z: ZoneInfo): Vec3 => {
+      const offsets: Array<[number, number]> = [
+        [0.65, 0],
+        [-0.65, 0],
+        [0, 0.65],
+        [0, -0.65],
+        [0.48, 0.48],
+        [-0.48, -0.48],
+        [0, 0],
+      ]
+      for (const [ox, oz] of offsets) {
+        const px = round3(z.centroid[0] + ox)
+        const pz = round3(z.centroid[1] + oz)
+        if (!pointInPolygon2D(px, pz, z.polygon)) continue
+        const pos: Vec3 = [px, ceilingSmokeY, pz]
+        if (!isNearExisting(pos, 0, 0.45)) return pos
+      }
+      return [round3(z.centroid[0] + 0.55), ceilingSmokeY, round3(z.centroid[1])]
+    }
+
+    const existingSmokeAlarms = existingDevices.filter((d) => d.deviceKind === 'smoke-co')
+    const zoneHasExistingSmoke = (z: ZoneInfo): boolean =>
+      existingSmokeAlarms.some((d) => {
+        if (!Array.isArray(d.position) || d.position.length < 3) return false
+        return pointInPolygon2D(Number(d.position[0]), Number(d.position[2]), z.polygon)
+      })
+
+    const smokeTargetZones: Array<{ zone: ZoneInfo; label: string; necRef: string }> = []
+    const addedZoneIds = new Set<string>()
+
+    // 1. Inside every bedroom / sleeping room (IRC R314.3(1))
+    for (const z of interiorZones) {
+      if (!isBedroom(z.category)) continue
+      if (zoneHasExistingSmoke(z)) continue
+      smokeTargetZones.push({
+        zone: z,
+        label: `${z.name} Smoke/CO Alarm`,
+        necRef: 'IRC R314.3(1) / R314.4 / NEC 210.12(A)',
+      })
+      addedZoneIds.add(z.id)
+    }
+
+    // 2. Outside sleeping area in immediate vicinity (Hallway / Living / Common pilot zone, IRC R314.3(2) & R315.3)
+    if (pilotLightZone && !addedZoneIds.has(pilotLightZone.id) && !zoneHasExistingSmoke(pilotLightZone)) {
+      smokeTargetZones.push({
+        zone: pilotLightZone,
+        label: `${pilotLightZone.name} Smoke/CO Alarm`,
+        necRef: 'IRC R314.3(2) / R315.3 / NFPA 72 A.29.9.4',
+      })
+      addedZoneIds.add(pilotLightZone.id)
+    }
+
+    // 3. Story-minimum guarantee (IRC R314.3(3)): at least 1 hardwired smoke/CO alarm per residential level
+    if (smokeTargetZones.length === 0 && existingSmokeAlarms.length === 0) {
+      const fallbackZone = [...interiorZones]
+        .filter((z) => !isBathroom(z.category) && !isKitchen(z.category) && !/closet/.test(z.category))
+        .sort((a, b) => b.areaM2 - a.areaM2)[0]
+      if (fallbackZone) {
+        smokeTargetZones.push({
+          zone: fallbackZone,
+          label: `${fallbackZone.name} Smoke/CO Alarm`,
+          necRef: 'IRC R314.3(3) / R315.3 / NEC 210.12(A)',
+        })
+      }
+    }
+
+    for (const target of smokeTargetZones) {
+      addPlanned({
+        name: target.label,
+        position: findCleanCeilingPoint(target.zone),
+        rotation: 0,
+        deviceKind: 'smoke-co',
+        circuitGroup: smokeCircuitGroup,
+        necRef: target.necRef,
+        requiresGfci: false,
+        requiresAfci: occupancy === 'residential',
+        breakerAmps: 15,
+        loadVa: 25,
+        boxType: '4-oct-2.125',
+        wireGauge: '14',
+      })
+    }
+  }
+
   // Guarantee at least 1 Outdoor WR GFCI even if a minimal floorplan has no exterior doors/patio zones tagged yet
   if (exteriorDoorCount === 0 && !planned.some((p) => p.circuitGroup === 'Outdoor GFCI') && walls.length > 0) {
     const w0 = walls[0]!
@@ -1332,10 +1457,12 @@ export function planNecAutoPopulate(
     rawGroups.set(dev.circuitGroup, list)
   }
 
-  // Split large groups > 10 devices into sub-circuits (e.g., Living Room Receptacles #1, #2)
+  // Split large groups > 10 devices into sub-circuits (e.g., Living Room Receptacles #1, #2).
+  // Never split interconnected Smoke/CO alarm circuits so all alarms stay interconnected on one 15A AFCI circuit (IRC R314.4).
   const circuitBuckets: Array<{ groupName: string; items: typeof planned }> = []
   for (const [groupName, items] of rawGroups.entries()) {
-    const maxPerCircuit = 10
+    const isSmokeBucket = groupName.startsWith('Smoke/CO')
+    const maxPerCircuit = isSmokeBucket ? Math.max(12, items.length) : 10
     for (let i = 0; i < items.length; i += maxPerCircuit) {
       const chunk = items.slice(i, i + maxPerCircuit)
       const suffix = items.length > maxPerCircuit ? ` (${Math.floor(i / maxPerCircuit) + 1})` : ''
@@ -1419,22 +1546,39 @@ export function planNecAutoPopulate(
     const ckt = pickBalancedFreeCircuit(totalLoadVa)
 
     // Order chain: start with device closest to panel, then greedy nearest-neighbor outlet-to-outlet!
-    const remaining = [...bucket.items]
-    remaining.sort((a, b) => dist3D(panelTopPt, a.position) - dist3D(panelTopPt, b.position))
-    const ordered: typeof planned = [remaining.shift()!]
-    while (remaining.length > 0) {
-      const tail = ordered[ordered.length - 1]!
-      let bestIdx = 0
-      let bestDist = Infinity
-      for (let i = 0; i < remaining.length; i++) {
-        const d = dist3D(tail.position, remaining[i]!.position)
-        if (d < bestDist) {
-          bestDist = d
-          bestIdx = i
+    // For Smoke/CO & Lighting circuits, route constant hot through the pilot switch/light first,
+    // then chain all Smoke/CO alarms consecutively via 14/3 interconnect cable (IRC R314.4).
+    const hasSmokeInBucket = bucket.items.some((d) => d.deviceKind === 'smoke-co')
+    const orderNearest = (list: typeof planned, startPt: Vec3): typeof planned => {
+      if (list.length === 0) return []
+      const pool = [...list]
+      pool.sort((a, b) => dist3D(startPt, a.position) - dist3D(startPt, b.position))
+      const out: typeof planned = [pool.shift()!]
+      while (pool.length > 0) {
+        const tail = out[out.length - 1]!
+        let bestIdx = 0
+        let bestDist = Infinity
+        for (let i = 0; i < pool.length; i++) {
+          const d = dist3D(tail.position, pool[i]!.position)
+          if (d < bestDist) {
+            bestDist = d
+            bestIdx = i
+          }
         }
+        out.push(pool.splice(bestIdx, 1)[0]!)
       }
-      ordered.push(remaining.splice(bestIdx, 1)[0]!)
+      return out
     }
+    const ordered: typeof planned = hasSmokeInBucket
+      ? (() => {
+          const pilotLighting = bucket.items.filter((d) => d.deviceKind !== 'smoke-co')
+          const smokeAlarms = bucket.items.filter((d) => d.deviceKind === 'smoke-co')
+          const orderedPilot = orderNearest(pilotLighting, panelTopPt)
+          const smokeStart =
+            orderedPilot.length > 0 ? orderedPilot[orderedPilot.length - 1]!.position : panelTopPt
+          return [...orderedPilot, ...orderNearest(smokeAlarms, smokeStart)]
+        })()
+      : orderNearest(bucket.items, panelTopPt)
 
     // Pre-route Home Run & Daisy-Chain Hops so final voltage-drop / ampacity wireGauge propagates to EVERY device box!
     const anyContinuous = ordered.some((d) => d.continuous)
@@ -1515,7 +1659,13 @@ export function planNecAutoPopulate(
         (item.deviceKind === 'duplex' || item.deviceKind === 'gfci') &&
         (protectionMode === 'gfci-receptacles' || (protectionMode === 'hybrid' && isFirstInChain))
       const deviceKind = makePhysicalGfci ? 'gfci' : item.deviceKind
-      const conductorCount = isLastInChain ? 2 : 4 // 2 wires (end-of-line) vs 4 wires (feed-in + feed-thru)
+      const isSmoke = deviceKind === 'smoke-co'
+      const prevIsSmoke = idx > 0 && ordered[idx - 1]!.deviceKind === 'smoke-co'
+      const nextIsSmoke = !isLastInChain && ordered[idx + 1]!.deviceKind === 'smoke-co'
+      // 14/3 interconnect cables between smoke alarms carry 3 insulated conductors (Hot + Neutral + Red Interconnect)
+      const incomingCond = isSmoke && prevIsSmoke ? 3 : 2
+      const outgoingCond = isLastInChain ? 0 : isSmoke && nextIsSmoke ? 3 : 2
+      const conductorCount = incomingCond + outgoingCond
       let boxType: BoxType = item.boxType
       if (
         makePhysicalGfci &&
@@ -1528,7 +1678,7 @@ export function planNecAutoPopulate(
       const boxCheck = calculateBoxFill({
         boxType,
         conductors: [{ gauge: boxFillGauge, count: conductorCount }],
-        deviceYokeCount: deviceKind === 'luminaire' ? 0 : 1,
+        deviceYokeCount: isZeroYokeDeviceKind(deviceKind) ? 0 : 1,
         internalClampCount: 1,
         equipmentGroundCount: 1,
       })
@@ -1592,16 +1742,20 @@ export function planNecAutoPopulate(
       })
       homeRunCount = 1
 
-      // B. DAISY-CHAIN BRANCH RUNS: Device 1 -> Device 2 -> ... -> Device N (outlet-to-outlet!)
+      // B. DAISY-CHAIN BRANCH RUNS: Device 1 -> Device 2 -> ... -> Device N (outlet-to-outlet / 14/3 smoke interconnect!)
       for (let i = 0; i < circuitDevices.length - 1; i++) {
         const fromDev = circuitDevices[i]!
         const toDev = circuitDevices[i + 1]!
         const hopRoute = hopRoutes[i]!
         totalAvoided += hopRoute.avoidedObstacles.length
+        const isSmokeInterconnect =
+          fromDev.deviceKind === 'smoke-co' && toDev.deviceKind === 'smoke-co'
 
         plannedRuns.push({
           tempId: `auto_run_${runSeq++}`,
-          name: `CKT-${ckt} Branch (${fromDev.name} -> ${toDev.name})`,
+          name: isSmokeInterconnect
+            ? `CKT-${ckt} Interconnect ${circuitWireGauge}/3 (${fromDev.name} -> ${toDev.name})`
+            : `CKT-${ckt} Branch (${fromDev.name} -> ${toDev.name})`,
           runKind: 'daisy-chain',
           panelId: panelNode!.id,
           fromNodeId: fromDev.tempId,
@@ -1612,7 +1766,7 @@ export function planNecAutoPopulate(
           tradeSize,
           wireGauge: circuitWireGauge,
           currentCarryingCount: 2,
-          totalConductorCount: 3,
+          totalConductorCount: isSmokeInterconnect ? 4 : 3,
           loadAmps: Math.max(1, Math.round(((circuitLoadAmps * (circuitDevices.length - i - 1)) / circuitDevices.length) * 100) / 100),
           continuous: anyContinuous,
           voltage,
@@ -2102,6 +2256,18 @@ export function planDeviceAutoConnection(
     )
     if (cktTotalVa + draft.loadVa > cktBreakerAmps * vLN * 0.85) return false
 
+    // NFPA 72 29.9.4(5): Hardwired smoke/CO alarms must NEVER share a GFCI-protected circuit
+    if (draft.deviceKind === 'smoke-co') {
+      const cktHasGfci = cktPeers.some(
+        (p) =>
+          p.gfciProtected === true ||
+          p.deviceKind === 'gfci' ||
+          p.deviceKind === 'weatherproof-gfci',
+      )
+      if (cktHasGfci) return false
+      return true
+    }
+
     // NEC 210.11(C)(1)/(3) circuit isolation: never mix bath/kitchen circuits with other rooms
     const cktHasBath = cktPeers.some((p) => {
       if (!Array.isArray(p.position)) return false
@@ -2126,10 +2292,12 @@ export function planDeviceAutoConnection(
     return true
   }
 
-  // Try to join an existing compatible circuit run in the SAME room (or explicitly specified circuitNumber)
+  // Try to join an existing compatible circuit run in the SAME room (or explicitly specified circuitNumber).
+  // For hardwired smoke/CO alarms (`IRC R314.4`), prefer interconnecting across rooms onto any existing
+  // `smoke-co` alarm on the same level (14/3 interconnect), or else tying into a non-GFCI lighting circuit!
   let anchorDevice: SceneNodeLike | null = null
   if (!isDedicated) {
-    const candidates: Array<{ dev: SceneNodeLike; dist: number; ckt: number }> = []
+    const candidates: Array<{ dev: SceneNodeLike; dist: number; ckt: number; priority: number }> = []
     for (const d of panelDevices) {
       if (!Array.isArray(d.position) || d.position.length < 3) continue
       const dCkt = typeof d.circuitNumber === 'number' && d.circuitNumber >= 1 ? Math.floor(d.circuitNumber) : 0
@@ -2138,8 +2306,19 @@ export function planDeviceAutoConnection(
       if (dPoles !== 1) continue
 
       const peerBreakerHint = typeof d.breakerAmps === 'number' ? d.breakerAmps : 15
+      let priority = 0
       if (draft.circuitNumber !== undefined) {
         if (dCkt !== draft.circuitNumber) continue
+        if (!isCircuitCompatible(dCkt, peerBreakerHint)) continue
+      } else if (draft.deviceKind === 'smoke-co') {
+        const dKind = String(d.deviceKind ?? 'duplex')
+        if (dKind === 'smoke-co') {
+          priority = 0 // Highest priority: interconnect directly with nearest existing smoke/CO alarm
+        } else if (dKind === 'luminaire' || dKind === 'switch-1p' || dKind === 'switch-3way') {
+          priority = 1 // Fallback: share a frequently-used non-GFCI lighting circuit (NFPA 72 A.29.9.4)
+        } else {
+          continue
+        }
         if (!isCircuitCompatible(dCkt, peerBreakerHint)) continue
       } else {
         // Must be in the SAME room zone to join an existing run; a new room triggers a Home Run!
@@ -2157,10 +2336,10 @@ export function planDeviceAutoConnection(
       }
 
       const dPos: Vec3 = [Number(d.position[0]), Number(d.position[1]), Number(d.position[2])]
-      candidates.push({ dev: d, dist: dist3D(dPos, draft.position), ckt: dCkt })
+      candidates.push({ dev: d, dist: dist3D(dPos, draft.position), ckt: dCkt, priority })
     }
 
-    candidates.sort((a, b) => a.dist - b.dist)
+    candidates.sort((a, b) => a.priority - b.priority || a.dist - b.dist)
     anchorDevice = candidates[0]?.dev ?? null
   }
 
@@ -2222,7 +2401,9 @@ export function planDeviceAutoConnection(
     const boxFillGauge: BoxFillGauge = (
       ['18', '16', '14', '12', '10', '8', '6'].includes(wireGauge) ? wireGauge : '12'
     ) as BoxFillGauge
-    const newConductorCount = 2 // new end-of-line outlet on the daisy chain
+    const isSmokeInterconnect =
+      draft.deviceKind === 'smoke-co' && anchorDevice.deviceKind === 'smoke-co'
+    const newConductorCount = isSmokeInterconnect ? 3 : 2 // 14/3 interconnect vs 14/2 branch end-of-line
     let newBoxType = draft.boxType
     const newBoxCheck = calculateBoxFill({
       boxType: newBoxType,
@@ -2233,9 +2414,10 @@ export function planDeviceAutoConnection(
     })
     if (!newBoxCheck.compliant) newBoxType = newBoxCheck.recommendedBoxType
 
-    // NEC 314.16: Each newly tapped outgoing branch cable adds +2 current-carrying conductors to the anchor box!
+    // NEC 314.16: Each newly tapped outgoing branch cable adds +2 (or +3 for 14/3 smoke interconnect) insulated conductors to the anchor box!
     const prevAnchorCond = typeof anchorDevice.conductorCount === 'number' ? anchorDevice.conductorCount : 2
-    const nextCond = Math.max(4, prevAnchorCond + 2)
+    const addedCond = isSmokeInterconnect ? 3 : 2
+    const nextCond = Math.max(4, prevAnchorCond + addedCond)
     let nextAnchorBox = (typeof anchorDevice.boxType === 'string'
       ? anchorDevice.boxType
       : 'single-gang-standard') as BoxType
@@ -2257,7 +2439,7 @@ export function planDeviceAutoConnection(
       const fill = calculateConduitFill({
         conduitType: racewayType,
         tradeSize: '3/4"',
-        conductors: [{ gauge: wireGauge, count: 3 }],
+        conductors: [{ gauge: wireGauge, count: isSmokeInterconnect ? 4 : 3 }],
         lengthInches: route.routedLengthM * METERS_TO_FEET * 12,
       })
       if (!fill.compliant) tradeSize = fill.recommendedTradeSize
@@ -2270,7 +2452,10 @@ export function planDeviceAutoConnection(
       circuitNumber: ckt,
       breakerAmps: cktBreakerAmps,
       wireGauge,
-      gfciProtected: draft.gfciProtected || anchorDevice.gfciProtected === true || targetIsWet,
+      gfciProtected:
+        draft.deviceKind === 'smoke-co'
+          ? false
+          : draft.gfciProtected || anchorDevice.gfciProtected === true || targetIsWet,
       afciProtected: draft.afciProtected || anchorDevice.afciProtected === true || targetIsAfci,
       boxType: newBoxType,
       conductorCount: newConductorCount,
@@ -2278,7 +2463,9 @@ export function planDeviceAutoConnection(
       connectedFromNodeId: anchorDevice.id,
       connectedFromName: anchorName,
       run: {
-        name: `CKT-${ckt} Branch (${anchorName} -> ${draft.name})`,
+        name: isSmokeInterconnect
+          ? `CKT-${ckt} Interconnect ${wireGauge}/3 (${anchorName} -> ${draft.name})`
+          : `CKT-${ckt} Branch (${anchorName} -> ${draft.name})`,
         runKind: 'daisy-chain',
         panelId: panelNode.id,
         fromNodeId: anchorDevice.id,
@@ -2289,7 +2476,7 @@ export function planDeviceAutoConnection(
         tradeSize,
         wireGauge,
         currentCarryingCount: 2,
-        totalConductorCount: 3,
+        totalConductorCount: isSmokeInterconnect ? 4 : 3,
         loadAmps: Math.max(1, Math.round((draft.loadVa / voltage) * 100) / 100),
         continuous: draft.continuous,
         voltage,

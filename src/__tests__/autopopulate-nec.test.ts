@@ -395,18 +395,24 @@ describe('NEC Minimum Auto-Populate (Outlets, GFCIs, Doors, Stairs, Circuits, Ho
     const runs = Object.values(record).filter((n) => n.type === 'electrical:conduit-run')
 
     // 1. ZERO floating wall-mounted devices (every outlet, GFCI, and switch sits flush within 0.12 m of a wall!)
-    const wallDevices = devices.filter((d) => d.deviceKind !== 'luminaire')
+    const wallDevices = devices.filter((d) => d.deviceKind !== 'luminaire' && d.deviceKind !== 'smoke-co')
     expect(wallDevices.length).toBeGreaterThanOrEqual(16)
     for (const dev of wallDevices) {
       const pos = dev.position as [number, number, number]
       expect(distToNearestWall(pos[0], pos[2])).toBeLessThanOrEqual(0.12)
     }
 
-    // 2. Ceiling luminaires sit below levelHeight (2.5 m), never floating above the walls!
+    // 2. Ceiling luminaires & interconnected Smoke/CO alarms sit below levelHeight (2.5 m), never floating above the walls!
     const luminaires = devices.filter((d) => d.deviceKind === 'luminaire')
     expect(luminaires.length).toBeGreaterThanOrEqual(4)
     for (const lum of luminaires) {
       const pos = lum.position as [number, number, number]
+      expect(pos[1]).toBeLessThanOrEqual(2.5)
+    }
+    const smokeAlarms = devices.filter((d) => d.deviceKind === 'smoke-co')
+    expect(smokeAlarms.length).toBeGreaterThanOrEqual(3)
+    for (const sm of smokeAlarms) {
+      const pos = sm.position as [number, number, number]
       expect(pos[1]).toBeLessThanOrEqual(2.5)
     }
 
@@ -509,10 +515,10 @@ describe('NEC Minimum Auto-Populate (Outlets, GFCIs, Doors, Stairs, Circuits, Ho
     const run3 = nodes[bed2Out1.result.conduitRunId!] as unknown as SceneNodeLike
     expect((run3.metadata as { runKind?: string })?.runKind).toBe('home-run')
 
-    // 4. Full scene NEC audit passes cleanly with 0 errors and 0 warnings
+    // 4. Full scene NEC audit passes with 0 errors and 0 wiring/box-fill warnings (only expected IRC R314.3 smoke-alarm reminders since this test only places 3 outlets)
     const audit = auditSceneElectrical(nodes as unknown as Readonly<Record<string, SceneNodeLike>>)
     expect(audit.errorCount).toBe(0)
-    expect(audit.warningCount).toBe(0)
+    expect(audit.findings.filter((f) => f.category !== 'life-safety')).toHaveLength(0)
   })
 
   test('R4-BUG-02/03 & R4-OPT-02 & R4-CON-01: 3rd outlet splice increments anchor box to 6 conductors + upsizes box, tub exclusion + motor floor mount + multi-level isolation + VD sizing + explicit bath circuit isolation', () => {
@@ -749,5 +755,98 @@ describe('NEC Minimum Auto-Populate (Outlets, GFCIs, Doors, Stairs, Circuits, Ho
       const nearestDist = Math.min(...studs24.map((s) => Math.abs(u - s)))
       expect(Math.abs(nearestDist - expectedFaceDist)).toBeLessThan(0.004)
     }
+  })
+
+  test('IRC R314/R315 & NFPA 72: residential auto-populate wires interconnected Smoke/CO alarms (14/3) with pilot Hall/Living light on one non-GFCI 15A AFCI circuit', () => {
+    const nodes: Record<string, AnyNode> = {
+      level_0: { object: 'node', id: 'level_0', type: 'level', name: 'Ground Floor', parentId: null, visible: true, metadata: {}, level: 0, children: [] } as unknown as AnyNode,
+      wall_n: { object: 'node', id: 'wall_n', type: 'wall', parentId: 'level_0', start: [0, 0], end: [10, 0], thickness: 0.15, height: 2.6, children: [] } as unknown as AnyNode,
+      wall_s: { object: 'node', id: 'wall_s', type: 'wall', parentId: 'level_0', start: [0, 6], end: [10, 6], thickness: 0.15, height: 2.6, children: [] } as unknown as AnyNode,
+      wall_w: { object: 'node', id: 'wall_w', type: 'wall', parentId: 'level_0', start: [0, 0], end: [0, 6], thickness: 0.15, height: 2.6, children: [] } as unknown as AnyNode,
+      wall_e: { object: 'node', id: 'wall_e', type: 'wall', parentId: 'level_0', start: [10, 0], end: [10, 6], thickness: 0.15, height: 2.6, children: [] } as unknown as AnyNode,
+      wall_mid: { object: 'node', id: 'wall_mid', type: 'wall', parentId: 'level_0', start: [5, 0], end: [5, 6], thickness: 0.12, height: 2.6, children: [] } as unknown as AnyNode,
+      wall_bed: { object: 'node', id: 'wall_bed', type: 'wall', parentId: 'level_0', start: [5, 3], end: [10, 3], thickness: 0.12, height: 2.6, children: [] } as unknown as AnyNode,
+      z_living: { object: 'node', id: 'z_living', type: 'zone', parentId: 'level_0', name: 'Living Room', category: 'living', polygon: [[0, 0], [5, 0], [5, 6], [0, 6]] } as unknown as AnyNode,
+      z_bed1: { object: 'node', id: 'z_bed1', type: 'zone', parentId: 'level_0', name: 'Bedroom 1', category: 'bedroom', polygon: [[5, 0], [10, 0], [10, 3], [5, 3]] } as unknown as AnyNode,
+      z_bed2: { object: 'node', id: 'z_bed2', type: 'zone', parentId: 'level_0', name: 'Bedroom 2', category: 'bedroom', polygon: [[5, 3], [10, 3], [10, 6], [5, 6]] } as unknown as AnyNode,
+    }
+
+    const out = electricalAgentOperations.electrical_autopopulate_nec(
+      nodes,
+      { levelId: 'level_0', occupancy: 'residential', protectionMode: 'hybrid', includeLighting: true, includeWiring: true },
+      { activeLevelId: 'level_0' },
+    )
+    for (const c of out.changes?.create ?? []) nodes[c.node.id] = c.node
+    const record = nodes as unknown as Readonly<Record<string, SceneNodeLike>>
+    const allDevs = Object.values(record).filter((n) => n.type === 'electrical:device')
+    const allRuns = Object.values(record).filter((n) => n.type === 'electrical:conduit-run')
+    const panel = Object.values(record).find((n) => n.type === 'electrical:panel')!
+
+    // 3 interconnected hardwired Smoke/CO alarms: Bedroom 1, Bedroom 2, and Living Room (outside sleeping areas)
+    const smokes = allDevs.filter((d) => d.deviceKind === 'smoke-co')
+    expect(smokes.length).toBe(3)
+    const smokeCkts = new Set(smokes.map((s) => Number(s.circuitNumber)))
+    expect(smokeCkts.size).toBe(1)
+    const smokeCkt = Array.from(smokeCkts)[0]!
+
+    // Non-GFCI 15A AFCI circuit shared with the pilot Living Room ceiling light (NFPA 72 A.29.9.4 + 29.9.4(5))
+    for (const s of smokes) {
+      expect(s.gfciProtected).toBe(false)
+      expect(s.afciProtected).toBe(true)
+      expect(s.breakerAmps).toBe(15)
+    }
+    const cktPeers = allDevs.filter((d) => d.circuitNumber === smokeCkt)
+    expect(cktPeers.some((d) => d.deviceKind === 'luminaire')).toBe(true)
+
+    // Interconnect hops between smoke alarms use 14/3 (4 total conductors incl. red interconnect & ground)
+    const smokeInterconnectRuns = allRuns.filter(
+      (r) => r.circuitNumber === smokeCkt && Number(r.totalConductorCount) === 4,
+    )
+    expect(smokeInterconnectRuns.length).toBe(2)
+
+    // Panel Schedule clearly labels the circuit as Smoke/CO Alarms & Lighting
+    const schedule = buildPanelSchedule(panel, allDevs, allRuns)
+    const smokeSlot = schedule.rows
+      .flatMap((row) => [row.left, row.right])
+      .find((entry) => entry && entry.circuitNumber === smokeCkt)
+    expect(smokeSlot).toBeDefined()
+    expect(smokeSlot!.description).toContain('Smoke/CO Alarms & Lighting')
+    expect(smokeSlot!.protection).toContain('AFCI')
+    expect(smokeSlot!.protection).not.toContain('GFCI')
+
+    // Passes NEC + NFPA 72 / IRC R314 audit with 0 errors and 0 life-safety warnings!
+    const audit = auditSceneElectrical(record)
+    expect(audit.errorCount).toBe(0)
+    expect(audit.findings.filter((f) => f.category === 'life-safety')).toHaveLength(0)
+    expect(audit.findings.filter((f) => f.category === 'box-fill')).toHaveLength(0)
+
+    // Adding another Smoke/CO alarm manually in another room interconnects onto the SAME smoke circuit with 14/3!
+    const extraSmoke = electricalAgentOperations.electrical_place_device(
+      nodes,
+      { name: 'Bonus Smoke/CO', position: [2.5, 2.57, 4.5], deviceKind: 'smoke-co', panelId: panel.id, breakerAmps: 15, loadVa: 25 },
+      { activeLevelId: 'level_0' },
+    )
+    expect(extraSmoke.result.circuitNumber).toBe(smokeCkt)
+    const newRun = (extraSmoke.changes?.create ?? [])
+      .map((c) => c.node as unknown as SceneNodeLike)
+      .find((n) => n.type === 'electrical:conduit-run')!
+    expect(newRun.totalConductorCount).toBe(4)
+  })
+
+  test('NFPA 72 & IRC R314 audit catches GFCI smoke alarm error, isolated smoke-only warning, split circuits, and missing bedroom alarms', () => {
+    const badScene: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level' },
+      z_bed1: { id: 'z_bed1', type: 'zone', parentId: 'level_0', name: 'Bedroom 1', category: 'bedroom', polygon: [[0, 0], [4, 0], [4, 4], [0, 4]] },
+      z_bed2: { id: 'z_bed2', type: 'zone', parentId: 'level_0', name: 'Bedroom 2', category: 'bedroom', polygon: [[4, 0], [8, 0], [8, 4], [4, 4]] },
+      p1: { id: 'p1', type: 'electrical:panel', parentId: 'level_0', name: 'MDP-1', position: [0.1, 1.52, 2], occupancy: 'residential', voltageSystem: '120/240V-1P', busRatingAmps: 200, mainBreakerAmps: 200, spaces: 40 },
+      s1: { id: 's1', type: 'electrical:device', parentId: 'level_0', name: 'Bed 1 Smoke', deviceKind: 'smoke-co', position: [2, 2.55, 2], panelId: 'p1', circuitNumber: 1, breakerAmps: 15, loadVa: 25, gfciProtected: true, afciProtected: true, boxType: '4-oct-2.125', wireGauge: '14', conductorCount: 3 },
+      s2: { id: 's2', type: 'electrical:device', parentId: 'level_0', name: 'Bed 1 Extra Smoke', deviceKind: 'smoke-co', position: [3, 2.55, 2], panelId: 'p1', circuitNumber: 3, breakerAmps: 15, loadVa: 25, gfciProtected: false, afciProtected: true, boxType: '4-oct-2.125', wireGauge: '14', conductorCount: 3 },
+    }
+    const audit = auditSceneElectrical(badScene)
+    expect(audit.findings.some((f) => f.codeRef === 'NFPA 72 29.9.4(5)' && f.severity === 'error')).toBe(true)
+    expect(audit.findings.some((f) => f.codeRef === 'NFPA 72 A.29.9.4' && f.severity === 'warning')).toBe(true)
+    expect(audit.findings.some((f) => f.codeRef === 'IRC R314.4' && f.severity === 'warning')).toBe(true)
+    expect(audit.findings.some((f) => f.codeRef === 'IRC R314.3(1)' && f.title.includes('Bedroom 2'))).toBe(true)
+    expect(audit.findings.some((f) => f.codeRef === 'IRC R314.3(2) / R315.3')).toBe(true)
   })
 })
