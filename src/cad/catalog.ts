@@ -349,7 +349,7 @@ export const ELECTRICAL_CAD_CATALOG: readonly ElectricalCadEntry[] = [
   },
   {
     slug: 'box-3gang-pvc',
-    name: '3-Gang Blue PVC Nail-On Box (44 cu in)',
+    name: '3-Gang Blue PVC Nail-On Box (48 cu in)',
     category: 'outlet-boxes',
     necRef: 'NEC 314.16(A)',
     description: 'Triple-gang PVC wall switch box for multi-circuit lighting banks.',

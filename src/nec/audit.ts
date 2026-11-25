@@ -50,6 +50,7 @@ import {
   type WireGauge,
   type WorkingSpaceCondition,
   clampToBoxFillGauge,
+  clampToBranchWireGauge,
   getWorkingClearance110_26,
   round2,
   usesSeparateRoughInBox,
@@ -375,9 +376,14 @@ function extractStairFootprintBox(stair: SceneNodeLike): Aabb3 | null {
   }
 }
 
+const auditSceneCache = new WeakMap<object, NecSceneAuditReport>()
+
 export function auditSceneElectrical(
   nodes: Readonly<Record<string, SceneNodeLike>>,
 ): NecSceneAuditReport {
+  const cached = auditSceneCache.get(nodes as object)
+  if (cached) return cached
+
   const all = Object.values(nodes)
   const panels = all.filter((n) => n.type === 'electrical:panel')
   const devices = all.filter((n) => n.type === 'electrical:device')
@@ -393,6 +399,16 @@ export function auditSceneElectrical(
       obstaclesByLevel.set(key, list)
     }
     return list
+  }
+  const cavitiesByLevel = new Map<string, ReturnType<typeof extractRoutingCavities>>()
+  const getCavitiesForLevel = (levelId: string | null): ReturnType<typeof extractRoutingCavities> => {
+    const key = levelId ?? '__all__'
+    let ctx = cavitiesByLevel.get(key)
+    if (!ctx) {
+      ctx = extractRoutingCavities(nodes, levelId)
+      cavitiesByLevel.set(key, ctx)
+    }
+    return ctx
   }
 
   const wetFixtures: Array<{ node: SceneNodeLike; levelId: string | null; kind: 'tub-shower' | 'stove' | 'sink'; box: Aabb3 }> = []
@@ -1026,6 +1042,37 @@ export function auditSceneElectrical(
     }
   }
 
+  // 2d. R6-BUG-05: NEC 210.4 / 210.23 Mixed-Pole Circuit Validation (never mix 1P 120V and 2P/3P loads on the same circuit number)
+  const polesByPanelCkt = new Map<string, { panelId: string; ckt: number; poles: Set<number>; nodeIds: string[] }>()
+  for (const dev of devices) {
+    const pid = typeof dev.panelId === 'string' ? dev.panelId : ''
+    const ckt = typeof dev.circuitNumber === 'number' && dev.circuitNumber >= 1 ? Math.floor(dev.circuitNumber) : 0
+    if (!pid || ckt <= 0) continue
+    const key = `${pid}:${ckt}`
+    let entry = polesByPanelCkt.get(key)
+    if (!entry) {
+      entry = { panelId: pid, ckt, poles: new Set<number>(), nodeIds: [] }
+      polesByPanelCkt.set(key, entry)
+    }
+    const devPoles = dev.poles === 3 ? 3 : dev.poles === 2 ? 2 : 1
+    entry.poles.add(devPoles)
+    entry.nodeIds.push(dev.id)
+  }
+  for (const entry of polesByPanelCkt.values()) {
+    if (entry.poles.size > 1) {
+      const poleList = Array.from(entry.poles).sort((a, b) => a - b).map((p) => `${p}P`).join(' & ')
+      push({
+        severity: 'error',
+        codeRef: 'NEC 210.4 / 210.23',
+        category: 'panel-load',
+        title: `Circuit CKT-${entry.ckt} mixes incompatible pole counts (${poleList})`,
+        message: `Devices assigned to CKT-${entry.ckt} on panel ${entry.panelId} mix ${poleList} loads on the same breaker slot.`,
+        nodeIds: entry.nodeIds,
+        suggestedFix: `Assign multi-pole (240V/208V/480V) loads to dedicated circuit numbers separate from 1-pole 120V branch circuits.`,
+      })
+    }
+  }
+
   // 3. Audit Conduit / Cable Runs: Trade clashes, 360° bends, NM-B commercial/plenum ban, ampacity, conduit fill, voltage drop
   for (const run of runs) {
     const runName = (typeof run.name === 'string' && run.name) || run.id
@@ -1034,8 +1081,10 @@ export function auditSceneElectrical(
       typeof run.racewayType === 'string' ? (run.racewayType as RacewayType) : 'emt'
     const tradeSize: ConduitTradeSize =
       typeof run.tradeSize === 'string' ? (run.tradeSize as ConduitTradeSize) : '3/4"'
-    const wireGauge: WireGauge =
-      typeof run.wireGauge === 'string' ? (run.wireGauge as WireGauge) : '12'
+    const wireGauge: WireGauge = clampToBranchWireGauge(
+      typeof run.wireGauge === 'string' ? run.wireGauge : undefined,
+      '12',
+    )
     const material: ConductorMaterial = run.conductorMaterial === 'al' ? 'al' : 'cu'
     const insulationRating: InsulationRating =
       run.insulationRating === '60C' || run.insulationRating === '75C'
@@ -1087,7 +1136,7 @@ export function auditSceneElectrical(
         suggestedFix: 'Switch racewayType to "emt", "mc", or "rmc".',
       })
     } else if (racewayType === 'nm-b' && path.some((pt) => pt[1] < -0.05)) {
-      const runCavities = extractRoutingCavities(nodes, runLevelId)
+      const runCavities = getCavitiesForLevel(runLevelId)
       if (runCavities.crawlSpaceWet) {
         push({
           severity: 'error',
@@ -1226,7 +1275,7 @@ export function auditSceneElectrical(
   const warningCount = findings.filter((f) => f.severity === 'warning').length
   const infoCount = findings.filter((f) => f.severity === 'info').length
 
-  return {
+  const report: NecSceneAuditReport = {
     passed: errorCount === 0,
     errorCount,
     warningCount,
@@ -1237,4 +1286,6 @@ export function auditSceneElectrical(
     transformerCount: transformers.length,
     findings,
   }
+  auditSceneCache.set(nodes as object, report)
+  return report
 }

@@ -1494,6 +1494,7 @@ export function routeElectricalRun(
     initialPath: Vec3[],
     detourMinY: number,
     detourMaxY: number,
+    lockTerminalWallRisers = false,
   ): { path: Vec3[]; score: number; clashes: TradeClashFinding[] } => {
     let cur = initialPath
     let curEval = scorePath(cur)
@@ -1505,6 +1506,11 @@ export function routeElectricalRun(
       if (!obs) break
 
       const segIdx = firstClash.segmentIndex
+      // R6-BUG-04: On attic/crawlspace cavity candidates, never laterally kick the first or last
+      // vertical wall-cavity riser out of its stud bay into open room air.
+      if (lockTerminalWallRisers && (segIdx === 0 || segIdx === cur.length - 2)) {
+        break
+      }
       const segA = cur[segIdx]!
       const segB = cur[segIdx + 1]!
       const margin = Math.max(obs.requiredClearanceM, clearanceM) + conduitRadiusM
@@ -1586,7 +1592,7 @@ export function routeElectricalRun(
       const atticY = cavities.atticY ?? round3((wallCeilingH > 0 ? wallCeilingH : 2.5) + 0.12)
       const rawAttic = buildCavityEuclideanPath(start, end, atticY, walls, wallPlacement)
       if (rawAttic) {
-        const atticDetour = resolveDetours(rawAttic, Math.max(minY, atticY - 0.1), atticY + 0.55)
+        const atticDetour = resolveDetours(rawAttic, Math.max(minY, atticY - 0.1), atticY + 0.55, true)
         const resolvesClash = atticDetour.clashes.length < manhattanClashes
         const strictlyShorter =
           atticDetour.clashes.length <= manhattanClashes &&
@@ -1609,7 +1615,7 @@ export function routeElectricalRun(
       const crawlY = cavities.crawlSpaceY ?? -0.18
       const rawCrawl = buildCavityEuclideanPath(start, end, crawlY, walls, wallPlacement)
       if (rawCrawl) {
-        const crawlDetour = resolveDetours(rawCrawl, crawlY - 0.45, Math.min(-0.04, crawlY + 0.12))
+        const crawlDetour = resolveDetours(rawCrawl, crawlY - 0.45, Math.min(-0.04, crawlY + 0.12), true)
         const resolvesClash = crawlDetour.clashes.length < manhattanClashes
         const strictlyShorter =
           crawlDetour.clashes.length <= manhattanClashes &&

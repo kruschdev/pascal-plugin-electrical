@@ -447,13 +447,16 @@ export function polygonAreaSqM(polygon: ReadonlyArray<readonly [number, number]>
   return Math.abs(sum) / 2
 }
 
-/** Derive conditioned floor area (sq ft) from Pascal `zone` nodes (excluding outdoor zones). */
+const OUTDOOR_ZONE_PATTERN = /outdoor|patio|deck|porch|balcony|rooftop|exterior|yard|terrace/i
+
+/** Derive conditioned floor area (sq ft) from Pascal `zone` nodes (excluding outdoor/porch/balcony zones per NEC 220.14(J)). */
 export function estimateSceneFloorAreaSqFt(nodes: Readonly<Record<string, SceneNodeLike>>): number {
   let totalSqM = 0
   for (const node of Object.values(nodes)) {
     if (node.type !== 'zone') continue
-    const category = typeof node.category === 'string' ? node.category.toLowerCase() : ''
-    if (category === 'outdoor' || category === 'patio' || category === 'deck' || category === 'yard') {
+    const category = typeof node.category === 'string' ? node.category : ''
+    const name = typeof node.name === 'string' ? node.name : ''
+    if (OUTDOOR_ZONE_PATTERN.test(`${category} ${name}`)) {
       continue
     }
     const poly = node.polygon

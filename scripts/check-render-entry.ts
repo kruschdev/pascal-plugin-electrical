@@ -45,11 +45,12 @@ async function checkForbidden(entry: string, pattern: RegExp): Promise<Hit[]> {
   return hits
 }
 
-const renderEntry = pkg.exports['./render'].default as string
-const cadEntry = pkg.exports['./cad'].default as string
-const agentToolsEntry = pkg.exports['./agent-tools'].default as string
-const necEntry = pkg.exports['./nec'].default as string
-const rootEntry = pkg.exports['.'].default as string
+const renderEntry = 'src/render.ts'
+const cadEntry = 'src/cad/index.ts'
+const agentToolsEntry = 'src/agent-tools.ts'
+const agentOperationsEntry = 'src/agent-operations.ts'
+const necEntry = 'src/nec/index.ts'
+const rootEntry = 'src/index.ts'
 
 const renderHits = await checkForbidden(renderEntry, /^(@pascal-app\/editor|next)(\/|$)/)
 if (renderHits.length > 0) {
@@ -75,6 +76,16 @@ if (agentToolsHits.length > 0) {
   process.exit(1)
 }
 
+const agentOperationsHits = await checkForbidden(
+  agentOperationsEntry,
+  /^(three|react|react-dom|@pascal-app\/viewer|@pascal-app\/editor|next)(\/|$)/,
+)
+if (agentOperationsHits.length > 0) {
+  console.error(`./agent-operations (${agentOperationsEntry}) violates headless MCP/runtime purity:`)
+  for (const hit of agentOperationsHits) console.error(`  ${hit.importer} -> ${hit.specifier}`)
+  process.exit(1)
+}
+
 const necHits = await checkForbidden(
   necEntry,
   /^(three|react|react-dom|@pascal-app\/|next)(\/|$)/,
@@ -92,5 +103,5 @@ if (!probeHits.some((hit) => hit.specifier.startsWith('@pascal-app/editor'))) {
 }
 
 console.log(
-  `Entry boundary gates PASSED: ./render editor-free, ./cad editor-free, ./agent-tools Zod-pure, ./nec framework-free (negative probe caught ${probeHits.length} editor import(s) from root).`,
+  `Entry boundary gates PASSED (5/5): ./render editor-free, ./cad editor-free, ./agent-tools Zod-pure, ./agent-operations headless-pure, ./nec framework-free (negative probe caught ${probeHits.length} editor import(s) from root).`,
 )

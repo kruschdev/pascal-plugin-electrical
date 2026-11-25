@@ -42,6 +42,7 @@ import {
   type VoltageSystem,
   WIRE_GAUGE_ORDER,
   type WireGauge,
+  clampToBranchWireGauge,
   getVoltageLineToLine,
   getVoltageLineToNeutral,
   isThreePhaseSystem,
@@ -227,9 +228,35 @@ export const electricalAgentOperations = {
     const deviceKind = input.deviceKind ?? 'duplex'
     const occupancy: OccupancyType = input.occupancy ?? 'residential'
     const name = input.name ?? deviceKind
-    const initialBreakerAmps = input.breakerAmps ?? 20
+    const defaultBreakerForKind =
+      deviceKind === 'smoke-co' ||
+      deviceKind === 'luminaire' ||
+      deviceKind === 'switch-1p' ||
+      deviceKind === 'switch-3way' ||
+      deviceKind === 'dimmer' ||
+      deviceKind === 'ceiling-fan' ||
+      deviceKind === 'under-cabinet-led'
+        ? occupancy === 'commercial'
+          ? 20
+          : 15
+        : 20
+    const defaultLoadVaForKind =
+      deviceKind === 'smoke-co'
+        ? 25
+        : deviceKind === 'switch-1p' || deviceKind === 'switch-3way' || deviceKind === 'dimmer' || deviceKind === 'junction-box'
+          ? 0
+          : deviceKind === 'luminaire'
+            ? occupancy === 'commercial'
+              ? 120
+              : 60
+            : deviceKind === 'ceiling-fan'
+              ? 120
+              : 180
+    const initialBreakerAmps = input.breakerAmps ?? defaultBreakerForKind
     const poles: 1 | 2 | 3 = input.poles ?? 1
-    const loadVa = input.loadVa ?? 180
+    const loadVa = input.loadVa ?? defaultLoadVaForKind
+    const defaultAfciForKind =
+      deviceKind === 'afci' || (occupancy === 'residential' && deviceKind === 'smoke-co')
     const continuous = input.continuous ?? false
     const nominalVoltage = poles === 1 ? 120 : 240
     const actualLoadAmps =
@@ -291,9 +318,9 @@ export const electricalAgentOperations = {
             loadVa,
             continuous,
             gfciProtected: input.gfciProtected ?? (deviceKind === 'gfci' || deviceKind === 'weatherproof-gfci'),
-            afciProtected: input.afciProtected ?? deviceKind === 'afci',
+            afciProtected: input.afciProtected ?? defaultAfciForKind,
             boxType: (input.boxType ?? autoBoxType) as import('./nec/tables').BoxType,
-            wireGauge: (input.wireGauge ?? autoWireGauge) as WireGauge,
+            wireGauge: clampToBranchWireGauge(input.wireGauge ?? autoWireGauge),
             conductorCount: initialConductorCount,
           },
           { levelId: parentId },
@@ -303,13 +330,15 @@ export const electricalAgentOperations = {
     const finalPanelId = autoConn?.panelId ?? input.panelId
     const finalCircuitNumber = autoConn?.circuitNumber ?? input.circuitNumber ?? 1
     const finalBreakerAmps = autoConn?.breakerAmps ?? initialBreakerAmps
-    const finalWireGauge = (input.wireGauge ?? autoConn?.wireGauge ?? autoWireGauge) as WireGauge
+    const finalWireGauge = clampToBranchWireGauge(
+      autoConn?.wireGauge ?? input.wireGauge ?? autoWireGauge,
+    )
     const finalBoxType = input.boxType ?? autoConn?.boxType ?? autoBoxType
     const finalConductorCount = input.conductorCount ?? autoConn?.conductorCount ?? initialConductorCount
     const finalGfciProtected = autoConn
       ? autoConn.gfciProtected
       : (input.gfciProtected ?? (deviceKind === 'gfci' || deviceKind === 'weatherproof-gfci'))
-    const finalAfciProtected = autoConn ? autoConn.afciProtected : (input.afciProtected ?? deviceKind === 'afci')
+    const finalAfciProtected = autoConn ? autoConn.afciProtected : (input.afciProtected ?? defaultAfciForKind)
 
     const node = {
       object: 'node',

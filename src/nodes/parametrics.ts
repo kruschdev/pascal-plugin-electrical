@@ -45,7 +45,7 @@ export const electricalPanelParametrics: ParametricDescriptor<ElectricalPanelNod
     {
       label: 'NEC 110.26 Clearance & Busbar Preview',
       fields: [
-        { key: 'coverRemoved', kind: 'boolean', label: 'Expose Busbars (3D)' },
+        { key: 'coverRemoved', kind: 'boolean', label: 'Expose Interior Busbars' },
         { key: 'showClearanceZone', kind: 'boolean' },
         { key: 'nemaRating', kind: 'enum', options: ['NEMA-1', 'NEMA-3R', 'NEMA-4X'] },
       ],

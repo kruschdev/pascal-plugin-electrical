@@ -47,6 +47,7 @@ import {
   type VoltageSystem,
   WIRE_GAUGE_ORDER,
   type WireGauge,
+  clampToBranchWireGauge,
   getVoltageLineToLine,
   getVoltageLineToNeutral,
   isThreePhaseSystem,
@@ -282,7 +283,9 @@ function dist3D(a: Vec3, b: Vec3): number {
 }
 
 function largerGauge(a: WireGauge, b: WireGauge): WireGauge {
-  return WIRE_GAUGE_ORDER.indexOf(a) >= WIRE_GAUGE_ORDER.indexOf(b) ? a : b
+  const safeA = clampToBranchWireGauge(a)
+  const safeB = clampToBranchWireGauge(b)
+  return WIRE_GAUGE_ORDER.indexOf(safeA) >= WIRE_GAUGE_ORDER.indexOf(safeB) ? safeA : safeB
 }
 
 function round3(n: number): number {
@@ -2185,6 +2188,7 @@ export function planDeviceAutoConnection(
   const levelId = options.levelId ?? all.find((n) => n.type === 'level')?.id ?? null
   const panelNode =
     (draft.panelId ? nodes[draft.panelId] : undefined) ??
+    all.find((n) => n.type === 'electrical:panel' && belongsToLevel(nodes, n, levelId)) ??
     all.find((n) => n.type === 'electrical:panel')
 
   if (!panelNode || panelNode.type !== 'electrical:panel') {
@@ -2208,8 +2212,9 @@ export function planDeviceAutoConnection(
       panelId: null,
       circuitNumber: draft.circuitNumber ?? 1,
       breakerAmps: draft.breakerAmps,
-      wireGauge: draft.wireGauge,
-      gfciProtected: draft.gfciProtected || isWet,
+      wireGauge: clampToBranchWireGauge(draft.wireGauge),
+      gfciProtected:
+        draft.deviceKind === 'smoke-co' ? Boolean(draft.gfciProtected) : draft.gfciProtected || isWet,
       afciProtected: draft.afciProtected || isAfci,
       boxType: draft.boxType,
       conductorCount: draft.conductorCount,
@@ -2319,6 +2324,8 @@ export function planDeviceAutoConnection(
   if (!isDedicated) {
     const candidates: Array<{ dev: SceneNodeLike; dist: number; ckt: number; priority: number }> = []
     for (const d of panelDevices) {
+      // R6-BUG-01: Never bridge level-local [x,y,z] coordinates across different building floors!
+      if (!belongsToLevel(nodes, d, levelId)) continue
       if (!Array.isArray(d.position) || d.position.length < 3) continue
       const dCkt = typeof d.circuitNumber === 'number' && d.circuitNumber >= 1 ? Math.floor(d.circuitNumber) : 0
       if (dCkt <= 0) continue
@@ -2598,7 +2605,10 @@ export function planDeviceAutoConnection(
     circuitNumber: ckt,
     breakerAmps,
     wireGauge,
-    gfciProtected: draft.gfciProtected || targetIsWet,
+    gfciProtected:
+      draft.deviceKind === 'smoke-co'
+        ? Boolean(draft.gfciProtected)
+        : draft.gfciProtected || targetIsWet,
     afciProtected: draft.afciProtected || targetIsAfci,
     boxType: newBoxType,
     conductorCount: newConductorCount,

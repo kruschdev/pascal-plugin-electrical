@@ -1017,13 +1017,20 @@ function buildFilletedCurvePath(rawPoints: Vector3[], bendRadius: number): Curve
 
 export function buildConduitRunCad(
   node: ConduitRunCadInput,
-  mats = createCadMaterialPool(),
+  mats?: CadMaterialPool,
 ): Group {
   const group = new Group()
   group.name = `electrical-conduit-${node.id}`
 
   const pts = dedupeConsecutivePoints(node.path.map((p) => new Vector3(p[0], p[1], p[2])))
   if (pts.length < 2) return group
+
+  // R6-OPT-01: Lazily instantiate the 21-material pool only when actually needed (skips allocation entirely for NM-B runs)
+  let pool = mats
+  const getMats = (): CadMaterialPool => {
+    if (!pool) pool = createCadMaterialPool()
+    return pool
+  }
 
   const outerDiam =
     node.racewayType === 'nm-b'
@@ -1046,7 +1053,7 @@ export function buildConduitRunCad(
       roughness: node.racewayType === 'nm-b' ? 0.42 : 0.32,
     })
   } else if (node.voltage >= 277) {
-    runMat = mats.accentRed
+    runMat = getMats().accentRed
   } else if (node.racewayType === 'nm-b') {
     runMat = new MeshStandardMaterial({
       color: nmbJacketColor(node.wireGauge),
@@ -1054,11 +1061,11 @@ export function buildConduitRunCad(
       roughness: 0.62,
     })
   } else if (node.racewayType === 'pvc-40') {
-    runMat = mats.pvcGray
+    runMat = getMats().pvcGray
   } else if (node.racewayType === 'mc') {
-    runMat = mats.castAluminum
+    runMat = getMats().castAluminum
   } else {
-    runMat = mats.galvanizedSteel
+    runMat = getMats().galvanizedSteel
   }
 
   const curve = buildFilletedCurvePath(pts, bendRadius)
@@ -1072,6 +1079,7 @@ export function buildConduitRunCad(
 
   // Add set-screw box connectors at start/end and 10 ft couplings + 8 ft support straps for rigid/EMT/PVC raceways
   if (node.racewayType === 'emt' || node.racewayType === 'rmc' || node.racewayType === 'pvc-40') {
+    const m = getMats()
     const couplingGeo = new CylinderGeometry(radius * 1.24, radius * 1.24, Math.max(0.045, outerDiam * 1.8), 12)
     const strapGeo = new CylinderGeometry(radius * 1.32, radius * 1.32, 0.018, 12)
 
@@ -1085,13 +1093,13 @@ export function buildConduitRunCad(
 
       // Box connectors at start & end terminals
       if (i === 0) {
-        const startConn = new Mesh(couplingGeo, mats.castAluminum)
+        const startConn = new Mesh(couplingGeo, m.castAluminum)
         startConn.position.copy(a).addScaledVector(dir, 0.025)
         startConn.quaternion.setFromUnitVectors(UP, dir)
         group.add(startConn)
       }
       if (i === pts.length - 2) {
-        const endConn = new Mesh(couplingGeo, mats.castAluminum)
+        const endConn = new Mesh(couplingGeo, m.castAluminum)
         endConn.position.copy(b).addScaledVector(dir, -0.025)
         endConn.quaternion.setFromUnitVectors(UP, dir)
         group.add(endConn)
@@ -1099,7 +1107,7 @@ export function buildConduitRunCad(
 
       // 10 ft (3.048 m) stick couplings
       for (let dist = 3.048; dist < segLen - 0.2; dist += 3.048) {
-        const cpl = new Mesh(couplingGeo, mats.castAluminum)
+        const cpl = new Mesh(couplingGeo, m.castAluminum)
         cpl.position.copy(a).addScaledVector(dir, dist)
         cpl.quaternion.setFromUnitVectors(UP, dir)
         group.add(cpl)
@@ -1107,7 +1115,7 @@ export function buildConduitRunCad(
 
       // 1-hole support straps every 2.44 m (8 ft, compliant with NEC 358.30 <= 10 ft)
       for (let dist = 1.2; dist < segLen - 0.35; dist += 2.44) {
-        const strap = new Mesh(strapGeo, mats.darkSteel)
+        const strap = new Mesh(strapGeo, m.darkSteel)
         strap.position.copy(a).addScaledVector(dir, dist)
         strap.quaternion.setFromUnitVectors(UP, dir)
         group.add(strap)

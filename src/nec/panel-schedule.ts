@@ -25,7 +25,9 @@ import {
   type OccupancyType,
   type RacewayType,
   type VoltageSystem,
+  WIRE_GAUGE_ORDER,
   type WireGauge,
+  clampToBranchWireGauge,
   getVoltageLineToLine,
   getVoltageLineToNeutral,
   isThreePhaseSystem,
@@ -228,13 +230,33 @@ export function buildPanelSchedule(
 
   for (const [ckt, devs] of sortedCircuits) {
     const first = devs[0]!
-    const poles: 1 | 2 | 3 =
-      first.poles === 3 ? 3 : first.poles === 2 ? 2 : 1
-    const breakerAmps = typeof first.breakerAmps === 'number' ? first.breakerAmps : 20
-    const runMatch = panelRuns.find((r) => r.circuitNumber === ckt)
+    // R6-BUG-05: Aggregate across ALL devices sharing a circuit (never rely solely on devs[0])
+    const maxPoleNum = Math.max(
+      ...devs.map((d) => (d.poles === 3 ? 3 : d.poles === 2 ? 2 : 1)),
+    )
+    const poles: 1 | 2 | 3 = maxPoleNum === 3 ? 3 : maxPoleNum === 2 ? 2 : 1
+    const breakerAmps = Math.max(
+      ...devs.map((d) => (typeof d.breakerAmps === 'number' && d.breakerAmps > 0 ? d.breakerAmps : 20)),
+    )
+    const cktRuns = panelRuns.filter((r) => r.circuitNumber === ckt)
+    const allGauges: WireGauge[] = []
+    for (const r of cktRuns) {
+      if (typeof r.wireGauge === 'string') allGauges.push(clampToBranchWireGauge(r.wireGauge))
+    }
+    for (const d of devs) {
+      if (typeof d.wireGauge === 'string') allGauges.push(clampToBranchWireGauge(d.wireGauge))
+    }
+    // Use the smallest (most restrictive) conductor gauge on the circuit so thin wire is never masked
     const wireGauge: WireGauge =
-      (typeof runMatch?.wireGauge === 'string' ? (runMatch.wireGauge as WireGauge) : undefined) ??
-      (typeof first.wireGauge === 'string' ? (first.wireGauge as WireGauge) : breakerAmps <= 15 ? '14' : breakerAmps <= 20 ? '12' : '10')
+      allGauges.length > 0
+        ? allGauges.reduce((minG, g) =>
+            WIRE_GAUGE_ORDER.indexOf(g) < WIRE_GAUGE_ORDER.indexOf(minG) ? g : minG,
+          )
+        : breakerAmps <= 15
+          ? '14'
+          : breakerAmps <= 20
+            ? '12'
+            : '10'
 
     const totalVa = devs.reduce((sum, d) => sum + (typeof d.loadVa === 'number' ? d.loadVa : 180), 0)
     const continuous = devs.some((d) => d.continuous === true)
@@ -495,6 +517,11 @@ export function buildElectricalTakeoff(
   }
 
   const seenCircuitBreakers = new Set<string>()
+  // R6-BUG-05: Aggregate breaker specs across ALL devices sharing (panelId, circuitNumber)
+  const circuitBreakerMap = new Map<
+    string,
+    { poles: 1 | 2 | 3; amps: number; afci: boolean; gfci: boolean }
+  >()
   for (const dev of devices) {
     const dKind = typeof dev.deviceKind === 'string' ? dev.deviceKind : 'duplex'
     if (usesSeparateRoughInBox(dKind)) {
@@ -507,23 +534,32 @@ export function buildElectricalTakeoff(
     devicesByKind[dKey] = { count: (prev?.count ?? 0) + 1, occupancy: occ }
 
     const panelId = typeof dev.panelId === 'string' ? dev.panelId : 'unassigned'
-    const ckt = typeof dev.circuitNumber === 'number' ? dev.circuitNumber : 0
-    const bKey = `${panelId}:${ckt}`
-    if (ckt > 0 && !seenCircuitBreakers.has(bKey)) {
-      seenCircuitBreakers.add(bKey)
-      const poles = dev.poles === 3 ? 3 : dev.poles === 2 ? 2 : 1
-      const amps = typeof dev.breakerAmps === 'number' ? dev.breakerAmps : 20
-      const prot = [
-        dev.afciProtected || dev.deviceKind === 'afci' ? 'AFCI' : '',
-        dev.gfciProtected || dev.deviceKind === 'gfci' || dev.deviceKind === 'weatherproof-gfci'
-          ? 'GFCI'
-          : '',
-      ]
-        .filter(Boolean)
-        .join('/')
-      const spec = `${poles}P-${amps}A${prot ? ` ${prot}` : ''}`
-      breakersBySpec[spec] = (breakersBySpec[spec] ?? 0) + 1
+    const ckt = typeof dev.circuitNumber === 'number' ? Math.floor(dev.circuitNumber) : 0
+    if (ckt > 0) {
+      const bKey = `${panelId}:${ckt}`
+      const devPoles: 1 | 2 | 3 = dev.poles === 3 ? 3 : dev.poles === 2 ? 2 : 1
+      const devAmps = typeof dev.breakerAmps === 'number' && dev.breakerAmps > 0 ? dev.breakerAmps : 20
+      const devAfci = dev.afciProtected === true || dev.deviceKind === 'afci'
+      const devGfci =
+        dev.gfciProtected === true ||
+        dev.deviceKind === 'gfci' ||
+        dev.deviceKind === 'weatherproof-gfci'
+      const cur = circuitBreakerMap.get(bKey)
+      if (!cur) {
+        circuitBreakerMap.set(bKey, { poles: devPoles, amps: devAmps, afci: devAfci, gfci: devGfci })
+      } else {
+        const nextPoles = Math.max(cur.poles, devPoles)
+        cur.poles = nextPoles === 3 ? 3 : nextPoles === 2 ? 2 : 1
+        cur.amps = Math.max(cur.amps, devAmps)
+        cur.afci = cur.afci || devAfci
+        cur.gfci = cur.gfci || devGfci
+      }
     }
+  }
+  for (const b of circuitBreakerMap.values()) {
+    const prot = [b.afci ? 'AFCI' : '', b.gfci ? 'GFCI' : ''].filter(Boolean).join('/')
+    const spec = `${b.poles}P-${b.amps}A${prot ? ` ${prot}` : ''}`
+    breakersBySpec[spec] = (breakersBySpec[spec] ?? 0) + 1
   }
 
   const wireByGauge: ElectricalTakeoff['wireByGauge'] = {}

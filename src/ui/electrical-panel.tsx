@@ -203,7 +203,8 @@ export default function ElectricalRailPanel() {
       setStatusMsg('Create a building level first before placing electrical equipment.')
       return
     }
-    const primaryPanel = panels[0]
+    const primaryPanel =
+      panels.find((p) => belongsToLevel(record, p, levelId)) ?? panels[0]
     const idx = devices.length + 1
     const catalogSpec = CATALOG_QUICK_ITEMS.find((item) => item.kind === deviceKind)
     const isHeavy = deviceKind === 'evse' || deviceKind === 'motor-load'
@@ -320,7 +321,8 @@ export default function ElectricalRailPanel() {
       setStatusMsg('Create a building level first before routing circuits.')
       return
     }
-    const primaryPanel = panels[0]
+    const primaryPanel =
+      panels.find((p) => belongsToLevel(record, p, levelId)) ?? panels[0]
     if (!primaryPanel) {
       setStatusMsg('Place an electrical panel first before routing circuits.')
       return

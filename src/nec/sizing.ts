@@ -24,6 +24,7 @@ import {
   STANDARD_BOX_VOLUMES_CUIN,
   WIRE_GAUGE_ORDER,
   type WireGauge,
+  clampToBranchWireGauge,
   getBundlingAdjustmentFactor,
   nextStandardOcpd,
   round2,
@@ -87,7 +88,8 @@ export function calculateDeratedAmpacity(input: AmpacityInput): AmpacityResult {
   const loadAmps = Math.max(0, input.loadAmps ?? 0)
   const requiredAmpacity = round2(input.continuousLoad ? loadAmps * 1.25 : loadAmps)
 
-  const row = AMPACITY_TABLE_310_16[material][input.wireGauge]
+  const safeGauge = clampToBranchWireGauge(input.wireGauge)
+  const row = AMPACITY_TABLE_310_16[material][safeGauge]
   const baseAmpacity = row[insulationRating]
   const terminalCap = row[terminalRating]
   const tempFactor = getAmbientTempFactor(effectiveAmbientTempC, insulationRating)
@@ -95,7 +97,7 @@ export function calculateDeratedAmpacity(input: AmpacityInput): AmpacityResult {
   const derated = round2(baseAmpacity * tempFactor * bundlingFactor)
   const finalAllowable = round2(Math.min(derated, terminalCap))
 
-  const smallCap = SMALL_CONDUCTOR_OCPD_MAX[material][input.wireGauge]
+  const smallCap = SMALL_CONDUCTOR_OCPD_MAX[material][safeGauge]
   let maxBreaker = smallCap !== undefined ? Math.min(smallCap, Math.floor(finalAllowable)) : 0
   let smallConductorCapApplied = false
   if (smallCap !== undefined) {
@@ -232,7 +234,7 @@ export function calculateConduitFill(input: ConduitFillInput): ConduitFillResult
   const totalConductorCount = input.conductors.reduce((sum, c) => sum + Math.max(0, c.count), 0)
   const conductorAreaSqIn = round2(
     input.conductors.reduce(
-      (sum, c) => sum + Math.max(0, c.count) * CONDUCTOR_SPECS[c.gauge].thhnAreaSqIn,
+      (sum, c) => sum + Math.max(0, c.count) * CONDUCTOR_SPECS[clampToBranchWireGauge(c.gauge)].thhnAreaSqIn,
       0,
     ) * 100,
   ) / 100
@@ -407,14 +409,14 @@ export function calculateVoltageDrop(input: VoltageDropInput): VoltageDropResult
   const kFactor = input.phases === 3 ? Math.sqrt(3) : 2
 
   const computeDropFor = (gauge: WireGauge): { volts: number; pct: number } => {
-    const spec = CONDUCTOR_SPECS[gauge]
+    const spec = CONDUCTOR_SPECS[clampToBranchWireGauge(gauge)]
     const rPerKft = material === 'cu' ? spec.ohmsPerKftCu : spec.ohmsPerKftAl
     const volts = (kFactor * rPerKft * input.loadAmps * input.oneWayLengthFt) / 1000
     const pct = input.voltage > 0 ? (volts / input.voltage) * 100 : 0
     return { volts: round2(volts), pct: round2(pct) }
   }
 
-  const current = computeDropFor(input.wireGauge)
+  const current = computeDropFor(clampToBranchWireGauge(input.wireGauge))
   let recommendedGauge: WireGauge = '750kcmil'
   for (const gauge of WIRE_GAUGE_ORDER) {
     if (material === 'al' && gauge === '14') continue

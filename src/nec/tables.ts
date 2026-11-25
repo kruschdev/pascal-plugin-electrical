@@ -485,11 +485,19 @@ export function usesSeparateRoughInBox(deviceKind: string): boolean {
 }
 
 const BOX_FILL_GAUGE_SET = new Set<string>(['18', '16', '14', '12', '10', '8', '6'])
+const BRANCH_WIRE_GAUGE_SET = new Set<string>(WIRE_GAUGE_ORDER)
+
+/** Clamp fixture/untyped wire gauges ('18', '16', or unknown) to a valid NEC Table 310.16 branch gauge (>= '#14'). */
+export function clampToBranchWireGauge(gauge: string | undefined, fallback: WireGauge = '14'): WireGauge {
+  if (gauge && BRANCH_WIRE_GAUGE_SET.has(gauge)) return gauge as WireGauge
+  if (gauge === '18' || gauge === '16') return '14'
+  return fallback
+}
 
 /** Clamp feeder gauges (#4..750kcmil) to a valid NEC Table 314.16(B) box-fill gauge ('6'). */
 export function clampToBoxFillGauge(gauge: string | undefined): BoxFillGauge {
   if (gauge && BOX_FILL_GAUGE_SET.has(gauge)) return gauge as BoxFillGauge
-  if (gauge && (WIRE_GAUGE_ORDER as readonly string[]).includes(gauge)) return '6'
+  if (gauge && BRANCH_WIRE_GAUGE_SET.has(gauge)) return '6'
   return '12'
 }
 

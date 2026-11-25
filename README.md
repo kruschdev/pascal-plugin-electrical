@@ -107,7 +107,7 @@ setPluginDiscovery(async () => [electricalRenderPlugin])
 
 ```bash
 bun install
-bun run check              # tsc --noEmit + bun test src (58/58 tests) + all 4 boundary gates
+bun run check              # tsc --noEmit + bun test src (64/64 tests) + 5/5 boundary gates + dist build
 bun run export:cad         # Regenerate all 50 binary .glb models in assets/cad/
 bun scripts/render-cad-thumbnails.ts # Re-render all 50 thumbnails + 5x10 contact sheet
 bun run render:walkthrough # Re-render assets/demo-walkthrough.mp4 and .gif
