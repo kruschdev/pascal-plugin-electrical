@@ -27,11 +27,13 @@ import type { SceneNodeLike } from './load-calc'
 import { findNextFreePanelCircuit } from './panel-schedule'
 import {
   belongsToLevel,
+  extractRoutingCavities,
   extractRoutingWalls,
   extractTradeObstacles,
   polylineLengthM,
   resolveLevelHeightM,
   routeElectricalRun,
+  type RoutingMode,
   type Vec3,
 } from './routing'
 import { calculateBoxFill, calculateConduitFill, calculateVoltageDrop, recommendWireGauge } from './sizing'
@@ -61,6 +63,7 @@ export type AutoPopulateOptions = {
   includeLighting?: boolean
   includeSmokeAlarms?: boolean
   includeWiring?: boolean
+  routingStrategy?: 'auto' | 'wall-only'
 }
 
 export type PlannedDeviceSpec = {
@@ -115,6 +118,8 @@ export type PlannedRunSpec = {
   phases: 1 | 3
   path: Vec3[]
   avoidedObstaclesCount: number
+  routingMode?: RoutingMode
+  necNotes?: string[]
 }
 
 export type AutoPopulatePlan = {
@@ -494,6 +499,8 @@ export function planNecAutoPopulate(
   const zones = extractZones(nodes, levelId)
   const walls = extractWalls(nodes, levelId)
   const routingWalls = extractRoutingWalls(nodes, levelId)
+  const cavities = extractRoutingCavities(nodes, levelId)
+  const routingStrategy = options.routingStrategy ?? 'auto'
   const stairs = all.filter(
     (n) => n.type === 'stair' && belongsToLevel(nodes, n, levelId),
   )
@@ -1593,6 +1600,10 @@ export function planNecAutoPopulate(
             preferredChaseY: effectiveChaseY,
             clearanceM: 0.05,
             walls: routingWalls,
+            racewayType,
+            wireGauge: circuitWireGauge,
+            cavities,
+            routingStrategy,
           })
         : null
     const hopRoutes: Array<ReturnType<typeof routeElectricalRun>> = []
@@ -1605,6 +1616,10 @@ export function planNecAutoPopulate(
             preferredChaseY: effectiveChaseY,
             clearanceM: 0.05,
             walls: routingWalls,
+            racewayType,
+            wireGauge: circuitWireGauge,
+            cavities,
+            routingStrategy,
           }),
         )
       }
@@ -1739,6 +1754,8 @@ export function planNecAutoPopulate(
         phases,
         path: hrRoute.path,
         avoidedObstaclesCount: hrRoute.avoidedObstacles.length,
+        routingMode: hrRoute.routingMode,
+        necNotes: hrRoute.necNotes,
       })
       homeRunCount = 1
 
@@ -1773,6 +1790,8 @@ export function planNecAutoPopulate(
           phases,
           path: hopRoute.path,
           avoidedObstaclesCount: hopRoute.avoidedObstacles.length,
+          routingMode: hopRoute.routingMode,
+          necNotes: hopRoute.necNotes,
         })
         daisyChainCount += 1
       }
@@ -2204,6 +2223,7 @@ export function planDeviceAutoConnection(
 
   const zones = extractZones(nodes, levelId)
   const routingWalls = extractRoutingWalls(nodes, levelId)
+  const cavities = extractRoutingCavities(nodes, levelId)
   const obstacles = extractTradeObstacles(nodes, levelId)
   const levelHeight = resolveLevelHeightM(nodes, levelId)
   const effectiveChaseY = round3(Math.min(options.preferredChaseY ?? 2.55, levelHeight - 0.06))
@@ -2369,6 +2389,9 @@ export function planDeviceAutoConnection(
       preferredChaseY: effectiveChaseY,
       clearanceM: 0.05,
       walls: routingWalls,
+      racewayType,
+      wireGauge: baseWireGauge,
+      cavities,
     })
 
     // Check NEC 210.19(A) branch voltage drop across existing circuit upstream run + new daisy-chain hop
@@ -2510,6 +2533,9 @@ export function planDeviceAutoConnection(
     preferredChaseY: effectiveChaseY,
     clearanceM: 0.05,
     walls: routingWalls,
+    racewayType,
+    wireGauge: breakerAmps >= 20 ? '12' : '14',
+    cavities,
   })
 
   const ccc = draft.poles === 3 ? 3 : 2

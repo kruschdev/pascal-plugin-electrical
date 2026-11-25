@@ -45,7 +45,12 @@ Every subpath export in [`package.json`](../package.json) is enforced on every c
 
 Electrical runs never relocate structural or gravity-bound trades. `extractTradeObstacles` reads every Pascal `beam`, `column`, `stair`, `pipe-segment`, `pipe-fitting`, `pipe-trap`, `liquid-line`, `duct-segment`, `duct-fitting`, `duct-terminal`, `hvac-equipment`, and `lineset` node into 3D bounding volumes with configurable clearance margins.
 
-`routeElectricalRun` computes an orthogonal 3D path from panel lug to device box along the ceiling chase (`preferredChaseY`), detects segment intersections against higher-priority obstacles, applies minimum-clearance vertical or lateral detours, deduplicates coincident vertices, counts cumulative bend angles (`countPathBendDegrees`) against the **NEC 358.26 360-degree pull-point limit**, and feeds the exact detoured 3D length straight into **Voltage Drop** (`calculateVoltageDrop`) and **Material Takeoff** (`buildElectricalTakeoff`).
+`routeElectricalRun` evaluates three code-compliant 3D routing families using `extractRoutingCavities` (inspecting Pascal `roof`, `ceiling`, raised `slab`, and lower `crawlspace`/`basement` levels):
+1. **Wall-Cavity Manhattan**: Orthogonal stud chases and Dijkstra wall-top-plate runs around wall corners (always used on slab-on-grade flat-roof builds and for all rigid `EMT`/`RMC`/`PVC-40` conduit per `NEC 110.12 / 358.30`).
+2. **Hybrid Wall-to-Attic Euclidean (`NEC 334.23 / 320.23`)**: Vertical stud-bay riser through bored top plates into a straight Euclidean attic crossing whenever shorter and clash-free for `NM-B`/`MC`.
+3. **Hybrid Wall-to-Crawl-Space Euclidean (`NEC 334.15(C) / 334.12(B)(4)`)**: Vertical stud-bay drop through sole plates into dry floor-joist cavities for low wall outlets (automatically blocked for `NM-B` in wet/damp crawl spaces).
+
+Every candidate detects segment intersections against higher-priority obstacles (including diagonal over/under detours in attics and crawl spaces), deduplicates coincident vertices, counts cumulative bend angles (`countPathBendDegrees`) against the **NEC 358.26 360-degree pull-point limit**, and feeds the exact routed 3D length straight into **Voltage Drop** (`calculateVoltageDrop`) and **Material Takeoff** (`buildElectricalTakeoff`).
 
 ## Decoupled Framing Interop (`src/nec/framing-interop.ts`)
 

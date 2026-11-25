@@ -13,7 +13,13 @@
  */
 
 import type { SceneNodeLike } from './load-calc'
-import { INCHES_TO_METERS, METERS_TO_FEET, round2 } from './tables'
+import {
+  INCHES_TO_METERS,
+  METERS_TO_FEET,
+  type RacewayType,
+  type WireGauge,
+  round2,
+} from './tables'
 
 export type Vec3 = readonly [number, number, number]
 
@@ -63,6 +69,27 @@ export type RoutingWallSegment = {
   readonly doorSpans?: readonly (readonly [number, number])[]
 }
 
+export type RoutingCavityContext = {
+  /** Accessible attic or framed ceiling-joist cavity exists above the active level. */
+  readonly hasAttic: boolean
+  /** Accessible crawl space, unfinished basement, or raised pier-and-beam void exists below the active level. */
+  readonly hasCrawlSpace: boolean
+  /** True when the detected crawl space is flagged damp/wet (prohibits NM-B per NEC 334.12(B)(4)). */
+  readonly crawlSpaceWet: boolean
+  /** Level-local elevation (m) for horizontal Euclidean pulls inside the attic/ceiling cavity. */
+  readonly atticY: number
+  /** Level-local elevation (m, negative below finished floor) inside the floor-joist / crawl-space cavity. */
+  readonly crawlSpaceY: number
+  /** Human-readable provenance tags describing which scene nodes revealed accessible cavities. */
+  readonly sources: readonly string[]
+}
+
+export type RoutingMode =
+  | 'wall-manhattan'
+  | 'attic-euclidean'
+  | 'crawlspace-euclidean'
+  | 'open-manhattan'
+
 export type RouteElectricalOptions = {
   /** Preferred chase/ceiling routing elevation in level-local meters (default 2.55 m). */
   preferredChaseY?: number
@@ -83,6 +110,19 @@ export type RouteElectricalOptions = {
    * or surface-mounted on the exterior drywall face ('surface').
    */
   wallPlacement?: 'in-wall' | 'surface'
+  /** Raceway/cable method: flexible cable ('nm-b' | 'mc') can transition to Euclidean pulls inside attic/crawlspace cavities; rigid conduit ('emt' | 'pvc-40' | 'rmc') stays orthogonal per NEC 110.12 / 358.30. */
+  racewayType?: RacewayType
+  /** Conductor gauge (used for NEC 334.15(C) bored-joist / running-board rule in crawl spaces). */
+  wireGauge?: WireGauge
+  /** Detected or user-configured attic / crawl-space structural cavities. */
+  cavities?: Partial<RoutingCavityContext>
+  /**
+   * Routing geometry policy:
+   * - 'auto' (default): Manhattan inside wall cavities; automatically transitions to straight Euclidean pulls
+   *   inside an accessible attic or crawl space when shorter, zero-clash, and NEC-compliant.
+   * - 'wall-only': Force strictly wall-guided Manhattan geometry (never enter attic or crawl space).
+   */
+  routingStrategy?: 'auto' | 'wall-only'
 }
 
 export type ElectricalRouteResult = {
@@ -97,6 +137,8 @@ export type ElectricalRouteResult = {
   recommendedPullBoxAt: Vec3 | null
   avoidedObstacles: AvoidedObstacleRecord[]
   remainingClashes: TradeClashFinding[]
+  routingMode: RoutingMode
+  necNotes: string[]
 }
 
 const DEFAULT_CLEARANCE_M = 0.05 // ~2 inches
@@ -501,6 +543,127 @@ export function extractRoutingWalls(
     })
   }
   return walls
+}
+
+/**
+ * Inspect a Pascal scene graph to detect accessible overhead attic/joist cavities
+ * and under-floor crawl-space / unfinished-basement cavities for hybrid
+ * Wall-Manhattan <-> Cavity-Euclidean cable routing.
+ */
+export function extractRoutingCavities(
+  nodes: Readonly<Record<string, SceneNodeLike>>,
+  levelId?: string | null,
+): RoutingCavityContext {
+  const all = Object.values(nodes)
+  const levelHeight = resolveLevelHeightM(nodes, levelId)
+  const activeLevel =
+    (levelId ? nodes[levelId] : undefined) ?? all.find((n) => n.type === 'level')
+  const activeLevelId = activeLevel?.id ?? levelId ?? null
+  const activeLevelNum =
+    activeLevel && typeof activeLevel.level === 'number' ? activeLevel.level : 0
+
+  const levelNumById = new Map<string, number>()
+  for (const n of all) {
+    if (n.type === 'level') {
+      levelNumById.set(n.id, typeof n.level === 'number' ? n.level : 0)
+    }
+  }
+
+  let hasAttic = false
+  let hasCrawlSpace = false
+  let crawlSpaceWet = false
+  const sources: string[] = []
+  const addSource = (s: string) => {
+    if (!sources.includes(s)) sources.push(s)
+  }
+
+  const ATTIC_PATTERN = /\b(attic|plenum|truss|rafter)\b/i
+  const CRAWL_PATTERN = /\b(crawl\s*space|crawlspace|subfloor|underfloor|unfinished\s*basement|basement|cellar)\b/i
+  const WET_CRAWL_PATTERN = /\b(wet|damp|flood|moist|exposed\s*earth)\b/i
+
+  for (const n of all) {
+    const t = n.type
+    const nLevelId = resolveNodeLevelId(nodes, n)
+    const nLevelNum = nLevelId !== null ? (levelNumById.get(nLevelId) ?? 0) : activeLevelNum
+    const nameCat = `${typeof n.name === 'string' ? n.name : ''} ${typeof n.category === 'string' ? n.category : ''}`
+    const meta = (n.metadata && typeof n.metadata === 'object' ? n.metadata : {}) as Record<string, unknown>
+
+    // 1. Attic / overhead joist cavity detection
+    if (t === 'roof' || t === 'roof-segment') {
+      if (nLevelId === null || nLevelId === activeLevelId || nLevelNum >= activeLevelNum) {
+        hasAttic = true
+        addSource('roof')
+      }
+    } else if (t === 'level' && n.id !== activeLevelId) {
+      if (typeof n.level === 'number' && n.level === activeLevelNum + 1) {
+        hasAttic = true
+        addSource('upper-floor-joists')
+      }
+      if (
+        (typeof n.level === 'number' && n.level < activeLevelNum && CRAWL_PATTERN.test(nameCat)) ||
+        (n.level === undefined && CRAWL_PATTERN.test(nameCat))
+      ) {
+        hasCrawlSpace = true
+        addSource('lower-crawlspace-level')
+        if (WET_CRAWL_PATTERN.test(nameCat) || meta.wet === true || meta.damp === true) {
+          crawlSpaceWet = true
+        }
+      }
+    } else if (t === 'ceiling' && belongsToLevel(nodes, n, activeLevelId)) {
+      if (meta.hasAttic === true || meta.plenum === true || ATTIC_PATTERN.test(nameCat)) {
+        hasAttic = true
+        addSource('ceiling-plenum')
+      }
+    } else if (t === 'zone') {
+      if (ATTIC_PATTERN.test(nameCat) && nLevelNum >= activeLevelNum) {
+        hasAttic = true
+        addSource('attic-zone')
+      }
+      if (CRAWL_PATTERN.test(nameCat) && (nLevelId !== activeLevelId || /crawl\s*space|crawlspace|subfloor/i.test(nameCat))) {
+        hasCrawlSpace = true
+        addSource('crawlspace-zone')
+        if (WET_CRAWL_PATTERN.test(nameCat) || meta.wet === true || meta.damp === true) {
+          crawlSpaceWet = true
+        }
+      }
+    } else if (t === 'slab' && belongsToLevel(nodes, n, activeLevelId)) {
+      const elev = typeof n.elevation === 'number' ? n.elevation : 0
+      if (elev >= 0.35 || meta.crawlSpace === true) {
+        hasCrawlSpace = true
+        addSource('raised-slab')
+        if (meta.wet === true || meta.damp === true) crawlSpaceWet = true
+      }
+    }
+  }
+
+  // Also check if a lower level below activeLevelNum contains a crawlspace/basement/utility zone
+  if (!hasCrawlSpace) {
+    for (const n of all) {
+      if (n.type !== 'zone') continue
+      const nLevelId = resolveNodeLevelId(nodes, n)
+      if (!nLevelId || nLevelId === activeLevelId) continue
+      const nLevelNum = levelNumById.get(nLevelId) ?? 0
+      if (nLevelNum >= activeLevelNum) continue
+      const nameCat = `${typeof n.name === 'string' ? n.name : ''} ${typeof n.category === 'string' ? n.category : ''}`
+      if (CRAWL_PATTERN.test(nameCat) || /utility|mechanical/i.test(nameCat)) {
+        hasCrawlSpace = true
+        addSource('lower-level-utility')
+        const meta = (n.metadata && typeof n.metadata === 'object' ? n.metadata : {}) as Record<string, unknown>
+        if (WET_CRAWL_PATTERN.test(nameCat) || meta.wet === true || meta.damp === true) {
+          crawlSpaceWet = true
+        }
+      }
+    }
+  }
+
+  return {
+    hasAttic,
+    hasCrawlSpace,
+    crawlSpaceWet,
+    atticY: round3(levelHeight + 0.12),
+    crawlSpaceY: -0.18,
+    sources,
+  }
 }
 
 // ─── Polyline Geometry & Bend Math ──────────────────────────────────────────
@@ -1104,8 +1267,56 @@ function buildWallGuidedManhattanPath(
 }
 
 /**
- * Given a single axis-aligned segment [a, b] that hits obstacle `obs`, generate
- * clean orthogonal saddle/jog detours (over, under, left, right) around `obs`.
+ * Build a 3-phase hybrid Manhattan-in-wall <-> Euclidean-in-cavity cable path:
+ * 1. Vertical stud-bay transition inside the source wall (up through top plate to attic, or down through sole plate to crawl space)
+ * 2. Straight point-to-point Euclidean run across the concealed accessible cavity (`atticY` or `crawlSpaceY`)
+ * 3. Vertical stud-bay transition inside the destination wall into the target rough-in box.
+ *
+ * Returns `null` when both endpoints share the same wall with no intervening door (horizontal stud bore is strictly cleaner).
+ */
+function buildCavityEuclideanPath(
+  start: Vec3,
+  end: Vec3,
+  cavityY: number,
+  walls: readonly RoutingWallSegment[],
+  wallPlacement: 'in-wall' | 'surface' = 'in-wall',
+): Vec3[] | null {
+  if (walls.length === 0) return null
+  const sProj = projectPointToWalls(start[0], start[2], walls)
+  const eProj = projectPointToWalls(end[0], end[2], walls)
+  if (!sProj || !eProj) return null
+
+  const isStartWall = isEndpointWallMounted(start, sProj)
+  const isEndWall = isEndpointWallMounted(end, eProj)
+  const concealed = wallPlacement === 'in-wall'
+
+  // Same wall, same height band, no door between -> keep horizontal in-wall stud bore (never bore plates needlessly)
+  if (
+    isStartWall &&
+    isEndWall &&
+    sProj.wallIdx === eProj.wallIdx &&
+    Math.abs(start[1] - end[1]) < 0.25 &&
+    !hasInterveningDoor(sProj.wall, sProj.t, eProj.t)
+  ) {
+    return null
+  }
+
+  const startPt: Vec3 =
+    concealed && isStartWall ? [round3(sProj.x), start[1], round3(sProj.z)] : start
+  const endPt: Vec3 =
+    concealed && isEndWall ? [round3(eProj.x), end[1], round3(eProj.z)] : end
+
+  return simplifyOrthogonalPath([
+    startPt,
+    [round3(startPt[0]), round3(cavityY), round3(startPt[2])],
+    [round3(endPt[0]), round3(cavityY), round3(endPt[2])],
+    endPt,
+  ])
+}
+
+/**
+ * Given a single axis-aligned or horizontal-diagonal segment [a, b] that hits obstacle `obs`,
+ * generate clean saddle/jog detours (over, under, left, right) around `obs`.
  */
 function buildSegmentDetours(
   a: Vec3,
@@ -1119,6 +1330,29 @@ function buildSegmentDetours(
   const dy = Math.abs(b[1] - a[1])
   const dz = Math.abs(b[2] - a[2])
   const detours: Vec3[][] = []
+
+  // Horizontal diagonal segment (e.g. attic or crawl-space Euclidean cable pull):
+  // detour cleanly over/under in Y along the same XZ line, or step around obstacle corners in XZ.
+  if (dy < 0.02 && dx > 0.05 && dz > 0.05) {
+    const yOver = round3(expanded.max[1] + stepPad)
+    const yUnder = round3(expanded.min[1] - stepPad)
+    if (yOver <= maxY) {
+      detours.push([a, [a[0], yOver, a[2]], [b[0], yOver, b[2]], b])
+    }
+    if (yUnder >= minY) {
+      detours.push([a, [a[0], yUnder, a[2]], [b[0], yUnder, b[2]], b])
+    }
+    const corners: Array<[number, number]> = [
+      [round3(expanded.min[0] - stepPad), round3(expanded.min[2] - stepPad)],
+      [round3(expanded.max[0] + stepPad), round3(expanded.min[2] - stepPad)],
+      [round3(expanded.min[0] - stepPad), round3(expanded.max[2] + stepPad)],
+      [round3(expanded.max[0] + stepPad), round3(expanded.max[2] + stepPad)],
+    ]
+    for (const [cx, cz] of corners) {
+      detours.push([a, [cx, a[1], cz], b])
+    }
+    return detours.map((d) => simplifyOrthogonalPath(d))
+  }
 
   // Horizontal X-run: jog around in Y (over/under) or Z (sideways)
   if (dx >= dy && dx >= dz) {
@@ -1213,6 +1447,10 @@ export function routeElectricalRun(
       ? round3(Math.min(maxY, wallCeilingH - 0.04))
       : maxY
   const maxBendDegrees = options.maxBendDegrees ?? 360
+  const racewayType: RacewayType = options.racewayType ?? 'nm-b'
+  const wireGauge: WireGauge = options.wireGauge ?? '12'
+  const routingStrategy = options.routingStrategy ?? 'auto'
+  const isFlexibleCable = racewayType === 'nm-b' || racewayType === 'mc'
 
   // Baseline route (wall-guided Manhattan when building walls are supplied, else open Manhattan)
   const fallbackXZ = buildManhattanCandidate(start, end, preferredChaseY, 'xz')
@@ -1243,9 +1481,6 @@ export function routeElectricalRun(
         ]
   const candidateElevations = Array.from(new Set(rawCandidateElevations))
 
-  let bestPath: Vec3[] = baseline
-  let bestScore = Number.POSITIVE_INFINITY
-
   const scorePath = (p: Vec3[]): { score: number; clashes: TradeClashFinding[] } => {
     const clashes = detectRunTradeClashes(p, obstacles, clearanceM, conduitRadiusM)
     const len = polylineLengthM(p)
@@ -1255,7 +1490,56 @@ export function routeElectricalRun(
     return { score: clashes.length * 1000 + len + bendPenalty, clashes }
   }
 
-  // Step 1: Try clean wall-guided (or open) Manhattan candidates across chase elevations
+  const resolveDetours = (
+    initialPath: Vec3[],
+    detourMinY: number,
+    detourMaxY: number,
+  ): { path: Vec3[]; score: number; clashes: TradeClashFinding[] } => {
+    let cur = initialPath
+    let curEval = scorePath(cur)
+    const maxIterations = 8
+    for (let iter = 0; iter < maxIterations; iter++) {
+      if (curEval.clashes.length === 0) break
+      const firstClash = curEval.clashes[0]!
+      const obs = obstacles.find((o) => o.nodeId === firstClash.obstacleNodeId)
+      if (!obs) break
+
+      const segIdx = firstClash.segmentIndex
+      const segA = cur[segIdx]!
+      const segB = cur[segIdx + 1]!
+      const margin = Math.max(obs.requiredClearanceM, clearanceM) + conduitRadiusM
+      const expanded = expandAabb(obs.box, margin)
+      const detours = buildSegmentDetours(segA, segB, expanded, detourMinY, detourMaxY)
+
+      let improved = false
+      let localBest = cur
+      let localBestEval = curEval
+      for (const detour of detours) {
+        const spliced = simplifyOrthogonalPath([
+          ...cur.slice(0, segIdx),
+          ...detour,
+          ...cur.slice(segIdx + 2),
+        ])
+        const ev = scorePath(spliced)
+        if (ev.score < localBestEval.score) {
+          localBest = spliced
+          localBestEval = ev
+          improved = true
+        }
+      }
+      if (!improved) break
+      cur = localBest
+      curEval = localBestEval
+    }
+    return { path: cur, score: curEval.score, clashes: curEval.clashes }
+  }
+
+  let bestPath: Vec3[] = baseline
+  let bestScore = Number.POSITIVE_INFINITY
+  let bestMode: RoutingMode = walls ? 'wall-manhattan' : 'open-manhattan'
+  let bestNecNotes: string[] = []
+
+  // Step 1: Evaluate Wall-Guided (or Open) Manhattan candidates across chase elevations
   if (walls) {
     for (const y of candidateElevations) {
       const candidate =
@@ -1265,6 +1549,7 @@ export function routeElectricalRun(
       if (score < bestScore) {
         bestScore = score
         bestPath = candidate
+        bestMode = 'wall-manhattan'
       }
       if (clashes.length === 0 && y === preferredChaseY) break
     }
@@ -1276,53 +1561,73 @@ export function routeElectricalRun(
         if (score < bestScore) {
           bestScore = score
           bestPath = candidate
+          bestMode = 'open-manhattan'
         }
         if (clashes.length === 0 && y === preferredChaseY) break
       }
     }
   }
 
-  // Step 2: If clashes remain, iteratively splice orthogonal saddle/jog detours around each hit obstacle
-  let currentPath = bestPath
-  const maxIterations = 8
-  for (let iter = 0; iter < maxIterations; iter++) {
-    const clashes = detectRunTradeClashes(currentPath, obstacles, clearanceM, conduitRadiusM)
-    if (clashes.length === 0) break
+  // Step 2: Splice orthogonal saddle/jog detours on the Manhattan candidate if clashes remain
+  const resolvedManhattan = resolveDetours(bestPath, minY, inWallMaxY)
+  bestPath = resolvedManhattan.path
+  bestScore = resolvedManhattan.score
 
-    const firstClash = clashes[0]!
-    const obs = obstacles.find((o) => o.nodeId === firstClash.obstacleNodeId)
-    if (!obs) break
+  // Step 3: Hybrid Manhattan-in-Wall <-> Euclidean-in-Attic / Crawlspace evaluation
+  // Only activated when `routingStrategy === 'auto'`, flexible cable (`NM-B` / `MC`, preserving orthogonal
+  // `EMT`/`RMC`/`PVC` per NEC 110.12 / 358.30), and an accessible attic or dry crawl space is present!
+  const cavities = options.cavities
+  const CAVITY_MIN_SAVINGS_M = 0.35
+  if (walls && cavities && routingStrategy === 'auto' && isFlexibleCable) {
+    const manhattanClashes = resolvedManhattan.clashes.length
 
-    const segIdx = firstClash.segmentIndex
-    const segA = currentPath[segIdx]!
-    const segB = currentPath[segIdx + 1]!
-    const margin = Math.max(obs.requiredClearanceM, clearanceM) + conduitRadiusM
-    const expanded = expandAabb(obs.box, margin)
-    const detours = buildSegmentDetours(segA, segB, expanded, minY, inWallMaxY)
-
-    let improved = false
-    let localBest = currentPath
-    let localBestScore = scorePath(currentPath).score
-
-    for (const detour of detours) {
-      const spliced = simplifyOrthogonalPath([
-        ...currentPath.slice(0, segIdx),
-        ...detour,
-        ...currentPath.slice(segIdx + 2),
-      ])
-      const { score } = scorePath(spliced)
-      if (score < localBestScore) {
-        localBestScore = score
-        localBest = spliced
-        improved = true
+    // 3a. Wall-Vertical -> Attic Euclidean -> Wall-Vertical (NEC 334.23 / 320.23)
+    if (cavities.hasAttic) {
+      const atticY = cavities.atticY ?? round3((wallCeilingH > 0 ? wallCeilingH : 2.5) + 0.12)
+      const rawAttic = buildCavityEuclideanPath(start, end, atticY, walls, wallPlacement)
+      if (rawAttic) {
+        const atticDetour = resolveDetours(rawAttic, Math.max(minY, atticY - 0.1), atticY + 0.55)
+        const resolvesClash = atticDetour.clashes.length < manhattanClashes
+        const strictlyShorter =
+          atticDetour.clashes.length <= manhattanClashes &&
+          atticDetour.score + CAVITY_MIN_SAVINGS_M < bestScore
+        if (resolvesClash || strictlyShorter) {
+          bestPath = atticDetour.path
+          bestScore = atticDetour.score
+          bestMode = 'attic-euclidean'
+          bestNecNotes = [
+            'NEC 334.23 / 320.23: Vertical wall-cavity riser through bored top plate into attic Euclidean run; protect cable with guard strips within 6 ft of attic access.',
+          ]
+        }
       }
     }
 
-    if (!improved) break
-    currentPath = localBest
-    if (localBestScore < bestScore) {
-      bestScore = localBestScore
-      bestPath = localBest
+    // 3b. Wall-Vertical -> Crawl Space / Unfinished Basement Euclidean -> Wall-Vertical (NEC 334.15(C) / 334.12(B)(4))
+    const crawlAllowedForCable = !(cavities.crawlSpaceWet === true && racewayType === 'nm-b')
+    const endpointsNearFloorOrWall = start[1] < 1.9 && end[1] < 1.9
+    if (cavities.hasCrawlSpace && crawlAllowedForCable && endpointsNearFloorOrWall) {
+      const crawlY = cavities.crawlSpaceY ?? -0.18
+      const rawCrawl = buildCavityEuclideanPath(start, end, crawlY, walls, wallPlacement)
+      if (rawCrawl) {
+        const crawlDetour = resolveDetours(rawCrawl, crawlY - 0.45, Math.min(-0.04, crawlY + 0.12))
+        const resolvesClash = crawlDetour.clashes.length < manhattanClashes
+        const strictlyShorter =
+          crawlDetour.clashes.length <= manhattanClashes &&
+          crawlDetour.score + CAVITY_MIN_SAVINGS_M < bestScore
+        if (resolvesClash || strictlyShorter) {
+          bestPath = crawlDetour.path
+          bestScore = crawlDetour.score
+          bestMode = 'crawlspace-euclidean'
+          const smallGaugeForJoists = ['14', '12', '10', '8'].includes(wireGauge)
+          bestNecNotes = smallGaugeForJoists
+            ? [
+                `NEC 334.15(C) / 300.4(A)(1): Vertical stud drop through sole plate into crawl space; #${wireGauge} ${racewayType.toUpperCase()} must run through bored floor joists (>= 1.25" from edge) or on running boards (not stapled to lower joist edges).`,
+              ]
+            : [
+                `NEC 334.15(C): #${wireGauge} ${racewayType.toUpperCase()} permitted through bored floor joists or fastened across lower edges of joists in dry crawl space.`,
+              ]
+        }
+      }
     }
   }
 
@@ -1363,5 +1668,7 @@ export function routeElectricalRun(
     recommendedPullBoxAt,
     avoidedObstacles: Array.from(avoidedMap.values()),
     remainingClashes: finalClashes,
+    routingMode: bestMode,
+    necNotes: bestNecNotes,
   }
 }

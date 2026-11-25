@@ -21,6 +21,7 @@ import {
 } from './nec/panel-schedule'
 import { formatElectricalBomCsv } from './nec/pricing'
 import {
+  extractRoutingCavities,
   extractRoutingWalls,
   extractTradeObstacles,
   resolveLevelHeightM,
@@ -445,8 +446,13 @@ export const electricalAgentOperations = {
     const parentId =
       (typeof panel.parentId === 'string' ? panel.parentId : null) ??
       resolveLevelId(nodes, undefined, context)
+    const occupancy: OccupancyType =
+      input.occupancy ?? (panel.occupancy === 'commercial' ? 'commercial' : 'residential')
+    const racewayType: RacewayType =
+      input.racewayType ?? (occupancy === 'commercial' ? 'emt' : 'nm-b')
     const obstacles = extractTradeObstacles(record, parentId)
     const walls = extractRoutingWalls(record, parentId)
+    const cavities = extractRoutingCavities(record, parentId)
     const levelHeight = resolveLevelHeightM(record, parentId)
     const defaultChaseY = Math.round(Math.min(2.55, levelHeight - 0.06) * 1000) / 1000
     const route = routeElectricalRun(startPt, endPt, obstacles, {
@@ -454,12 +460,12 @@ export const electricalAgentOperations = {
       clearanceM: input.clearanceM ?? 0.05,
       walls,
       wallPlacement: input.wallPlacement ?? 'in-wall',
+      racewayType,
+      wireGauge: input.wireGauge,
+      cavities,
+      routingStrategy: (input as { routingStrategy?: 'auto' | 'wall-only' }).routingStrategy ?? 'auto',
     })
 
-    const occupancy: OccupancyType =
-      input.occupancy ?? (panel.occupancy === 'commercial' ? 'commercial' : 'residential')
-    const racewayType: RacewayType =
-      input.racewayType ?? (occupancy === 'commercial' ? 'emt' : 'nm-b')
     const voltageSystem: VoltageSystem =
       panel.voltageSystem === '120/208V-3P' || panel.voltageSystem === '277/480V-3P'
         ? panel.voltageSystem
@@ -543,6 +549,8 @@ export const electricalAgentOperations = {
       metadata: {
         avoidedObstacles: route.avoidedObstacles,
         totalBendDegrees: route.totalBendDegrees,
+        routingMode: route.routingMode,
+        necNotes: route.necNotes,
       },
       path: route.path,
       occupancy,
@@ -579,6 +587,8 @@ export const electricalAgentOperations = {
         recommendedPullBoxAt: route.recommendedPullBoxAt,
         avoidedObstacles: route.avoidedObstacles,
         remainingClashes: route.remainingClashes,
+        routingMode: route.routingMode,
+        necNotes: route.necNotes,
         voltageDropPct: vd.voltageDropPct,
         voltageDropCompliant: vd.compliant,
       },
@@ -661,6 +671,7 @@ export const electricalAgentOperations = {
       includeLighting?: boolean
       includeSmokeAlarms?: boolean
       includeWiring?: boolean
+      routingStrategy?: 'auto' | 'wall-only'
     },
     context: AgentContext,
   ) => {
@@ -674,6 +685,7 @@ export const electricalAgentOperations = {
       includeLighting: input.includeLighting ?? true,
       includeSmokeAlarms: input.includeSmokeAlarms,
       includeWiring: input.includeWiring ?? true,
+      routingStrategy: input.routingStrategy ?? 'auto',
     })
 
     const creates: Array<{ node: AnyNode; parentId?: string }> = []
@@ -753,7 +765,7 @@ export const electricalAgentOperations = {
         wireGauge: dev.wireGauge,
         conductorCount: dev.conductorCount,
         clampCount: 1,
-        yokeCount: dev.deviceKind === 'luminaire' ? 0 : 1,
+        yokeCount: dev.deviceKind === 'luminaire' || dev.deviceKind === 'smoke-co' ? 0 : 1,
       } as unknown as AnyNode
       creates.push({ node: dNode, parentId: parentId ?? undefined })
     }
@@ -774,6 +786,8 @@ export const electricalAgentOperations = {
           runKind: run.runKind,
           fromNodeId: resolvedFromId,
           avoidedObstaclesCount: run.avoidedObstaclesCount,
+          routingMode: run.routingMode,
+          necNotes: run.necNotes,
         },
         path: run.path,
         occupancy: run.occupancy,

@@ -27,6 +27,7 @@ import {
   belongsToLevel,
   countPathBendDegrees,
   detectRunTradeClashes,
+  extractRoutingCavities,
   extractTradeObstacles,
   polylineLengthM,
   resolveNodeLevelId,
@@ -1072,7 +1073,7 @@ export function auditSceneElectrical(
       })
     }
 
-    // 3c. NEC 334.12 / 300.22(C) Commercial & Plenum NM-B restrictions
+    // 3c. NEC 334.12 / 300.22(C) Commercial, Plenum & Wet Crawl-Space NM-B restrictions
     if (racewayType === 'nm-b' && (occupancy === 'commercial' || inPlenum)) {
       push({
         severity: 'error',
@@ -1085,6 +1086,19 @@ export function auditSceneElectrical(
         nodeIds: [run.id],
         suggestedFix: 'Switch racewayType to "emt", "mc", or "rmc".',
       })
+    } else if (racewayType === 'nm-b' && path.some((pt) => pt[1] < -0.05)) {
+      const runCavities = extractRoutingCavities(nodes, runLevelId)
+      if (runCavities.crawlSpaceWet) {
+        push({
+          severity: 'error',
+          codeRef: 'NEC 334.12(B)(4)',
+          category: 'wiring-method',
+          title: `NM-B cable routed in wet/damp crawl space on ${runName}`,
+          message: `Type NM-B cable cannot be installed in wet or damp crawl spaces or unfinished basements (NEC 334.12(B)(4)).`,
+          nodeIds: [run.id],
+          suggestedFix: 'Switch racewayType to wet-rated "pvc-40"/"emt" with THWN-2 or reroute through dry attic / wall cavities.',
+        })
+      }
     }
 
     // 3d. NEC 310.16 / 310.15 / 240.4(D) Derated Ampacity & Breaker OCPD Protection

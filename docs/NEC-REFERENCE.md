@@ -76,7 +76,7 @@ Flags an error whenever `solarBackfeedAmps` exceeds the permitted busbar backfee
 | `NEC 410.16(C)` | `prohibited-location` | Closet luminaire mounted below `2.1 m` in clothes storage clearance |
 | `NEC 210.11(C)(1)` / `(3)` | `prohibited-location` | Dedicated 20A bathroom or kitchen small-appliance circuit mixed with bedroom, living room, or hallway outlets |
 | `NEC 210.8(A)/(B)` & `210.12(A)` | `gfci-afci` | Missing GFCI in wet/damp zones or missing AFCI in residential habitable zones |
-| `NEC 334.12` / `300.22(C)` | `wiring-method` | NM-B (Romex) cable used in commercial construction or air-handling plenums |
+| `NEC 334.12` / `334.12(B)(4)` / `300.22(C)` | `wiring-method` | NM-B (Romex) cable used in commercial construction, air-handling plenums, or wet/damp crawl spaces (below finished floor) |
 | `NEC 358.26` | `raceway-bends` | Conduit run exceeds `360` total degrees of bends between pull points |
 | `NEC 408.36` / `408.54` / `408.30` | `panel-load` | Breaker slot collisions, multi-pole panel space overflow, bus overload (`> 100%`), `> 80%` continuous load warning, or `> 20%` phase imbalance |
 | `NFPA 72 29.9.4(5)` / `A.29.9.4` & `IRC R314` / `R315` | `life-safety` | Smoke/CO alarm on a GFCI circuit (error), dedicated smoke-only circuit without a frequently-used pilot lighting load (warning), smoke/CO alarms split across multiple circuits breaking `14/3` interconnect (warning), or bedrooms / sleeping areas missing hardwired Smoke/CO alarms (warning) |

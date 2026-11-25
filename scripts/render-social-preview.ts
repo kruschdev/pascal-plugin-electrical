@@ -216,7 +216,7 @@ const html = `<!doctype html>
     <div class="stats">
       <div class="stat"><div class="num amber">50</div><div class="lbl">MIT 3D CAD .glb Models</div></div>
       <div class="stat"><div class="num sky">25</div><div class="lbl">Live Equipment Kinds</div></div>
-      <div class="stat"><div class="num emerald">55/55</div><div class="lbl">NEC &amp; CAD Tests</div></div>
+      <div class="stat"><div class="num emerald">58/58</div><div class="lbl">NEC &amp; CAD Tests</div></div>
     </div>
     <div class="tags">
       <span class="tag">Bones 16&quot; OC Stud-Snap</span>

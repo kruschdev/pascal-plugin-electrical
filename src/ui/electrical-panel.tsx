@@ -15,6 +15,7 @@ import type { SceneNodeLike } from '../nec/load-calc'
 import {
   belongsToLevel,
   detectRunTradeClashes,
+  extractRoutingCavities,
   extractRoutingWalls,
   extractTradeObstacles,
   resolveLevelHeightM,
@@ -110,6 +111,10 @@ export default function ElectricalRailPanel() {
   )
   const bonesCtx = useMemo(
     () => extractBonesFramingContext(record, activeLevelId),
+    [record, activeLevelId],
+  )
+  const cavitiesCtx = useMemo(
+    () => extractRoutingCavities(record, activeLevelId),
     [record, activeLevelId],
   )
 
@@ -327,11 +332,12 @@ export default function ElectricalRailPanel() {
     runAsSingleSceneHistoryStep(useScene, () => {
       const levelObstacles = extractTradeObstacles(record, levelId)
       const walls = extractRoutingWalls(record, levelId)
+      const cavities = extractRoutingCavities(record, levelId)
       const levelHeight = resolveLevelHeightM(record, levelId)
       const defaultChaseY = Math.round(Math.min(2.55, levelHeight - 0.06) * 1000) / 1000
       const levelRuns = runs.filter((r) => belongsToLevel(record, r, levelId))
       const levelDevices = devices.filter((d) => belongsToLevel(record, d, levelId))
-      // 1. Reroute existing runs on this level only when they clash or improve onto walls
+      // 1. Reroute existing runs on this level only when they clash or improve onto walls/cavities
       for (const run of levelRuns) {
         const path = Array.isArray(run.path) ? (run.path as Vec3[]) : []
         if (path.length < 2) continue
@@ -339,6 +345,9 @@ export default function ElectricalRailPanel() {
         const res = routeElectricalRun(path[0]!, path[path.length - 1]!, levelObstacles, {
           preferredChaseY: defaultChaseY,
           walls,
+          racewayType: (typeof run.racewayType === 'string' ? run.racewayType : 'nm-b') as 'nm-b' | 'mc' | 'emt' | 'pvc-40' | 'rmc',
+          wireGauge: typeof run.wireGauge === 'string' ? (run.wireGauge as '14' | '12' | '10') : undefined,
+          cavities,
         })
         const pathChanged = !pathsNearlyEqual(path, res.path)
         const improvesClashes = existingClashes.length > 0 && res.remainingClashes.length < existingClashes.length
@@ -352,6 +361,8 @@ export default function ElectricalRailPanel() {
             metadata: {
               ...prevMeta,
               avoidedObstaclesCount: res.avoidedObstacles.length,
+              routingMode: res.routingMode,
+              necNotes: res.necNotes,
             },
           } as Partial<AnyNode>)
           avoidedCount += res.avoidedObstacles.length
@@ -626,7 +637,18 @@ export default function ElectricalRailPanel() {
           </span>
         </div>
         <div style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.35 }}>
-          Cables route concealed inside wall cavities. Use Pascal&apos;s native viewer modes to inspect in-wall runs:
+          {cavitiesCtx.hasAttic || cavitiesCtx.hasCrawlSpace
+            ? `Hybrid routing active (${[
+                cavitiesCtx.hasAttic ? 'Attic Euclidean' : '',
+                cavitiesCtx.hasCrawlSpace
+                  ? cavitiesCtx.crawlSpaceWet
+                    ? 'Wet Crawl (NM-B blocked)'
+                    : 'Crawl Space Euclidean'
+                  : '',
+              ]
+                .filter(Boolean)
+                .join(' + ')}): Manhattan inside stud cavities, straight pulls across accessible cavities.`
+            : "Cables route concealed inside wall cavities. Use Pascal's native viewer modes to inspect in-wall runs:"}
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
           <button

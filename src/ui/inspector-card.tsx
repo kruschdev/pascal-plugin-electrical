@@ -171,9 +171,21 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
           })
         : null
 
+    const meta = (raw.metadata && typeof raw.metadata === 'object' ? raw.metadata : {}) as Record<string, unknown>
+    const routingMode = typeof meta.routingMode === 'string' ? meta.routingMode : null
+    const routingLabel =
+      routingMode === 'attic-euclidean'
+        ? 'Attic Euclidean (NEC 334.23)'
+        : routingMode === 'crawlspace-euclidean'
+          ? 'Crawl Space Euclidean (334.15(C))'
+          : routingMode === 'wall-manhattan'
+            ? 'Wall-Cavity Manhattan'
+            : null
+
     return (
       <div style={cardStyle}>
         <NodeViolationBanner findings={nodeFindings} onOpenAudit={openFullAudit} />
+        {routingLabel && <Row label="Routing Mode" value={routingLabel} />}
         <Row label="Routed Length" value={`${lenFt} ft`} />
         <Row label="Total Bends (358.26)" value={`${totalBendDegrees}° / 360°`} warn={totalBendDegrees > 360} />
         <Row label="Derated Ampacity" value={`${amp.finalAllowableAmpacity} A`} warn={!amp.compliant} />
