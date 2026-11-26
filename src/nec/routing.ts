@@ -464,9 +464,18 @@ export function extractTradeObstacles(
     if (t === 'hvac-equipment' || t === 'hvac:equipment') {
       if (isVec3(node.position)) {
         const [x, y, z] = node.position
-        const w = typeof node.width === 'number' ? node.width : 0.6
-        const d = typeof node.depth === 'number' ? node.depth : 0.7
-        const h = typeof node.height === 'number' ? node.height : 1.1
+        const eqKind = typeof node.equipmentKind === 'string' ? node.equipmentKind : ''
+        const defaultDims: [number, number, number] =
+          eqKind === 'bath-exhaust-fan'
+            ? [0.3, 0.3, 0.22]
+            : eqKind === 'range-hood'
+              ? [0.76, 0.5, 0.28]
+              : eqKind === 'erv-ventilator'
+                ? [0.58, 0.45, 0.38]
+                : [0.6, 0.7, 1.1]
+        const w = typeof node.width === 'number' ? node.width : defaultDims[0]
+        const d = typeof node.depth === 'number' ? node.depth : defaultDims[1]
+        const h = typeof node.height === 'number' ? node.height : defaultDims[2]
         const halfSpan = Math.max(w, d) / 2
         obstacles.push({
           id: node.id,
