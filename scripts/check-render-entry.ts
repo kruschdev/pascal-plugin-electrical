@@ -11,6 +11,47 @@ import type { BunPlugin } from 'bun'
 const root = fileURLToPath(new URL('..', import.meta.url))
 const pkg = await Bun.file(`${root}package.json`).json()
 
+// Package entrypoints must point directly at tracked TypeScript sources so GitHub SHA installs
+// work without a dist/ directory or install-time build scripts.
+const forbiddenLifecycleHooks = ['prepare', 'postinstall', 'prepack']
+for (const hook of forbiddenLifecycleHooks) {
+  if (pkg.scripts && hook in pkg.scripts) {
+    console.error(`package.json must not define "${hook}" lifecycle script (breaks git installs without devDependencies).`)
+    process.exit(1)
+  }
+}
+for (const [label, target] of [
+  ['main', pkg.main],
+  ['types', pkg.types],
+  ...Object.entries(pkg.exports ?? {}).map(([k, v]) => [`exports["${k}"]`, v]),
+]) {
+  if (typeof target !== 'string') {
+    console.error(`package.json ${label} must be a direct source path string, got: ${JSON.stringify(target)}`)
+    process.exit(1)
+  }
+  if (label !== 'exports["./package.json"]' && !target.startsWith('./src/')) {
+    console.error(`package.json ${label} must point under ./src/, got: ${target}`)
+    process.exit(1)
+  }
+  const absTarget = `${root}${target.replace(/^\.\//, '')}`
+  if (!(await Bun.file(absTarget).exists())) {
+    console.error(`package.json ${label} points to missing file: ${target}`)
+    process.exit(1)
+  }
+}
+const { electricalAgentTools } = await import(`${root}src/agent-tools.ts`)
+if (electricalAgentTools.version !== pkg.version) {
+  console.error(
+    `Version mismatch: src/agent-tools.ts has "${electricalAgentTools.version}" but package.json has "${pkg.version}".`,
+  )
+  process.exit(1)
+}
+const indexSrc = await Bun.file(`${root}src/index.ts`).text()
+if (/^\s*(?:import|export)\s+[^;\n]*['"]\.\/ui\//m.test(indexSrc)) {
+  console.error('src/index.ts must not statically import/re-export ./ui/* modules (breaks Next.js RSC boundaries).')
+  process.exit(1)
+}
+
 type Hit = { specifier: string; importer: string }
 
 async function checkForbidden(entry: string, pattern: RegExp): Promise<Hit[]> {
