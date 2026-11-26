@@ -1113,6 +1113,7 @@ function buildWallGuidedManhattanPath(
   chaseY: number,
   walls: readonly RoutingWallSegment[],
   wallPlacement: 'in-wall' | 'surface' = 'in-wall',
+  bypassHorizontalShortcut = false,
 ): Vec3[] | null {
   if (walls.length === 0) return null
   const sProj = projectPointToWalls(start[0], start[2], walls)
@@ -1133,6 +1134,7 @@ function buildWallGuidedManhattanPath(
   // Fast path A: Same wall, same mounting height band, no door or window in between -> horizontal stud-bored wall chase!
   const midY = round3((start[1] + end[1]) / 2)
   if (
+    !bypassHorizontalShortcut &&
     isStartWall &&
     isEndWall &&
     sProj.wallIdx === eProj.wallIdx &&
@@ -1744,8 +1746,9 @@ export function routeElectricalRun(
     const clashes = detectRunTradeClashes(p, obstacles, clearanceM, conduitRadiusM)
     const len = polylineLengthM(p)
     const { totalBendDegrees } = countPathBendDegrees(p)
-    // Strongly prioritize 0 clashes, staying near preferred chase elevation, fewer bends, then shorter length
-    const bendPenalty = totalBendDegrees > maxBendDegrees ? 50 : totalBendDegrees * 0.004
+    // Strongly prioritize 0 clashes, NEC 358.26 (<= 360° bends for conduit), staying near preferred chase elevation, then shorter length
+    const bendPenalty =
+      totalBendDegrees > maxBendDegrees ? (isFlexibleCable ? 50 : 400) : totalBendDegrees * 0.004
     return { score: clashes.length * 1000 + len + bendPenalty, clashes }
   }
 
@@ -1808,11 +1811,11 @@ export function routeElectricalRun(
 
   // Step 1: Evaluate Wall-Guided (or Open) Manhattan candidates across overhead ceiling chase elevations first;
   // only try lower mid-wall fallback elevations if overhead ceiling chases still have trade clashes.
-  const evalElevationList = (elevations: readonly number[]) => {
+  const evalElevationList = (elevations: readonly number[], bypassHorizontal = false) => {
     if (walls) {
       for (const y of elevations) {
         const candidate =
-          buildWallGuidedManhattanPath(start, end, y, walls, wallPlacement) ??
+          buildWallGuidedManhattanPath(start, end, y, walls, wallPlacement, bypassHorizontal) ??
           buildManhattanCandidate(start, end, y, 'xz')
         const { score, clashes } = scorePath(candidate)
         if (score < bestScore) {
@@ -1820,7 +1823,7 @@ export function routeElectricalRun(
           bestPath = candidate
           bestMode = 'wall-manhattan'
         }
-        if (clashes.length === 0 && y === preferredChaseY) break
+        if (clashes.length === 0 && score < 400 && y === preferredChaseY) break
       }
     } else {
       for (const y of elevations) {
@@ -1832,20 +1835,105 @@ export function routeElectricalRun(
             bestPath = candidate
             bestMode = 'open-manhattan'
           }
-          if (clashes.length === 0 && y === preferredChaseY) break
+          if (clashes.length === 0 && score < 400 && y === preferredChaseY) break
         }
       }
     }
   }
-  evalElevationList(ceilingElevations)
+  evalElevationList(ceilingElevations, false)
+  // If same-wall horizontal shortcut collided with a plumbing/HVAC riser, retry routing over the chase elevation
+  if (bestScore >= 1000 && walls) {
+    evalElevationList(ceilingElevations, true)
+  }
   if (bestScore >= 1000 && lowFallbackElevations.length > 0) {
-    evalElevationList(lowFallbackElevations)
+    evalElevationList(lowFallbackElevations, true)
   }
 
   // Step 2: Splice orthogonal saddle/jog detours on the Manhattan candidate if clashes remain
   const resolvedManhattan = resolveDetours(bestPath, minY, inWallMaxY)
   bestPath = resolvedManhattan.path
   bestScore = resolvedManhattan.score
+
+  // Step 2b: Commercial / Rigid Conduit overhead ceiling-plenum Manhattan fallback (NEC 358.26 <= 360° bends)
+  // Wall-perimeter walks + U-detours can exceed 360° total bends; direct orthogonal ceiling-plenum EMT (`xz`/`zx`)
+  // and offset-axis ceiling channels stay strictly orthogonal with <= 360° bends and avoid wet-wall risers.
+  if (walls && !isFlexibleCable && (resolvedManhattan.clashes.length > 0 || bestScore >= 400)) {
+    const plenumElevs = [...ceilingElevations, ...lowFallbackElevations]
+    const tryConduitCand = (cand: Vec3[]) => {
+      const directEv = scorePath(cand)
+      if (directEv.score < bestScore) {
+        bestScore = directEv.score
+        bestPath = cand
+        bestMode = 'open-manhattan'
+      }
+      if (directEv.clashes.length > 0) {
+        const det = resolveDetours(cand, minY, inWallMaxY)
+        if (det.score < bestScore) {
+          bestScore = det.score
+          bestPath = det.path
+          bestMode = 'open-manhattan'
+        }
+      }
+    }
+    for (const y of plenumElevs) {
+      for (const order of ['xz', 'zx'] as const) {
+        tryConduitCand(buildManhattanCandidate(start, end, y, order))
+      }
+      // Offset-axis ceiling plenum paths (4 x 90° = 360° max, cleanly dodging wet-wall risers without U-detours)
+      const midX = round3((start[0] + end[0]) / 2)
+      const midZ = round3((start[2] + end[2]) / 2)
+      const xChannels = Array.from(
+        new Set([
+          round3(start[0] + 0.45),
+          round3(start[0] - 0.45),
+          round3(start[0] + 0.9),
+          round3(start[0] - 0.9),
+          midX,
+          round3(end[0] + 0.9),
+          round3(end[0] - 0.9),
+          round3(end[0] + 1.6),
+          round3(end[0] - 1.6),
+        ]),
+      )
+      const zChannels = Array.from(
+        new Set([
+          round3(start[2] + 0.45),
+          round3(start[2] - 0.45),
+          round3(start[2] + 0.9),
+          round3(start[2] - 0.9),
+          midZ,
+          round3(end[2] + 0.9),
+          round3(end[2] - 0.9),
+          round3(end[2] + 1.6),
+          round3(end[2] - 1.6),
+        ]),
+      )
+      for (const sx of xChannels) {
+        tryConduitCand(
+          simplifyOrthogonalPath([
+            start,
+            [start[0], y, start[2]],
+            [sx, y, start[2]],
+            [sx, y, end[2]],
+            [end[0], y, end[2]],
+            end,
+          ]),
+        )
+      }
+      for (const sz of zChannels) {
+        tryConduitCand(
+          simplifyOrthogonalPath([
+            start,
+            [start[0], y, start[2]],
+            [start[0], y, sz],
+            [end[0], y, sz],
+            [end[0], y, end[2]],
+            end,
+          ]),
+        )
+      }
+    }
+  }
 
   // Step 3: Hybrid Manhattan-in-Wall <-> Euclidean-in-Attic / Crawlspace evaluation
   // Only activated when `routingStrategy === 'auto'`, flexible cable (`NM-B` / `MC`, preserving orthogonal

@@ -758,6 +758,61 @@ export function planNecAutoPopulate(
       return false
     }
     const resolved = { ...spec }
+    const hitsTradeObstacle = (
+      px: number,
+      py: number,
+      pz: number,
+      padXZ = 0.24,
+      padY = 0.28,
+      onlyEquipment = false,
+    ): boolean => {
+      for (const obs of obstacles) {
+        if (onlyEquipment && obs.nodeType !== 'hvac:equipment' && obs.nodeType !== 'hvac-equipment' && obs.nodeType !== 'plumbing:equipment') {
+          continue
+        }
+        const b = obs.box
+        const pad = Math.max(padXZ, obs.requiredClearanceM + 0.08)
+        if (
+          px >= b.min[0] - pad &&
+          px <= b.max[0] + pad &&
+          pz >= b.min[2] - pad &&
+          pz <= b.max[2] + pad &&
+          py >= b.min[1] - padY &&
+          py <= b.max[1] + padY
+        ) {
+          return true
+        }
+      }
+      return false
+    }
+    // Keep non-MEP wall outlets out from directly behind HVAC/Plumbing mechanical equipment (NEC 110.26)
+    if (
+      !resolved.mepSourceNodeId &&
+      !resolved.bonesSourceId &&
+      (resolved.deviceKind === 'duplex' || resolved.deviceKind === 'gfci' || resolved.deviceKind === 'afci') &&
+      hitsTradeObstacle(resolved.position[0], resolved.position[1], resolved.position[2], 0.22, 0.25, true)
+    ) {
+      const hostW = walls.find((w) => {
+        const dx = resolved.position[0] - w.start[0]
+        const dz = resolved.position[2] - w.start[1]
+        const along = dx * w.dx + dz * w.dz
+        const perp = Math.abs(dx * w.nx + dz * w.nz)
+        return along >= -0.2 && along <= w.length + 0.2 && perp <= w.thickness / 2 + 0.25
+      })
+      if (hostW) {
+        const curAlong = (resolved.position[0] - hostW.start[0]) * hostW.dx + (resolved.position[2] - hostW.start[1]) * hostW.dz
+        for (const shift of [0.75, -0.75, 1.3, -1.3]) {
+          const na = curAlong + shift
+          if (na < 0.35 || na > hostW.length - 0.35) continue
+          const nx = round3(resolved.position[0] + hostW.dx * shift)
+          const nz = round3(resolved.position[2] + hostW.dz * shift)
+          if (!hitsTradeObstacle(nx, resolved.position[1], nz, 0.22, 0.25, true)) {
+            resolved.position = [nx, resolved.position[1], nz]
+            break
+          }
+        }
+      }
+    }
     const isRecept =
       resolved.deviceKind === 'duplex' ||
       resolved.deviceKind === 'gfci' ||
@@ -1528,17 +1583,20 @@ export function planNecAutoPopulate(
     if (!Array.isArray(mepNode.position) || mepNode.position.length < 3) continue
 
     const mepRot = typeof mepNode.rotation === 'number' ? mepNode.rotation : 0
-    // Offset power receptacle/disconnect cleanly outside equipment footprint + clearance so wires never self-clash
+    // Offset power receptacle/disconnect cleanly outside equipment footprint + clearance so wires never self-clash.
+    // For plumbing fixtures (dishwasher/disposal/washer), place the outlet laterally in the adjacent under-sink bay
+    // (standard NEC practice) so the electrical riser never climbs straight through the fixture's supply/drain/vent pipes.
     const radialOffsetM =
       mepNode.type === 'hvac:equipment' || mepNode.type === 'hvac-equipment'
         ? 0.56
         : mepNode.type === 'plumbing:equipment'
           ? 0.42
           : 0
+    const lateralOffsetM = mepNode.type === 'plumbing:fixture' ? 0.36 : 0
     const pos: Vec3 = [
-      round3(Number(mepNode.position[0]) + Math.sin(mepRot) * radialOffsetM),
+      round3(Number(mepNode.position[0]) + Math.sin(mepRot) * radialOffsetM + Math.cos(mepRot) * lateralOffsetM),
       Math.max(0.38, Math.min(1.5, Number(mepNode.position[1]) || 0.9)),
-      round3(Number(mepNode.position[2]) + Math.cos(mepRot) * radialOffsetM),
+      round3(Number(mepNode.position[2]) + Math.cos(mepRot) * radialOffsetM - Math.sin(mepRot) * lateralOffsetM),
     ]
     const label =
       rawDemand.label || (typeof mepNode.name === 'string' && mepNode.name ? mepNode.name : mepNode.id)
@@ -1584,6 +1642,9 @@ export function planNecAutoPopulate(
     const loadVa =
       typeof rawDemand.loadVa === 'number' ? rawDemand.loadVa : poles >= 2 ? 4500 : 1200
     const wireGauge: WireGauge = minWireGaugeForBreakerAmps(breakerAmps)
+    const mepZone = zoneAtPoint(zones, pos[0], pos[2])
+    const mepZoneCat = mepZone ? mepZone.category.toLowerCase() : ''
+    const isMepInBathroom = Boolean(mepZone && isBathroom(mepZoneCat))
     const isDedicated =
       rawDemand.dedicatedCircuit === true ||
       poles >= 2 ||
@@ -1597,6 +1658,9 @@ export function planNecAutoPopulate(
       const dedicated = peekDedicatedGroupName(baseGroupName)
       circuitGroup = dedicated.name
       dedicatedCommit = { base: baseGroupName, count: dedicated.count }
+    } else if (isMepInBathroom) {
+      // NEC 210.11(C)(3): Never mix bathroom MEP outlets onto a shared general MEP aux circuit with other rooms
+      circuitGroup = `Bathroom MEP Aux (120V ${breakerAmps}A)`
     } else {
       const maxAuxVa = Math.floor(120 * breakerAmps * 0.8)
       const st = auxCircuitLoadState.get(breakerAmps) ?? { index: 1, usedVa: 0 }
@@ -1614,8 +1678,6 @@ export function planNecAutoPopulate(
     }
     const devKind: PlannedDeviceSpec['deviceKind'] =
       poles >= 2 ? 'dedicated-240v' : rawDemand.gfciRequired ? 'gfci' : 'duplex'
-    const mepZone = zoneAtPoint(zones, pos[0], pos[2])
-    const mepZoneCat = mepZone ? mepZone.category.toLowerCase() : ''
     const isMep120v15Or20 = poles === 1 && breakerAmps <= 20
     const isMepResidentialHabitable =
       occupancy === 'residential' &&
@@ -1937,9 +1999,57 @@ export function planNecAutoPopulate(
         includeSmokeAlarms && pilotLightZone && z.id === pilotLightZone.id
           ? smokeCircuitGroup
           : 'Lighting & Entries'
+      const ceilingSpotBlocked = (px: number, pz: number, y: number): boolean => {
+        for (const obs of obstacles) {
+          const b = obs.box
+          const pad = Math.max(0.24, obs.requiredClearanceM + 0.1)
+          if (
+            px >= b.min[0] - pad &&
+            px <= b.max[0] + pad &&
+            pz >= b.min[2] - pad &&
+            pz <= b.max[2] + pad &&
+            b.max[1] >= Math.min(effectiveChaseY - 0.15, y - 0.35) &&
+            b.min[1] <= Math.max(levelHeight + 0.15, y + 0.18)
+          ) {
+            return true
+          }
+        }
+        return false
+      }
+      let lumX = round3(cx)
+      let lumZ = round3(cz)
+      if (ceilingSpotBlocked(lumX, lumZ, ceilingLightY)) {
+        for (const [ox, oz] of [
+          [0.55, 0],
+          [-0.55, 0],
+          [0, 0.55],
+          [0, -0.55],
+          [0.75, 0.55],
+          [-0.75, 0.55],
+          [0.75, -0.55],
+          [-0.75, -0.55],
+          [1.05, 0],
+          [-1.05, 0],
+          [0, 1.05],
+          [0, -1.05],
+          [1.2, 0.9],
+          [-1.2, 0.9],
+          [1.2, -0.9],
+          [-1.2, -0.9],
+        ] as const) {
+          const tx = round3(cx + ox)
+          const tz = round3(cz + oz)
+          if (!pointInPolygon2D(tx, tz, z.polygon)) continue
+          if (!ceilingSpotBlocked(tx, tz, ceilingLightY)) {
+            lumX = tx
+            lumZ = tz
+            break
+          }
+        }
+      }
       addPlanned({
         name: `${z.name} Ceiling Light`,
-        position: [round3(cx), ceilingLightY, round3(cz)],
+        position: [lumX, ceilingLightY, lumZ],
         rotation: 0,
         deviceKind: 'luminaire',
         circuitGroup: lightingGroup,
@@ -2091,6 +2201,23 @@ export function planNecAutoPopulate(
   // wired with 14/3 interconnect on a single non-GFCI 15A AFCI circuit shared with a frequently-used pilot light.
   if (includeSmokeAlarms) {
     const findCleanCeilingPoint = (z: ZoneInfo): Vec3 => {
+      const smokeBlocked = (px: number, pz: number): boolean => {
+        for (const obs of obstacles) {
+          const b = obs.box
+          const pad = Math.max(0.26, obs.requiredClearanceM + 0.1)
+          if (
+            px >= b.min[0] - pad &&
+            px <= b.max[0] + pad &&
+            pz >= b.min[2] - pad &&
+            pz <= b.max[2] + pad &&
+            b.max[1] >= Math.min(effectiveChaseY - 0.15, ceilingSmokeY - 0.35) &&
+            b.min[1] <= Math.max(levelHeight + 0.25, ceilingSmokeY + 0.25)
+          ) {
+            return true
+          }
+        }
+        return false
+      }
       const offsets: Array<[number, number]> = [
         [0.65, 0],
         [-0.65, 0],
@@ -2098,6 +2225,10 @@ export function planNecAutoPopulate(
         [0, -0.65],
         [0.48, 0.48],
         [-0.48, -0.48],
+        [1.05, 0.55],
+        [-1.05, 0.55],
+        [1.05, -0.55],
+        [-1.05, -0.55],
         [0, 0],
       ]
       for (const [ox, oz] of offsets) {
@@ -2105,7 +2236,7 @@ export function planNecAutoPopulate(
         const pz = round3(z.centroid[1] + oz)
         if (!pointInPolygon2D(px, pz, z.polygon)) continue
         const pos: Vec3 = [px, ceilingSmokeY, pz]
-        if (!isNearExisting(pos, 0, 0.45)) return pos
+        if (!isNearExisting(pos, 0, 0.45) && !smokeBlocked(px, pz)) return pos
       }
       return [round3(z.centroid[0] + 0.55), ceilingSmokeY, round3(z.centroid[1])]
     }
@@ -2177,12 +2308,41 @@ export function planNecAutoPopulate(
   // Guarantee at least 1 Outdoor WR GFCI even if a minimal floorplan has no exterior doors/patio zones tagged yet
   if (exteriorDoorCount === 0 && !planned.some((p) => p.circuitGroup === 'Outdoor GFCI') && walls.length > 0) {
     const w0 = walls[0]!
-    const mx = (w0.start[0] + w0.end[0]) / 2
-    const mz = (w0.start[1] + w0.end[1]) / 2
     const extOff = w0.thickness / 2 + WALL_DEVICE_OFFSET_M
+    let outX = round3((w0.start[0] + w0.end[0]) / 2 - w0.nx * extOff)
+    let outZ = round3((w0.start[1] + w0.end[1]) / 2 - w0.nz * extOff)
+    // Stay clear of exterior Plumbing hose-bibb vertical supply risers (typically placed at wall midpoint)
+    const exteriorSpotBlocked = (px: number, pz: number): boolean =>
+      obstacles.some((obs) => {
+        if (obs.trade !== 'plumbing' && obs.trade !== 'hvac') return false
+        const b = obs.box
+        const pad = Math.max(0.28, obs.requiredClearanceM + 0.12)
+        return (
+          px >= b.min[0] - pad &&
+          px <= b.max[0] + pad &&
+          pz >= b.min[2] - pad &&
+          pz <= b.max[2] + pad &&
+          b.max[1] >= 0 &&
+          b.min[1] <= effectiveChaseY + 0.2
+        )
+      })
+    if (exteriorSpotBlocked(outX, outZ)) {
+      const midAlong = w0.length / 2
+      for (const shift of [0.75, -0.75, 1.35, -1.35, 2.0, -2.0]) {
+        const a = midAlong + shift
+        if (a < 0.4 || a > w0.length - 0.4) continue
+        const tx = round3(w0.start[0] + w0.dx * a - w0.nx * extOff)
+        const tz = round3(w0.start[1] + w0.dz * a - w0.nz * extOff)
+        if (!exteriorSpotBlocked(tx, tz)) {
+          outX = tx
+          outZ = tz
+          break
+        }
+      }
+    }
     addPlanned({
       name: 'Front Exterior WR GFCI',
-      position: [round3(mx - w0.nx * extOff), 0.45, round3(mz - w0.nz * extOff)],
+      position: [outX, 0.45, outZ],
       rotation: w0.yaw + Math.PI,
       deviceKind: 'weatherproof-gfci',
       circuitGroup: 'Outdoor GFCI',
