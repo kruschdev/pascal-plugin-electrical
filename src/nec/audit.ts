@@ -350,7 +350,7 @@ function extractObstructionBox(node: SceneNodeLike): Aabb3 | null {
     }
   }
 
-  if ((node.type === 'hvac:equipment' || node.type === 'hvac-equipment') && !explicitDims) {
+  if (node.type === 'hvac:equipment' || node.type === 'hvac-equipment') {
     return getHvacEquipmentBox(node)
   }
 

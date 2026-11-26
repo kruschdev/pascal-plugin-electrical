@@ -405,6 +405,11 @@ export const electricalAgentOperations = {
           avoidedObstaclesCount: r.avoidedObstaclesCount,
           ...(r.routingMode ? { routingMode: r.routingMode } : {}),
           ...(r.necNotes ? { necNotes: r.necNotes } : {}),
+          ...(typeof r.preferredChaseY === 'number' ? { preferredChaseY: r.preferredChaseY } : {}),
+          ...(typeof r.laneOffsetLateralM === 'number' ? { laneOffsetLateralM: r.laneOffsetLateralM } : {}),
+          ...(typeof r.atticY === 'number' ? { atticY: r.atticY } : {}),
+          ...(typeof r.crawlSpaceY === 'number' ? { crawlSpaceY: r.crawlSpaceY } : {}),
+          ...(r.wallPlacement ? { wallPlacement: r.wallPlacement } : {}),
         },
         path: r.path,
         occupancy: r.occupancy,
@@ -509,11 +514,13 @@ export const electricalAgentOperations = {
     const cavities = extractRoutingCavities(record, parentId)
     const levelHeight = resolveLevelHeightM(record, parentId)
     const defaultChaseY = Math.round(Math.min(2.55, levelHeight - 0.06) * 1000) / 1000
+    const routeChaseY = input.preferredChaseY ?? defaultChaseY
+    const routeWallPlacement = input.wallPlacement ?? 'in-wall'
     const route = routeElectricalRun(startPt, endPt, obstacles, {
-      preferredChaseY: input.preferredChaseY ?? defaultChaseY,
+      preferredChaseY: routeChaseY,
       clearanceM: input.clearanceM ?? 0.05,
       walls,
-      wallPlacement: input.wallPlacement ?? 'in-wall',
+      wallPlacement: routeWallPlacement,
       racewayType,
       wireGauge: input.wireGauge,
       cavities,
@@ -605,6 +612,10 @@ export const electricalAgentOperations = {
         totalBendDegrees: route.totalBendDegrees,
         routingMode: route.routingMode,
         necNotes: route.necNotes,
+        preferredChaseY: routeChaseY,
+        wallPlacement: routeWallPlacement,
+        atticY: cavities.atticY,
+        crawlSpaceY: cavities.crawlSpaceY,
       },
       path: route.path,
       occupancy,
@@ -891,6 +902,9 @@ export const electricalAgentOperations = {
           necNotes: run.necNotes,
           ...(typeof run.preferredChaseY === 'number' ? { preferredChaseY: run.preferredChaseY } : {}),
           ...(typeof run.laneOffsetLateralM === 'number' ? { laneOffsetLateralM: run.laneOffsetLateralM } : {}),
+          ...(typeof run.atticY === 'number' ? { atticY: run.atticY } : {}),
+          ...(typeof run.crawlSpaceY === 'number' ? { crawlSpaceY: run.crawlSpaceY } : {}),
+          ...(run.wallPlacement ? { wallPlacement: run.wallPlacement } : {}),
         },
         path: run.path,
         occupancy: run.occupancy,

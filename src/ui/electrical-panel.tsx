@@ -25,6 +25,7 @@ import {
   type Vec3,
 } from '../nec/routing'
 import type { ElectricalDeviceKind } from '../nodes/device'
+import type { RacewayType, WireGauge } from '../nec/tables'
 import { ELECTRICAL_SCHEDULE_VIEW_ID } from '../render'
 import { useElectricalUi } from './store'
 
@@ -416,14 +417,44 @@ export default function ElectricalRailPanel() {
           typeof prevMeta.laneOffsetLateralM === 'number' && Number.isFinite(prevMeta.laneOffsetLateralM)
             ? prevMeta.laneOffsetLateralM
             : undefined
-        const existingClashes = detectRunTradeClashes(path, runObstacles)
+        const runWallPlacement: 'in-wall' | 'surface' =
+          prevMeta.wallPlacement === 'surface' ? 'surface' : 'in-wall'
+        const runCavities = {
+          ...cavities,
+          ...(typeof prevMeta.atticY === 'number' && Number.isFinite(prevMeta.atticY)
+            ? { atticY: prevMeta.atticY }
+            : {}),
+          ...(typeof prevMeta.crawlSpaceY === 'number' && Number.isFinite(prevMeta.crawlSpaceY)
+            ? { crawlSpaceY: prevMeta.crawlSpaceY }
+            : {}),
+        }
+        const CONDUIT_OUTER_RADIUS_M: Record<string, number> = {
+          '1/2"': 0.009,
+          '3/4"': 0.012,
+          '1"': 0.015,
+          '1-1/4"': 0.019,
+          '1-1/2"': 0.022,
+          '2"': 0.028,
+          '2-1/2"': 0.036,
+          '3"': 0.044,
+          '3-1/2"': 0.051,
+          '4"': 0.057,
+        }
+        const runConduitRadiusM =
+          typeof run.tradeSize === 'string' && run.tradeSize in CONDUIT_OUTER_RADIUS_M
+            ? CONDUIT_OUTER_RADIUS_M[run.tradeSize]!
+            : 0.015
+        const existingClashes = detectRunTradeClashes(path, runObstacles, 0.05, runConduitRadiusM)
         const res = routeElectricalRun(path[0]!, path[path.length - 1]!, runObstacles, {
           preferredChaseY: runChaseY,
           laneOffsetLateralM: runLateralM,
+          wallPlacement: runWallPlacement,
+          clearanceM: 0.05,
+          conduitRadiusM: runConduitRadiusM,
           walls,
-          racewayType: (typeof run.racewayType === 'string' ? run.racewayType : 'nm-b') as 'nm-b' | 'mc' | 'emt' | 'pvc-40' | 'rmc',
-          wireGauge: typeof run.wireGauge === 'string' ? (run.wireGauge as '14' | '12' | '10') : undefined,
-          cavities,
+          racewayType: (typeof run.racewayType === 'string' ? run.racewayType : 'nm-b') as RacewayType,
+          wireGauge: typeof run.wireGauge === 'string' ? (run.wireGauge as WireGauge) : undefined,
+          cavities: runCavities,
         })
         const pathChanged = !pathsNearlyEqual(path, res.path)
         const improvesClashes = existingClashes.length > 0 && res.remainingClashes.length < existingClashes.length

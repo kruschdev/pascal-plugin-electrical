@@ -149,6 +149,9 @@ export type PlannedRunSpec = {
   necNotes?: string[]
   preferredChaseY?: number
   laneOffsetLateralM?: number
+  atticY?: number
+  crawlSpaceY?: number
+  wallPlacement?: 'in-wall' | 'surface'
 }
 
 export type AutoPopulatePlan = {
@@ -3435,6 +3438,9 @@ export function planNecAutoPopulate(
         necNotes: hrRoute.necNotes,
         preferredChaseY: circuitChaseY,
         laneOffsetLateralM: circuitLaneLateralM,
+        atticY: circuitCavities.atticY,
+        crawlSpaceY: circuitCavities.crawlSpaceY,
+        wallPlacement: 'in-wall',
       })
       homeRunCount = 1
 
@@ -3473,6 +3479,9 @@ export function planNecAutoPopulate(
           necNotes: hopRoute.necNotes,
           preferredChaseY: circuitChaseY,
           laneOffsetLateralM: circuitLaneLateralM,
+          atticY: circuitCavities.atticY,
+          crawlSpaceY: circuitCavities.crawlSpaceY,
+          wallPlacement: 'in-wall',
         })
         daisyChainCount += 1
       }
@@ -3561,6 +3570,9 @@ export type PlannedDeviceConnectionRun = {
   necNotes?: string[]
   preferredChaseY?: number
   laneOffsetLateralM?: number
+  atticY?: number
+  crawlSpaceY?: number
+  wallPlacement?: 'in-wall' | 'surface'
 }
 
 export type DeviceAutoConnectionPlan = {
@@ -4185,6 +4197,10 @@ export function planDeviceAutoConnection(
         avoidedObstaclesCount: route.avoidedObstacles.length,
         routingMode: route.routingMode,
         necNotes: route.necNotes,
+        preferredChaseY: effectiveChaseY,
+        atticY: cavities.atticY,
+        crawlSpaceY: cavities.crawlSpaceY,
+        wallPlacement: 'in-wall',
       },
       anchorDevicePatch,
     }
@@ -4326,6 +4342,10 @@ export function planDeviceAutoConnection(
       avoidedObstaclesCount: route.avoidedObstacles.length,
       routingMode: route.routingMode,
       necNotes: route.necNotes,
+      preferredChaseY: effectiveChaseY,
+      atticY: cavities.atticY,
+      crawlSpaceY: cavities.crawlSpaceY,
+      wallPlacement: 'in-wall',
     },
     anchorDevicePatch: null,
   }

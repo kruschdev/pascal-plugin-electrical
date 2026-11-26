@@ -52,6 +52,35 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
     () => (raw ? audit.findings.filter((f) => f.nodeIds.includes(raw.id)) : []),
     [audit, raw],
   )
+  const panelSchedule = useMemo(() => {
+    if (!raw || raw.type !== 'electrical:panel') return null
+    const all = Object.values(nodes)
+    return buildPanelSchedule(
+      raw,
+      all.filter((n) => n.type === 'electrical:device'),
+      all.filter((n) => n.type === 'electrical:conduit-run'),
+    )
+  }, [nodes, raw])
+  const resolvedConduitBreakerAmps = useMemo(() => {
+    if (!raw || raw.type !== 'electrical:conduit-run') return undefined
+    if (typeof raw.breakerAmps === 'number') return raw.breakerAmps
+    const targetNode = typeof raw.targetDeviceId === 'string' ? nodes[raw.targetDeviceId] : undefined
+    if (typeof targetNode?.breakerAmps === 'number') return targetNode.breakerAmps
+    if (typeof raw.panelId === 'string' && typeof raw.circuitNumber === 'number') {
+      return Object.values(nodes).reduce<number | undefined>((maxA, n) => {
+        if (
+          n.type === 'electrical:device' &&
+          n.panelId === raw.panelId &&
+          n.circuitNumber === raw.circuitNumber &&
+          typeof n.breakerAmps === 'number'
+        ) {
+          return maxA === undefined ? n.breakerAmps : Math.max(maxA, n.breakerAmps)
+        }
+        return maxA
+      }, undefined)
+    }
+    return undefined
+  }, [nodes, raw])
   if (!raw) return null
 
   const openFullAudit = () => {
@@ -59,13 +88,8 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
     openEditorView(ELECTRICAL_SCHEDULE_VIEW_ID, { beside: true })
   }
 
-  if (raw.type === 'electrical:panel') {
-    const all = Object.values(nodes)
-    const schedule = buildPanelSchedule(
-      raw,
-      all.filter((n) => n.type === 'electrical:device'),
-      all.filter((n) => n.type === 'electrical:conduit-run'),
-    )
+  if (raw.type === 'electrical:panel' && panelSchedule) {
+    const schedule = panelSchedule
     const clear = getWorkingClearance110_26(
       schedule.voltageSystem,
       (raw.condition110_26 === 1 || raw.condition110_26 === 3 ? raw.condition110_26 : 2) as WorkingSpaceCondition,
@@ -144,28 +168,7 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
     const racewayType = (typeof raw.racewayType === 'string' ? raw.racewayType : 'emt') as RacewayType
     const wireGauge = (typeof raw.wireGauge === 'string' ? raw.wireGauge : '12') as WireGauge
     const material = (raw.conductorMaterial === 'al' ? 'al' : 'cu') as ConductorMaterial
-    const targetNode =
-      typeof raw.targetDeviceId === 'string'
-        ? nodes[raw.targetDeviceId]
-        : undefined
-    const resolvedBreakerAmps =
-      typeof raw.breakerAmps === 'number'
-        ? raw.breakerAmps
-        : typeof targetNode?.breakerAmps === 'number'
-          ? targetNode.breakerAmps
-          : typeof raw.panelId === 'string' && typeof raw.circuitNumber === 'number'
-            ? Object.values(nodes).reduce<number | undefined>((maxA, n) => {
-                if (
-                  n.type === 'electrical:device' &&
-                  n.panelId === raw.panelId &&
-                  n.circuitNumber === raw.circuitNumber &&
-                  typeof n.breakerAmps === 'number'
-                ) {
-                  return maxA === undefined ? n.breakerAmps : Math.max(maxA, n.breakerAmps)
-                }
-                return maxA
-              }, undefined)
-            : undefined
+    const resolvedBreakerAmps = resolvedConduitBreakerAmps
     const amp = calculateDeratedAmpacity({
       wireGauge,
       material,

@@ -242,4 +242,55 @@ describe('Round 7 Gemini 4 Carbon Audit Regression Suite (R7-BUG-01..06, R7-OPT-
     expect(box.max[1] - box.min[1]).toBeCloseTo(1.5, 3)
     expect(box.max[2] - box.min[2]).toBeCloseTo(1.2, 3)
   })
+
+  test('R8-BUG-01, R8-CON-01 & R8-CON-02: atticY/crawlSpaceY/wallPlacement/preferredChaseY persist on autopopulate, place_device, and route_circuit runs', () => {
+    const scene: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level', height: 2.7 },
+      roof_0: { id: 'roof_0', type: 'roof', parentId: 'level_0', position: [3, 2.7, 2] },
+      w1: { id: 'w1', type: 'wall', parentId: 'level_0', start: [0, 0], end: [6, 0], thickness: 0.14, height: 2.7 },
+      w2: { id: 'w2', type: 'wall', parentId: 'level_0', start: [6, 0], end: [6, 4], thickness: 0.14, height: 2.7 },
+      w3: { id: 'w3', type: 'wall', parentId: 'level_0', start: [6, 4], end: [0, 4], thickness: 0.14, height: 2.7 },
+      w4: { id: 'w4', type: 'wall', parentId: 'level_0', start: [0, 4], end: [0, 0], thickness: 0.14, height: 2.7 },
+      z_liv: { id: 'z_liv', type: 'zone', parentId: 'level_0', name: 'Living Room', category: 'living', polygon: [[0, 0], [6, 0], [6, 4], [0, 4]] },
+    }
+    const auto = electricalAgentOperations.electrical_autopopulate_nec(
+      scene as never,
+      { levelId: 'level_0', includeWiring: true },
+      { activeLevelId: 'level_0' },
+    )
+    const merged: Record<string, SceneNodeLike> = { ...scene }
+    for (const c of auto.changes?.create ?? []) merged[c.node.id] = c.node as unknown as SceneNodeLike
+
+    const autoRuns = Object.values(merged).filter((n) => n.type === 'electrical:conduit-run')
+    expect(autoRuns.length).toBeGreaterThan(0)
+    for (const r of autoRuns) {
+      const m = r.metadata as Record<string, unknown> | undefined
+      expect(typeof m?.atticY).toBe('number')
+      expect(typeof m?.crawlSpaceY).toBe('number')
+      expect(m?.wallPlacement).toBe('in-wall')
+    }
+
+    const panel = Object.values(merged).find((n) => n.type === 'electrical:panel')!
+    const dev = Object.values(merged).find((n) => n.type === 'electrical:device')!
+    const routed = electricalAgentOperations.electrical_route_circuit(
+      merged as never,
+      { panelId: panel.id, targetDeviceId: dev.id, preferredChaseY: 2.2, wallPlacement: 'surface' },
+      { activeLevelId: 'level_0' },
+    )
+    const routedMeta = (routed.changes?.create?.[0]?.node as { metadata?: Record<string, unknown> } | undefined)?.metadata
+    expect(routedMeta?.preferredChaseY).toBe(2.2)
+    expect(routedMeta?.wallPlacement).toBe('surface')
+    expect(typeof routedMeta?.atticY).toBe('number')
+
+    const placed = electricalAgentOperations.electrical_place_device(
+      merged as never,
+      { levelId: 'level_0', name: 'Extra Duplex', position: [3, 0.38, 0.08], deviceKind: 'duplex', panelId: panel.id, autoWire: true },
+      { activeLevelId: 'level_0' },
+    )
+    const placedRun = placed.changes?.create?.find(
+      (c) => (c.node as { type?: string }).type === 'electrical:conduit-run',
+    )?.node as { metadata?: Record<string, unknown> } | undefined
+    expect(typeof placedRun?.metadata?.preferredChaseY).toBe('number')
+    expect(placedRun?.metadata?.wallPlacement).toBe('in-wall')
+  })
 })
