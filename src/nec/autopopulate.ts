@@ -1751,7 +1751,39 @@ export function planNecAutoPopulate(
         exteriorDoorCount += 1
         const insideSign: 1 | -1 = zPosSide && !isOutdoorCategory(zPosSide.category) ? 1 : -1
         const outsideSign: 1 | -1 = insideSign === 1 ? -1 : 1
-        const latchT = Math.min(wall.length - 0.25, Math.max(0.25, op.tMax + 0.22 <= wall.length - 0.2 ? op.tMax + 0.22 : op.tMin - 0.22))
+        // Pick a latch-side stud bay whose vertical riser stays clear of structural door/window LVL headers
+        const headerObstacles = obstacles.filter(
+          (o) => o.trade === 'structural' && o.nodeType === 'structural:beam' && o.box.max[1] >= 1.5,
+        )
+        const hitsHeaderAtT = (tCand: number): boolean => {
+          const cxT = wall.start[0] + wall.dx * tCand
+          const czT = wall.start[1] + wall.dz * tCand
+          for (const h of headerObstacles) {
+            const pad = Math.max(0.12, h.requiredClearanceM + 0.08)
+            if (
+              cxT >= h.box.min[0] - pad &&
+              cxT <= h.box.max[0] + pad &&
+              czT >= h.box.min[2] - pad &&
+              czT <= h.box.max[2] + pad
+            ) {
+              return true
+            }
+          }
+          return false
+        }
+        const latchCandidates: number[] = []
+        for (let step = 0; step < 14; step++) {
+          const d = 0.26 + step * 0.16
+          if (op.tMax + d <= wall.length - 0.22) latchCandidates.push(op.tMax + d)
+          if (op.tMin - d >= 0.22) latchCandidates.push(op.tMin - d)
+        }
+        const clearLatchT = latchCandidates.find((tCand) => !hitsHeaderAtT(tCand))
+        const latchT =
+          clearLatchT ??
+          Math.min(
+            wall.length - 0.25,
+            Math.max(0.25, op.tMax + 0.26 <= wall.length - 0.2 ? op.tMax + 0.26 : op.tMin - 0.26),
+          )
         const px = wall.start[0] + wall.dx * latchT
         const pz = wall.start[1] + wall.dz * latchT
         const doorLabel = exteriorDoorCount === 1 ? 'Front Door' : `Exterior Door ${exteriorDoorCount}`
@@ -1808,7 +1840,12 @@ export function planNecAutoPopulate(
 
           addPlanned({
             name: `${doorLabel} Exterior Light`,
-            position: [round3(cx + wall.nx * outsideSign * (faceOff + 0.04)), Math.min(2.15, round3(levelHeight - 0.35)), round3(cz + wall.nz * outsideSign * (faceOff + 0.04))],
+            // Mount exterior sconce beside door jamb (back-to-back with entry switch, clear of structural LVL door header)
+            position: [
+              round3(px + wall.nx * outsideSign * (faceOff + 0.04)),
+              Math.min(1.92, round3(levelHeight - 0.55)),
+              round3(pz + wall.nz * outsideSign * (faceOff + 0.04)),
+            ],
             rotation: outsideSign === 1 ? wall.yaw : wall.yaw + Math.PI,
             deviceKind: 'luminaire',
             circuitGroup: 'Lighting & Entries',
