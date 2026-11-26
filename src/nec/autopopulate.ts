@@ -2064,7 +2064,7 @@ export function planNecAutoPopulate(
       let lumX = round3(cx)
       let lumZ = round3(cz)
       if (ceilingSpotBlocked(lumX, lumZ, ceilingLightY)) {
-        for (const [ox, oz] of [
+        const lumOffsets: Array<readonly [number, number]> = [
           [0.55, 0],
           [-0.55, 0],
           [0, 0.55],
@@ -2081,7 +2081,24 @@ export function planNecAutoPopulate(
           [-1.2, 0.9],
           [1.2, -0.9],
           [-1.2, -0.9],
-        ] as const) {
+          [1.75, 0],
+          [-1.75, 0],
+          [0, 1.75],
+          [0, -1.75],
+          [1.75, 1.35],
+          [-1.75, 1.35],
+          [1.75, -1.35],
+          [-1.75, -1.35],
+          [2.4, 0],
+          [-2.4, 0],
+          [0, 2.4],
+          [0, -2.4],
+          [2.4, 1.8],
+          [-2.4, 1.8],
+          [2.4, -1.8],
+          [-2.4, -1.8],
+        ]
+        for (const [ox, oz] of lumOffsets) {
           const tx = round3(cx + ox)
           const tz = round3(cz + oz)
           if (!pointInPolygon2D(tx, tz, z.polygon)) continue
