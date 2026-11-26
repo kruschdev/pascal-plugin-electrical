@@ -1995,21 +1995,29 @@ export function planNecAutoPopulate(
 
     if (isBathroom(cat)) {
       // NEC 210.52(D) & 210.11(C)(3): Dedicated 20A Bathroom GFCI receptacle mounted flush on bathroom wall (>= 3 ft clear of tub/shower per NEC 406.9(C))
-      const spot = snapToZoneWall(z, { mountY: 1.12, minTubDistM: 0.96, avoidWindows: true })
-      addPlanned({
-        name: `${z.name} Vanity GFCI`,
-        position: spot.position,
-        rotation: spot.rotation,
-        deviceKind: protectionMode === 'gfci-breakers' ? 'duplex' : 'gfci',
-        circuitGroup: 'Bathroom GFCI (20A)',
-        necRef: 'NEC 210.52(D) / 210.11(C)(3)',
-        requiresGfci: true,
-        requiresAfci: false,
-        breakerAmps: 20,
-        loadVa: 180,
-        boxType: occupancy === 'commercial' ? '4-sq-2.125' : 'single-gang-deep',
-        wireGauge: '12',
+      const hasExistingBathGfci = existingDevices.some((d) => {
+        if (d.deviceKind !== 'gfci' && d.gfciProtected !== true) return false
+        if (typeof d.name === 'string' && d.name === `${z.name} Vanity GFCI`) return true
+        if (!Array.isArray(d.position) || d.position.length < 3) return false
+        return pointInPolygon2D(Number(d.position[0]), Number(d.position[2]), z.polygon)
       })
+      if (!hasExistingBathGfci) {
+        const spot = snapToZoneWall(z, { mountY: 1.12, minTubDistM: 0.96, avoidWindows: true })
+        addPlanned({
+          name: `${z.name} Vanity GFCI`,
+          position: spot.position,
+          rotation: spot.rotation,
+          deviceKind: protectionMode === 'gfci-breakers' ? 'duplex' : 'gfci',
+          circuitGroup: 'Bathroom GFCI (20A)',
+          necRef: 'NEC 210.52(D) / 210.11(C)(3)',
+          requiresGfci: true,
+          requiresAfci: false,
+          breakerAmps: 20,
+          loadVa: 180,
+          boxType: occupancy === 'commercial' ? '4-sq-2.125' : 'single-gang-deep',
+          wireGauge: '12',
+        })
+      }
     } else if (isHallway(cat) && Math.max(z.widthM, z.depthM) >= 2.5) {
       // NEC 210.52(H): Hallways >= 10 ft require at least one wall-mounted receptacle
       const spot = snapToZoneWall(z, { mountY: 0.38, avoidWindows: false })
@@ -2102,7 +2110,13 @@ export function planNecAutoPopulate(
         wireGauge: occupancy === 'commercial' ? '12' : '14',
       })
 
-      if (!bonesSwitchZoneIds.has(z.id)) {
+      const hasExistingZoneSwitch = existingDevices.some((d) => {
+        if (d.deviceKind !== 'switch-1p' && d.deviceKind !== 'switch-3way' && d.deviceKind !== 'dimmer') return false
+        if (typeof d.name === 'string' && d.name === `${z.name} Wall Switch`) return true
+        if (!Array.isArray(d.position) || d.position.length < 3) return false
+        return pointInPolygon2D(Number(d.position[0]), Number(d.position[2]), z.polygon)
+      })
+      if (!bonesSwitchZoneIds.has(z.id) && !hasExistingZoneSwitch) {
         const switchSpot = snapToZoneWall(z, {
           mountY: 1.22,
           preferNearDoor: true,
