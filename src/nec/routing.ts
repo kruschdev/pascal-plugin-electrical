@@ -133,6 +133,8 @@ export type RouteElectricalOptions = {
    * - 'wall-only': Force strictly wall-guided Manhattan geometry (never enter attic or crawl space).
    */
   routingStrategy?: 'auto' | 'wall-only'
+  /** Optional small lateral wall-chase stagger (meters, clamped to +/- 0.018 m) to prevent coplanar parallel conduit Z-fighting. */
+  laneOffsetLateralM?: number
 }
 
 export type ElectricalRouteResult = {
@@ -261,6 +263,161 @@ export function belongsToLevel(
   return node.parentId == null
 }
 
+/** Compute rotated XZ half-extents of a box with local dimensions (width, depth) rotated by `rotY` radians. */
+function rotatedHalfExtentsXZ(width: number, depth: number, rotY: number): [number, number] {
+  const cos = Math.abs(Math.cos(rotY))
+  const sin = Math.abs(Math.sin(rotY))
+  return [(width * cos + depth * sin) / 2, (width * sin + depth * cos) / 2]
+}
+
+/** Shared nominal footprint & AABB for `hvac:equipment` / `hvac-equipment` (routing + NEC 110.26 audit parity). */
+export function getHvacEquipmentBox(node: SceneNodeLike): Aabb3 | null {
+  if (!isVec3(node.position)) return null
+  const [x, y, z] = node.position
+  const eqKind = typeof node.equipmentKind === 'string' ? node.equipmentKind : ''
+  const defaultDims: [number, number, number] =
+    eqKind === 'rooftop-package-unit'
+      ? [1.55, 1.05, 1.15]
+      : eqKind === 'air-handler' || eqKind === 'gas-furnace-96' || eqKind === 'gas-furnace-80' || eqKind.startsWith('gas-furnace')
+        ? [0.56, 0.72, 1.42]
+        : eqKind === 'heat-pump-condenser' || eqKind === 'ac-condenser'
+          ? [0.85, 0.85, 0.95]
+          : eqKind === 'erv-ventilator'
+            ? [0.6, 0.45, 0.45]
+            : eqKind === 'range-hood'
+              ? [0.76, 0.5, 0.35]
+              : eqKind === 'bath-exhaust-fan'
+                ? [0.3, 0.3, 0.22]
+                : eqKind === 'mini-split-outdoor'
+                  ? [0.82, 0.34, 0.6]
+                  : eqKind === 'mini-split-indoor'
+                    ? [0.85, 0.24, 0.3]
+                    : eqKind === 'dehumidifier-whole-house'
+                      ? [0.52, 0.38, 0.4]
+                      : [0.6, 0.7, 1.1]
+  const w = typeof node.width === 'number' ? node.width : defaultDims[0]
+  const d = typeof node.depth === 'number' ? node.depth : defaultDims[1]
+  const h = typeof node.height === 'number' ? node.height : defaultDims[2]
+  const rot = typeof node.rotation === 'number' && Number.isFinite(node.rotation) ? node.rotation : 0
+  const [halfX, halfZ] = rotatedHalfExtentsXZ(w, d, rot)
+  return {
+    min: [x - halfX, y, z - halfZ],
+    max: [x + halfX, y + h, z + halfZ],
+  }
+}
+
+/** Shared AABB for `hvac:plenum` (converting `widthIn`/`heightIn`/`depthIn` x INCHES_TO_METERS, honoring `rotation`). */
+export function getHvacPlenumBox(node: SceneNodeLike): Aabb3 | null {
+  if (!isVec3(node.position)) return null
+  const [x, y, z] = node.position
+  const w = Math.max(0.24, (typeof node.widthIn === 'number' ? node.widthIn : 18) * INCHES_TO_METERS)
+  const h = Math.max(0.2, (typeof node.heightIn === 'number' ? node.heightIn : 10) * INCHES_TO_METERS)
+  const d = Math.max(0.24, (typeof node.depthIn === 'number' ? node.depthIn : 24) * INCHES_TO_METERS)
+  const rot = typeof node.rotation === 'number' && Number.isFinite(node.rotation) ? node.rotation : 0
+  const [halfX, halfZ] = rotatedHalfExtentsXZ(w, d, rot)
+  return {
+    min: [x - halfX, y - h / 2, z - halfZ],
+    max: [x + halfX, y + h / 2, z + halfZ],
+  }
+}
+
+/** Shared AABB for `plumbing:fixture` (honoring `fixtureKind` footprint and `rotation`). */
+export function getPlumbingFixtureBox(node: SceneNodeLike): Aabb3 | null {
+  if (!isVec3(node.position)) return null
+  const [x, y, z] = node.position
+  const kind = typeof node.fixtureKind === 'string' ? node.fixtureKind : ''
+  let w = 0.55
+  let h = 0.85
+  let d = 0.5
+  let roughInY = 0.45
+  let centeredY = false
+  switch (kind) {
+    case 'bathtub':
+      w = 1.52; h = 0.5; d = 0.76; roughInY = 0.15
+      break
+    case 'tub-shower-combo':
+      w = 1.52; h = 2.05; d = 0.8; roughInY = 0.15
+      break
+    case 'shower':
+      w = 0.96; h = 2.05; d = 0.96; roughInY = 0.05
+      break
+    case 'water-closet':
+      w = 0.42; h = 0.78; d = 0.7; roughInY = 0.15
+      break
+    case 'lavatory':
+      w = 0.6; h = 0.84; d = 0.5; roughInY = 0.53
+      break
+    case 'kitchen-sink':
+      w = 0.84; h = 0.91; d = 0.56; roughInY = 0.46
+      break
+    case 'laundry-sink':
+    case 'bar-sink':
+    case 'mop-sink':
+      w = 0.6; h = 0.86; d = 0.52; roughInY = 0.46
+      break
+    case 'dishwasher':
+      w = 0.6; h = 0.86; d = 0.6; roughInY = 0.4
+      break
+    case 'clothes-washer':
+      w = 0.68; h = 0.96; d = 0.7; roughInY = 0.0
+      break
+    case 'garbage-disposal':
+      w = 0.22; h = 0.34; d = 0.22; centeredY = true
+      break
+    case 'hose-bibb':
+      w = 0.12; h = 0.12; d = 0.12; centeredY = true
+      break
+    case 'floor-drain':
+      w = 0.18; h = 0.1; d = 0.18; centeredY = true
+      break
+    case 'bidet':
+      w = 0.4; h = 0.42; d = 0.6; roughInY = 0.15
+      break
+    case 'urinal':
+      w = 0.38; h = 0.65; d = 0.36; roughInY = 0.45
+      break
+    case 'drinking-fountain':
+      w = 0.45; h = 0.5; d = 0.45; roughInY = 0.45
+      break
+    case 'grease-interceptor':
+      w = 0.65; h = 0.55; d = 0.5; roughInY = 0.0
+      break
+    default:
+      break
+  }
+  if (typeof node.width === 'number' && node.width > 0) w = node.width
+  if (typeof node.height === 'number' && node.height > 0) h = node.height
+  if (typeof node.depth === 'number' && node.depth > 0) d = node.depth
+  const rot = typeof node.rotation === 'number' && Number.isFinite(node.rotation) ? node.rotation : 0
+  const [halfX, halfZ] = rotatedHalfExtentsXZ(w, d, rot)
+  const minY = centeredY ? y - h / 2 : Math.max(0, y - roughInY)
+  const maxY = centeredY ? y + h / 2 : minY + h
+  return {
+    min: [x - halfX, minY, z - halfZ],
+    max: [x + halfX, maxY, z + halfZ],
+  }
+}
+
+/** Shared AABB for `structural:column` (honoring `rotation`, `widthIn`, `depthIn`, `heightM`/`height`). */
+export function getStructuralColumnBox(node: SceneNodeLike): Aabb3 | null {
+  if (!isVec3(node.position)) return null
+  const [x, y, z] = node.position
+  const w = (typeof node.widthIn === 'number' ? node.widthIn : 5.5) * INCHES_TO_METERS
+  const d = (typeof node.depthIn === 'number' ? node.depthIn : 5.5) * INCHES_TO_METERS
+  const h =
+    typeof node.heightM === 'number'
+      ? node.heightM
+      : typeof node.height === 'number'
+        ? node.height
+        : 2.8
+  const rot = typeof node.rotation === 'number' && Number.isFinite(node.rotation) ? node.rotation : 0
+  const [halfX, halfZ] = rotatedHalfExtentsXZ(w, d, rot)
+  return {
+    min: [x - halfX, y, z - halfZ],
+    max: [x + halfX, y + h, z + halfZ],
+  }
+}
+
 /**
  * Extract all higher-priority trade obstacles (Structural, Plumbing, HVAC) from a Pascal scene graph.
  * Electrical routes around these — it never relocates plumbing pipes or HVAC ducts.
@@ -300,20 +457,51 @@ export function extractTradeObstacles(
           parseNominalIn(node.nominalSize) ??
           (t === 'liquid-line' ? 0.75 : 2)
         const halfM = Math.max(0.015, (diamIn * INCHES_TO_METERS) / 2)
+        const label = `${t === 'liquid-line' ? 'water line' : `${diamIn}" plumbing pipe`} (${node.id})`
         for (let i = 0; i < path.length - 1; i++) {
           const p0 = path[i]
           const p1 = path[i + 1]
           if (!isVec3(p0) || !isVec3(p1)) continue
-          obstacles.push({
-            id: `${node.id}:seg${i}`,
-            nodeId: node.id,
-            nodeType: t,
-            trade: 'plumbing',
-            priorityRank: 2,
-            box: segmentAabb(p0, p1, halfM, halfM),
-            requiredClearanceM: DEFAULT_CLEARANCE_M,
-            label: `${t === 'liquid-line' ? 'water line' : `${diamIn}" plumbing pipe`} (${node.id})`,
-          })
+          const isDiagonal = Math.abs(p1[0] - p0[0]) > 0.2 && Math.abs(p1[2] - p0[2]) > 0.2
+          if (isDiagonal) {
+            const len = Math.hypot(p1[0] - p0[0], p1[2] - p0[2])
+            const steps = Math.max(2, Math.min(16, Math.ceil(len / 0.45)))
+            for (let s = 0; s < steps; s++) {
+              const t0 = s / steps
+              const t1 = (s + 1) / steps
+              const a: Vec3 = [
+                p0[0] + (p1[0] - p0[0]) * t0,
+                p0[1] + (p1[1] - p0[1]) * t0,
+                p0[2] + (p1[2] - p0[2]) * t0,
+              ]
+              const b: Vec3 = [
+                p0[0] + (p1[0] - p0[0]) * t1,
+                p0[1] + (p1[1] - p0[1]) * t1,
+                p0[2] + (p1[2] - p0[2]) * t1,
+              ]
+              obstacles.push({
+                id: `${node.id}:seg${i}_${s}`,
+                nodeId: node.id,
+                nodeType: t,
+                trade: 'plumbing',
+                priorityRank: 2,
+                box: segmentAabb(a, b, halfM, halfM),
+                requiredClearanceM: DEFAULT_CLEARANCE_M,
+                label,
+              })
+            }
+          } else {
+            obstacles.push({
+              id: `${node.id}:seg${i}`,
+              nodeId: node.id,
+              nodeType: t,
+              trade: 'plumbing',
+              priorityRank: 2,
+              box: segmentAabb(p0, p1, halfM, halfM),
+              requiredClearanceM: DEFAULT_CLEARANCE_M,
+              label,
+            })
+          }
         }
       }
       continue
@@ -324,8 +512,8 @@ export function extractTradeObstacles(
         const [x, y, z] = node.position
         const eqKind = typeof node.equipmentKind === 'string' ? node.equipmentKind : ''
         let halfW = t === 'plumbing:manifold' ? 0.24 : 0.30
-        let minY = y
-        let maxY = y + (t === 'plumbing:manifold' ? 0.70 : 1.55)
+        let minY = t === 'plumbing:manifold' ? y - 0.35 : y
+        let maxY = t === 'plumbing:manifold' ? y + 0.35 : y + 1.55
         if (t === 'plumbing:equipment') {
           if (eqKind === 'expansion-tank') {
             halfW = 0.12
@@ -462,52 +650,76 @@ export function extractTradeObstacles(
     }
 
     if (t === 'hvac-equipment' || t === 'hvac:equipment') {
-      if (isVec3(node.position)) {
-        const [x, y, z] = node.position
-        const eqKind = typeof node.equipmentKind === 'string' ? node.equipmentKind : ''
-        const defaultDims: [number, number, number] =
-          eqKind === 'bath-exhaust-fan'
-            ? [0.3, 0.3, 0.22]
-            : eqKind === 'range-hood'
-              ? [0.76, 0.5, 0.28]
-              : eqKind === 'erv-ventilator'
-                ? [0.58, 0.45, 0.38]
-                : [0.6, 0.7, 1.1]
-        const w = typeof node.width === 'number' ? node.width : defaultDims[0]
-        const d = typeof node.depth === 'number' ? node.depth : defaultDims[1]
-        const h = typeof node.height === 'number' ? node.height : defaultDims[2]
-        const halfSpan = Math.max(w, d) / 2
+      const box = getHvacEquipmentBox(node)
+      if (box) {
         obstacles.push({
           id: node.id,
           nodeId: node.id,
           nodeType: t,
           trade: 'hvac',
           priorityRank: 3,
-          box: {
-            min: [x - halfSpan, y, z - halfSpan],
-            max: [x + halfSpan, y + h, z + halfSpan],
-          },
+          box,
           requiredClearanceM: HVAC_EQUIPMENT_CLEARANCE_M,
-          label: `HVAC equipment (${node.id})`,
+          label: `HVAC equipment (${node.name ?? node.id})`,
         })
       }
       continue
     }
 
-    if (t === 'duct-fitting' || t === 'duct-terminal') {
-      if (isVec3(node.position)) {
-        const [x, y, z] = node.position
-        const half = 0.14
+    if (t === 'hvac:plenum') {
+      const box = getHvacPlenumBox(node)
+      if (box) {
         obstacles.push({
           id: node.id,
           nodeId: node.id,
           nodeType: t,
           trade: 'hvac',
           priorityRank: 3,
-          box: { min: [x - half, y - half, z - half], max: [x + half, y + half, z + half] },
+          box,
           requiredClearanceM: DEFAULT_CLEARANCE_M,
-          label: `HVAC ${t} (${node.id})`,
+          label: `HVAC plenum (${node.name ?? node.id})`,
         })
+      }
+      continue
+    }
+
+    if (t === 'duct-fitting' || t === 'duct-terminal' || t === 'hvac:terminal') {
+      if (isVec3(node.position)) {
+        const [x, y, z] = node.position
+        const termKind = typeof node.terminalKind === 'string' ? node.terminalKind : ''
+        if (termKind === 'mini-split-wall-head') {
+          const rot = typeof node.rotation === 'number' && Number.isFinite(node.rotation) ? node.rotation : 0
+          const [halfX, halfZ] = rotatedHalfExtentsXZ(0.85, 0.24, rot)
+          obstacles.push({
+            id: node.id,
+            nodeId: node.id,
+            nodeType: t,
+            trade: 'hvac',
+            priorityRank: 3,
+            box: { min: [x - halfX, y - 0.15, z - halfZ], max: [x + halfX, y + 0.15, z + halfZ] },
+            requiredClearanceM: DEFAULT_CLEARANCE_M,
+            label: `HVAC ${t} (${node.name ?? node.id})`,
+          })
+        } else {
+          const isLowProfileSensor = termKind === 'smart-thermostat' || termKind === 'zone-sensor'
+          const neckIn = typeof node.neckSizeIn === 'number' && node.neckSizeIn > 0 ? node.neckSizeIn : 6
+          const half = isLowProfileSensor
+            ? 0.06
+            : t === 'hvac:terminal'
+              ? Math.max(0.14, (neckIn * INCHES_TO_METERS) / 2 + 0.06)
+              : 0.14
+          const halfY = isLowProfileSensor ? 0.06 : t === 'hvac:terminal' ? 0.1 : half
+          obstacles.push({
+            id: node.id,
+            nodeId: node.id,
+            nodeType: t,
+            trade: 'hvac',
+            priorityRank: 3,
+            box: { min: [x - half, y - halfY, z - half], max: [x + half, y + halfY, z + half] },
+            requiredClearanceM: DEFAULT_CLEARANCE_M,
+            label: `HVAC ${t} (${node.name ?? node.id})`,
+          })
+        }
       }
       continue
     }
@@ -566,20 +778,15 @@ export function extractTradeObstacles(
     }
 
     if (t === 'structural:column') {
-      if (isVec3(node.position)) {
-        const [x, y, z] = node.position
-        const w =
-          (typeof node.widthIn === 'number' ? node.widthIn : 5.5) * INCHES_TO_METERS
-        const d =
-          (typeof node.depthIn === 'number' ? node.depthIn : 5.5) * INCHES_TO_METERS
-        const h = typeof node.heightM === 'number' ? node.heightM : 2.8
+      const box = getStructuralColumnBox(node)
+      if (box) {
         obstacles.push({
           id: node.id,
           nodeId: node.id,
           nodeType: t,
           trade: 'structural',
           priorityRank: 1,
-          box: { min: [x - w / 2, y, z - d / 2], max: [x + w / 2, y + h, z + d / 2] },
+          box,
           requiredClearanceM: 0.03,
           label: `structural column ${String(node.designation ?? node.columnType ?? '')} (${node.id})`.trim(),
         })
@@ -613,13 +820,15 @@ export function extractTradeObstacles(
         const w = typeof node.width === 'number' ? node.width : 0.3
         const d = typeof node.depth === 'number' ? node.depth : w
         const h = typeof node.height === 'number' ? node.height : 2.8
+        const rot = typeof node.rotation === 'number' && Number.isFinite(node.rotation) ? node.rotation : 0
+        const [halfX, halfZ] = rotatedHalfExtentsXZ(w, d, rot)
         obstacles.push({
           id: node.id,
           nodeId: node.id,
           nodeType: t,
           trade: 'structural',
           priorityRank: 1,
-          box: { min: [x - w / 2, y, z - d / 2], max: [x + w / 2, y + h, z + d / 2] },
+          box: { min: [x - halfX, y, z - halfZ], max: [x + halfX, y + h, z + halfZ] },
           requiredClearanceM: 0.03,
           label: `structural column (${node.id})`,
         })
@@ -1573,7 +1782,7 @@ function buildCavityEuclideanPath(
 
 /**
  * Given a single axis-aligned or horizontal-diagonal segment [a, b] that hits obstacle `obs`,
- * generate clean saddle/jog detours (over, under, left, right) around `obs`.
+ * generate clean saddle/jog detours (over, under, left, right, plus wider structural column bypasses) around `obs`.
  */
 function buildSegmentDetours(
   a: Vec3,
@@ -1581,12 +1790,23 @@ function buildSegmentDetours(
   expanded: Aabb3,
   minY: number,
   maxY: number,
+  obs?: TradeObstacle,
 ): Vec3[][] {
   const stepPad = 0.03
   const dx = Math.abs(b[0] - a[0])
   const dy = Math.abs(b[1] - a[1])
   const dz = Math.abs(b[2] - a[2])
   const detours: Vec3[][] = []
+  const isWideDetourCandidate = obs !== undefined
+  const rawBox = obs?.box ?? expanded
+  const obsCenterX = (rawBox.min[0] + rawBox.max[0]) / 2
+  const obsCenterZ = (rawBox.min[2] + rawBox.max[2]) / 2
+  const halfExtentX = (rawBox.max[0] - rawBox.min[0]) / 2
+  const halfExtentZ = (rawBox.max[2] - rawBox.min[2]) / 2
+  const wideXPlus = round3(Math.max(expanded.max[0] + stepPad, obsCenterX + halfExtentX + 0.16))
+  const wideXMinus = round3(Math.min(expanded.min[0] - stepPad, obsCenterX - (halfExtentX + 0.16)))
+  const wideZPlus = round3(Math.max(expanded.max[2] + stepPad, obsCenterZ + halfExtentZ + 0.16))
+  const wideZMinus = round3(Math.min(expanded.min[2] - stepPad, obsCenterZ - (halfExtentZ + 0.16)))
 
   // Horizontal diagonal segment (e.g. attic or crawl-space Euclidean cable pull):
   // detour cleanly over/under in Y along the same XZ line, or step around obstacle corners in XZ.
@@ -1599,14 +1819,29 @@ function buildSegmentDetours(
     if (yUnder >= minY) {
       detours.push([a, [a[0], yUnder, a[2]], [b[0], yUnder, b[2]], b])
     }
+    const xLo = round3(expanded.min[0] - stepPad)
+    const xHi = round3(expanded.max[0] + stepPad)
+    const zLo = round3(expanded.min[2] - stepPad)
+    const zHi = round3(expanded.max[2] + stepPad)
     const corners: Array<[number, number]> = [
-      [round3(expanded.min[0] - stepPad), round3(expanded.min[2] - stepPad)],
-      [round3(expanded.max[0] + stepPad), round3(expanded.min[2] - stepPad)],
-      [round3(expanded.min[0] - stepPad), round3(expanded.max[2] + stepPad)],
-      [round3(expanded.max[0] + stepPad), round3(expanded.max[2] + stepPad)],
+      [xLo, zLo],
+      [xHi, zLo],
+      [xLo, zHi],
+      [xHi, zHi],
     ]
     for (const [cx, cz] of corners) {
       detours.push([a, [cx, a[1], cz], b])
+    }
+    // 2-corner box-bypass paths so diagonal pulls crossing directly through a column/duct/beam center never clip adjacent corners
+    const zFirst = a[2] <= b[2] ? zLo : zHi
+    const zSecond = a[2] <= b[2] ? zHi : zLo
+    const xFirst = a[0] <= b[0] ? xLo : xHi
+    const xSecond = a[0] <= b[0] ? xHi : xLo
+    for (const xSide of isWideDetourCandidate ? [xHi, xLo, wideXPlus, wideXMinus] : [xHi, xLo]) {
+      detours.push([a, [xSide, a[1], zFirst], [xSide, a[1], zSecond], b])
+    }
+    for (const zSide of isWideDetourCandidate ? [zHi, zLo, wideZPlus, wideZMinus] : [zHi, zLo]) {
+      detours.push([a, [xFirst, a[1], zSide], [xSecond, a[1], zSide], b])
     }
     return detours.map((d) => simplifyOrthogonalPath(d))
   }
@@ -1629,6 +1864,18 @@ function buildSegmentDetours(
     }
     detours.push([a, [xBefore, a[1], a[2]], [xBefore, a[1], zPlus], [xAfter, a[1], zPlus], [xAfter, b[1], b[2]], b])
     detours.push([a, [xBefore, a[1], a[2]], [xBefore, a[1], zMinus], [xAfter, a[1], zMinus], [xAfter, b[1], b[2]], b])
+    if (isWideDetourCandidate) {
+      for (const zLat of [wideZPlus, wideZMinus]) {
+        detours.push([a, [xBefore, a[1], a[2]], [xBefore, a[1], zLat], [xAfter, a[1], zLat], [xAfter, b[1], b[2]], b])
+        detours.push([a, [a[0], a[1], zLat], [b[0], b[1], zLat], b])
+        if (yOver <= maxY) {
+          detours.push([a, [xBefore, a[1], a[2]], [xBefore, yOver, zLat], [xAfter, yOver, zLat], [xAfter, b[1], b[2]], b])
+        }
+        if (yUnder >= minY) {
+          detours.push([a, [xBefore, a[1], a[2]], [xBefore, yUnder, zLat], [xAfter, yUnder, zLat], [xAfter, b[1], b[2]], b])
+        }
+      }
+    }
   } else if (dz >= dx && dz >= dy) {
     // Horizontal Z-run: jog around in Y (over/under) or X (sideways)
     const dir = b[2] >= a[2] ? 1 : -1
@@ -1647,6 +1894,18 @@ function buildSegmentDetours(
     }
     detours.push([a, [a[0], a[1], zBefore], [xPlus, a[1], zBefore], [xPlus, a[1], zAfter], [b[0], b[1], zAfter], b])
     detours.push([a, [a[0], a[1], zBefore], [xMinus, a[1], zBefore], [xMinus, a[1], zAfter], [b[0], b[1], zAfter], b])
+    if (isWideDetourCandidate) {
+      for (const xLat of [wideXPlus, wideXMinus]) {
+        detours.push([a, [a[0], a[1], zBefore], [xLat, a[1], zBefore], [xLat, a[1], zAfter], [b[0], b[1], zAfter], b])
+        detours.push([a, [xLat, a[1], a[2]], [xLat, b[1], b[2]], b])
+        if (yOver <= maxY) {
+          detours.push([a, [a[0], a[1], zBefore], [xLat, yOver, zBefore], [xLat, yOver, zAfter], [b[0], b[1], zAfter], b])
+        }
+        if (yUnder >= minY) {
+          detours.push([a, [a[0], a[1], zBefore], [xLat, yUnder, zBefore], [xLat, yUnder, zAfter], [b[0], b[1], zAfter], b])
+        }
+      }
+    }
   } else {
     // Vertical Y-riser: offset laterally in X or Z around obstacle
     const dir = b[1] >= a[1] ? 1 : -1
@@ -1661,9 +1920,66 @@ function buildSegmentDetours(
     detours.push([a, [a[0], yBefore, a[2]], [xMinus, yBefore, a[2]], [xMinus, yAfter, a[2]], [b[0], yAfter, b[2]], b])
     detours.push([a, [a[0], yBefore, a[2]], [a[0], yBefore, zPlus], [a[0], yAfter, zPlus], [b[0], yAfter, b[2]], b])
     detours.push([a, [a[0], yBefore, a[2]], [a[0], yBefore, zMinus], [a[0], yAfter, zMinus], [b[0], yAfter, b[2]], b])
+    if (isWideDetourCandidate) {
+      for (const xLat of [wideXPlus, wideXMinus]) {
+        detours.push([a, [a[0], yBefore, a[2]], [xLat, yBefore, a[2]], [xLat, yAfter, a[2]], [b[0], yAfter, b[2]], b])
+      }
+      for (const zLat of [wideZPlus, wideZMinus]) {
+        detours.push([a, [a[0], yBefore, a[2]], [a[0], yBefore, zLat], [a[0], yAfter, zLat], [b[0], yAfter, b[2]], b])
+      }
+    }
   }
 
   return detours.map((d) => simplifyOrthogonalPath(d))
+}
+
+/**
+ * Apply a small deterministic orthogonal lateral offset (`<= 0.018 m`) to parallel wall/ceiling chase
+ * segments without adding extra bends or tilting vertical risers (eliminates coplanar conduit Z-fighting).
+ */
+function applyLateralLaneOffset(path: readonly Vec3[], offsetM: number): Vec3[] {
+  if (path.length < 2 || Math.abs(offsetM) < 1e-4) return [...path]
+  const shiftX = new Array<boolean>(path.length).fill(false)
+  const shiftZ = new Array<boolean>(path.length).fill(false)
+
+  for (let i = 0; i < path.length - 1; i++) {
+    const a = path[i]!
+    const b = path[i + 1]!
+    const dx = Math.abs(b[0] - a[0])
+    const dy = Math.abs(b[1] - a[1])
+    const dz = Math.abs(b[2] - a[2])
+    if (dy < 0.02 && dx < 0.02 && dz > 0.05) {
+      shiftX[i] = true
+      shiftX[i + 1] = true
+    } else if (dy < 0.02 && dz < 0.02 && dx > 0.05) {
+      shiftZ[i] = true
+      shiftZ[i + 1] = true
+    }
+  }
+
+  // Propagate X/Z shift along strictly vertical terminal risers so risers remain 100% plumb (0 extra bend deg)
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < path.length - 1; i++) {
+      const a = path[i]!
+      const b = path[i + 1]!
+      if (Math.abs(b[0] - a[0]) < 0.02 && Math.abs(b[2] - a[2]) < 0.02 && Math.abs(b[1] - a[1]) > 0.05) {
+        if (shiftX[i] || shiftX[i + 1]) {
+          shiftX[i] = true
+          shiftX[i + 1] = true
+        }
+        if (shiftZ[i] || shiftZ[i + 1]) {
+          shiftZ[i] = true
+          shiftZ[i + 1] = true
+        }
+      }
+    }
+  }
+
+  return path.map((pt, i) => [
+    shiftX[i] ? round3(pt[0] + offsetM) : pt[0],
+    pt[1],
+    shiftZ[i] ? round3(pt[2] + offsetM) : pt[2],
+  ])
 }
 
 /**
@@ -1788,7 +2104,7 @@ export function routeElectricalRun(
       const segB = cur[segIdx + 1]!
       const margin = Math.max(obs.requiredClearanceM, clearanceM) + conduitRadiusM
       const expanded = expandAabb(obs.box, margin)
-      const detours = buildSegmentDetours(segA, segB, expanded, detourMinY, detourMaxY)
+      const detours = buildSegmentDetours(segA, segB, expanded, detourMinY, detourMaxY, obs)
 
       let improved = false
       let localBest = cur
@@ -1862,11 +2178,90 @@ export function routeElectricalRun(
   const resolvedManhattan = resolveDetours(bestPath, minY, inWallMaxY)
   bestPath = resolvedManhattan.path
   bestScore = resolvedManhattan.score
+  let currentClashes = resolvedManhattan.clashes
+
+  // Step 2a: Explicit lateral box-bypass fallback around ANY clashing higher-priority obstacle
+  // (`structural` columns/beams, `plumbing` vertical stacks, or `hvac` vertical return drops)
+  if (currentClashes.length > 0) {
+    const clashingTargets: Array<{ id: string; nodeId: string }> = []
+    const seenTargetKeys = new Set<string>()
+    for (const c of currentClashes) {
+      const k = `${c.obstacleId}::${c.obstacleNodeId}`
+      if (!seenTargetKeys.has(k)) {
+        seenTargetKeys.add(k)
+        clashingTargets.push({ id: c.obstacleId, nodeId: c.obstacleNodeId })
+      }
+    }
+    const tryBypassCand = (cand: Vec3[]) => {
+      const ev = scorePath(cand)
+      if (ev.score < bestScore) {
+        bestScore = ev.score
+        bestPath = cand
+        currentClashes = ev.clashes
+      }
+      if (ev.clashes.length > 0) {
+        const det = resolveDetours(cand, minY, inWallMaxY)
+        if (det.score < bestScore) {
+          bestScore = det.score
+          bestPath = det.path
+          currentClashes = det.clashes
+        }
+      }
+    }
+    const candidateYs = Array.from(
+      new Set([
+        ...(Math.abs(start[1] - end[1]) < 0.25 ? [round3((start[1] + end[1]) / 2)] : []),
+        preferredChaseY,
+        ...ceilingElevations,
+        ...lowFallbackElevations,
+      ]),
+    )
+    for (const target of clashingTargets) {
+      const obs =
+        obstacles.find((o) => o.id === target.id) ??
+        obstacles.find((o) => o.nodeId === target.nodeId)
+      if (!obs) continue
+      const margin = Math.max(obs.requiredClearanceM, clearanceM) + conduitRadiusM
+      const pad = Math.max(0.16, margin + 0.06)
+      const cx = (obs.box.min[0] + obs.box.max[0]) / 2
+      const cz = (obs.box.min[2] + obs.box.max[2]) / 2
+      const halfX = (obs.box.max[0] - obs.box.min[0]) / 2
+      const halfZ = (obs.box.max[2] - obs.box.min[2]) / 2
+      const xOffs = [round3(cx + halfX + pad), round3(cx - (halfX + pad))]
+      const zOffs = [round3(cz + halfZ + pad), round3(cz - (halfZ + pad))]
+      for (const y of candidateYs) {
+        for (const xOff of xOffs) {
+          tryBypassCand(
+            simplifyOrthogonalPath([
+              start,
+              [start[0], y, start[2]],
+              [xOff, y, start[2]],
+              [xOff, y, end[2]],
+              [end[0], y, end[2]],
+              end,
+            ]),
+          )
+        }
+        for (const zOff of zOffs) {
+          tryBypassCand(
+            simplifyOrthogonalPath([
+              start,
+              [start[0], y, start[2]],
+              [start[0], y, zOff],
+              [end[0], y, zOff],
+              [end[0], y, end[2]],
+              end,
+            ]),
+          )
+        }
+      }
+    }
+  }
 
   // Step 2b: Commercial / Rigid Conduit overhead ceiling-plenum Manhattan fallback (NEC 358.26 <= 360° bends)
   // Wall-perimeter walks + U-detours can exceed 360° total bends; direct orthogonal ceiling-plenum EMT (`xz`/`zx`)
   // and offset-axis ceiling channels stay strictly orthogonal with <= 360° bends and avoid wet-wall risers.
-  if (walls && !isFlexibleCable && (resolvedManhattan.clashes.length > 0 || bestScore >= 400)) {
+  if (walls && !isFlexibleCable && (currentClashes.length > 0 || bestScore >= 400)) {
     const plenumElevs = [...ceilingElevations, ...lowFallbackElevations]
     const tryConduitCand = (cand: Vec3[]) => {
       const directEv = scorePath(cand)
@@ -1950,7 +2345,7 @@ export function routeElectricalRun(
   const cavities = options.cavities
   const CAVITY_MIN_SAVINGS_M = 0.35
   if (walls && cavities && routingStrategy === 'auto' && isFlexibleCable) {
-    let bestClashes = resolvedManhattan.clashes.length
+    let bestClashes = currentClashes.length
 
     // 3a. Wall-Vertical -> Attic Euclidean -> Wall-Vertical (NEC 334.23 / 320.23)
     if (cavities.hasAttic) {
@@ -2000,6 +2395,29 @@ export function routeElectricalRun(
                 `NEC 334.15(C): #${wireGauge} ${racewayType.toUpperCase()} permitted through bored floor joists or fastened across lower edges of joists in dry crawl space.`,
               ]
         }
+      }
+    }
+  }
+
+  // Optional small deterministic lateral wall-chase stagger (VIS-02) when zero-clash and bend-safe
+  const rawLateralOff =
+    typeof options.laneOffsetLateralM === 'number' && Number.isFinite(options.laneOffsetLateralM)
+      ? Math.max(-0.018, Math.min(0.018, options.laneOffsetLateralM))
+      : 0
+  if (
+    Math.abs(rawLateralOff) >= 1e-4 &&
+    (bestMode === 'wall-manhattan' || bestMode === 'open-manhattan') &&
+    detectRunTradeClashes(bestPath, obstacles, clearanceM, conduitRadiusM).length === 0
+  ) {
+    const baseBends = countPathBendDegrees(bestPath).totalBendDegrees
+    for (const candidateOff of [rawLateralOff, -rawLateralOff]) {
+      const shifted = simplifyOrthogonalPath(applyLateralLaneOffset(bestPath, candidateOff))
+      if (
+        detectRunTradeClashes(shifted, obstacles, clearanceM, conduitRadiusM).length === 0 &&
+        countPathBendDegrees(shifted).totalBendDegrees <= Math.max(maxBendDegrees, baseBends)
+      ) {
+        bestPath = shifted
+        break
       }
     }
   }

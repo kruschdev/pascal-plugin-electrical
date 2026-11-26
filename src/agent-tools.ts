@@ -244,6 +244,7 @@ export const electricalAgentTools: PluginAgentTools = {
         includeWiring: z.boolean().default(true),
         routingStrategy: z.enum(['auto', 'wall-only']).default('auto'),
         bonesMode: z.enum(['auto', 'import-only', 'ignore']).default('auto'),
+        clearExisting: z.boolean().default(false),
       },
       annotations: { destructiveHint: false, idempotentHint: false },
     },

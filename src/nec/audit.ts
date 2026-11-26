@@ -29,6 +29,10 @@ import {
   detectRunTradeClashes,
   extractRoutingCavities,
   extractTradeObstacles,
+  getHvacEquipmentBox,
+  getHvacPlenumBox,
+  getPlumbingFixtureBox,
+  getStructuralColumnBox,
   polylineLengthM,
   resolveNodeLevelId,
 } from './routing'
@@ -274,13 +278,22 @@ function extractObstructionBox(node: SceneNodeLike): Aabb3 | null {
   const [x, y, z] = pos
 
   if (node.type === 'structural:column') {
-    const w = (typeof node.widthIn === 'number' ? node.widthIn : 5.5) * INCHES_TO_METERS
-    const d = (typeof node.depthIn === 'number' ? node.depthIn : 5.5) * INCHES_TO_METERS
-    const h = typeof node.heightM === 'number' ? node.heightM : 2.8
+    return getStructuralColumnBox(node)
+  }
+
+  if (node.type === 'plumbing:manifold') {
     return {
-      min: [x - w / 2, y, z - d / 2],
-      max: [x + w / 2, y + h, z + d / 2],
+      min: [x - 0.24, y - 0.35, z - 0.24],
+      max: [x + 0.24, y + 0.35, z + 0.24],
     }
+  }
+
+  if (node.type === 'plumbing:fixture') {
+    return getPlumbingFixtureBox(node)
+  }
+
+  if (node.type === 'hvac:plenum') {
+    return getHvacPlenumBox(node)
   }
 
   const asset =
@@ -335,14 +348,7 @@ function extractObstructionBox(node: SceneNodeLike): Aabb3 | null {
   }
 
   if ((node.type === 'hvac:equipment' || node.type === 'hvac-equipment') && !explicitDims) {
-    const w = typeof node.width === 'number' ? node.width : 0.6
-    const d = typeof node.depth === 'number' ? node.depth : 0.7
-    const h = typeof node.height === 'number' ? node.height : 1.1
-    const halfSpan = Math.max(w, d) / 2
-    return {
-      min: [x - halfSpan, y, z - halfSpan],
-      max: [x + halfSpan, y + h, z + halfSpan],
-    }
+    return getHvacEquipmentBox(node)
   }
 
   const dims: Vec3 = explicitDims ?? [
@@ -350,8 +356,11 @@ function extractObstructionBox(node: SceneNodeLike): Aabb3 | null {
     typeof node.height === 'number' ? node.height : 0.9,
     typeof node.depth === 'number' ? node.depth : 0.6,
   ]
-  const hw = dims[0]! / 2
-  const hd = dims[2]! / 2
+  const rot = typeof node.rotation === 'number' && Number.isFinite(node.rotation) ? node.rotation : 0
+  const cos = Math.abs(Math.cos(rot))
+  const sin = Math.abs(Math.sin(rot))
+  const hw = (dims[0]! * cos + dims[2]! * sin) / 2
+  const hd = (dims[0]! * sin + dims[2]! * cos) / 2
   return {
     min: [x - hw, y, z - hd],
     max: [x + hw, y + dims[1]!, z + hd],
@@ -442,6 +451,36 @@ function horizontalDistToAabbXZ(x: number, z: number, box: Aabb3): number {
   return Math.hypot(dx, dz)
 }
 
+/**
+ * Return true if any 2D wall segment strictly separates points `(ax, az)` and `(bx, bz)`.
+ * Used so solid drywall partitions properly separate rooms for NEC 406.9(C) & 406.5(E) proximity checks.
+ */
+function wallSeparatesPoints2D(
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  walls: ReadonlyArray<{ sx: number; sz: number; ex: number; ez: number }>,
+): boolean {
+  const rX = bx - ax
+  const rZ = bz - az
+  if (Math.hypot(rX, rZ) < 1e-4) return false
+  for (const w of walls) {
+    const sX = w.ex - w.sx
+    const sZ = w.ez - w.sz
+    const denom = rX * sZ - rZ * sX
+    if (Math.abs(denom) < 1e-7) continue
+    const qpx = w.sx - ax
+    const qpz = w.sz - az
+    const t = (qpx * sZ - qpz * sX) / denom
+    const u = (qpx * rZ - qpz * rX) / denom
+    if (t > 0.01 && t < 0.99 && u >= -0.02 && u <= 1.02) {
+      return true
+    }
+  }
+  return false
+}
+
 function extractStairFootprintBox(stair: SceneNodeLike): Aabb3 | null {
   const pos = toVec3(stair.position)
   if (!pos) return null
@@ -478,6 +517,27 @@ export function auditSceneElectrical(
   const runs = all.filter((n) => n.type === 'electrical:conduit-run')
   const transformers = all.filter((n) => n.type === 'electrical:transformer')
   const stairs = all.filter((n) => n.type === 'stair')
+  const wallsByLevel = new Map<string, Array<{ sx: number; sz: number; ex: number; ez: number }>>()
+  const getWallsForLevel = (levelId: string | null) => {
+    const key = levelId ?? '__all__'
+    let list = wallsByLevel.get(key)
+    if (!list) {
+      list = []
+      for (const n of all) {
+        if (n.type !== 'wall') continue
+        if (!belongsToLevel(nodes, n, levelId)) continue
+        if (!Array.isArray(n.start) || !Array.isArray(n.end)) continue
+        list.push({
+          sx: Number(n.start[0]),
+          sz: Number(n.start[1]),
+          ex: Number(n.end[0]),
+          ez: Number(n.end[1]),
+        })
+      }
+      wallsByLevel.set(key, list)
+    }
+    return list
+  }
   const obstaclesByLevel = new Map<string, TradeObstacle[]>()
   const getObstaclesForLevel = (levelId: string | null): TradeObstacle[] => {
     const key = levelId ?? '__all__'
@@ -501,11 +561,29 @@ export function auditSceneElectrical(
 
   const wetFixtures: Array<{ node: SceneNodeLike; levelId: string | null; kind: 'tub-shower' | 'stove' | 'sink'; box: Aabb3 }> = []
   for (const n of all) {
-    if (n.type !== 'item' && n.type !== 'procedural-item' && n.type !== 'cabinet') continue
-    const txt = fixtureTextOf(n)
+    if (n.type !== 'item' && n.type !== 'procedural-item' && n.type !== 'cabinet' && n.type !== 'plumbing:fixture') continue
     const box = extractObstructionBox(n)
     if (!box) continue
     const fixLevelId = resolveNodeLevelId(nodes, n)
+    if (n.type === 'plumbing:fixture') {
+      const fKind = typeof n.fixtureKind === 'string' ? n.fixtureKind : ''
+      if (fKind === 'bathtub' || fKind === 'shower' || fKind === 'tub-shower-combo') {
+        wetFixtures.push({ node: n, levelId: fixLevelId, kind: 'tub-shower', box })
+        continue
+      }
+      if (
+        fKind === 'lavatory' ||
+        fKind === 'kitchen-sink' ||
+        fKind === 'laundry-sink' ||
+        fKind === 'bar-sink' ||
+        fKind === 'mop-sink'
+      ) {
+        wetFixtures.push({ node: n, levelId: fixLevelId, kind: 'sink', box })
+        continue
+      }
+      if (fKind) continue
+    }
+    const txt = fixtureTextOf(n)
     if (TUB_SHOWER_FIXTURE_PATTERN.test(txt)) {
       wetFixtures.push({ node: n, levelId: fixLevelId, kind: 'tub-shower', box })
     } else if (STOVE_FIXTURE_PATTERN.test(txt)) {
@@ -537,7 +615,10 @@ export function auditSceneElectrical(
         other.type !== 'cabinet' &&
         other.type !== 'hvac-equipment' &&
         other.type !== 'hvac:equipment' &&
+        other.type !== 'hvac:plenum' &&
         other.type !== 'plumbing:equipment' &&
+        other.type !== 'plumbing:manifold' &&
+        other.type !== 'plumbing:fixture' &&
         other.type !== 'column' &&
         other.type !== 'structural:column' &&
         other.type !== 'electrical:transformer'
@@ -813,8 +894,32 @@ export function auditSceneElectrical(
     const devPos = toVec3(dev.position)
     if (devPos) {
       const [x, , z] = devPos
-      const zone = getZoneAt(nodes, x, z, devLevelId)
+      const devRot = typeof dev.rotation === 'number' && Number.isFinite(dev.rotation) ? dev.rotation : 0
+      const zone =
+        getZoneAt(nodes, x, z, devLevelId) ??
+        getZoneAt(nodes, x + Math.sin(devRot) * 0.22, z + Math.cos(devRot) * 0.22, devLevelId)
       const zoneCat = zoneDescriptorOf(zone)
+      const devMeta = dev.metadata as { mepSourceNodeId?: string; roomName?: string; zoneName?: string } | undefined
+      const mepSource =
+        typeof devMeta?.mepSourceNodeId === 'string' ? nodes[devMeta.mepSourceNodeId] : undefined
+      const isCeilingBathExhaustMep = Boolean(
+        mepSource &&
+          (mepSource.type === 'hvac:equipment' || mepSource.type === 'hvac-equipment') &&
+          (mepSource.equipmentKind === 'bath-exhaust-fan' ||
+            (/bath.*exhaust|exhaust.*fan/i.test(String(mepSource.name ?? '')) &&
+              Array.isArray(mepSource.position) &&
+              Number(mepSource.position[1]) >= 2.2)),
+      )
+      const devRoomTag = (
+        (typeof dev.roomName === 'string' && dev.roomName) ||
+        (typeof dev.zoneName === 'string' && dev.zoneName) ||
+        (typeof devMeta?.roomName === 'string' && devMeta.roomName) ||
+        (typeof devMeta?.zoneName === 'string' && devMeta.zoneName) ||
+        (typeof zone?.name === 'string' && zone.name) ||
+        ''
+      )
+        .trim()
+        .toLowerCase()
       const isReceptacle =
         devKind === 'duplex' ||
         devKind === 'gfci' ||
@@ -834,19 +939,30 @@ export function auditSceneElectrical(
 
       // NEC 406.9(C), 404.4(C), 410.10(D), & 406.5 Fixture-Proximity Prohibited Zones
       // Only enforce within the same level and same room zone (solid partition walls & floor slabs separate spaces)
+      const levelWallSegs = getWallsForLevel(devLevelId)
       for (const fix of wetFixtures) {
         if (devLevelId && fix.levelId && devLevelId !== fix.levelId) continue
-        const fixZone = getZoneAt(
-          nodes,
-          (fix.box.min[0] + fix.box.max[0]) / 2,
-          (fix.box.min[2] + fix.box.max[2]) / 2,
-          fix.levelId ?? devLevelId,
-        )
+        const fixCx = (fix.box.min[0] + fix.box.max[0]) / 2
+        const fixCz = (fix.box.min[2] + fix.box.max[2]) / 2
+        const fixZone = getZoneAt(nodes, fixCx, fixCz, fix.levelId ?? devLevelId)
         if (zone && fixZone && zone.id !== fixZone.id) continue
+        const fixRoomTag = (
+          (typeof fix.node.roomName === 'string' && fix.node.roomName) ||
+          (typeof fix.node.zoneName === 'string' && fix.node.zoneName) ||
+          (typeof fixZone?.name === 'string' && fixZone.name) ||
+          ''
+        )
+          .trim()
+          .toLowerCase()
+        if (!zone || !fixZone) {
+          if (devRoomTag && fixRoomTag && devRoomTag !== fixRoomTag) continue
+        }
+        // Solid partition wall strictly between device and fixture separates adjacent rooms
+        if (wallSeparatesPoints2D(x, z, fixCx, fixCz, levelWallSegs)) continue
         const horizDist = horizontalDistToAabbXZ(x, z, fix.box)
         const devY = devPos[1]
         if (fix.kind === 'tub-shower') {
-          if (isReceptacle && horizDist < 0.914 && devY < 2.438) {
+          if (isReceptacle && !isCeilingBathExhaustMep && horizDist < 0.914 && devY < 2.438) {
             push({
               severity: 'error',
               codeRef: 'NEC 406.9(C)',
@@ -868,7 +984,7 @@ export function auditSceneElectrical(
               suggestedFix: `Relocate switch ${devName} outside the tub/shower enclosure.`,
             })
           }
-          if (isLuminaire && horizDist < 0.914 && devY < 2.438) {
+          if (isLuminaire && !isCeilingBathExhaustMep && horizDist < 0.914 && devY < 2.438) {
             push({
               severity: 'error',
               codeRef: 'NEC 410.10(D)',
@@ -889,7 +1005,7 @@ export function auditSceneElectrical(
             nodeIds: [dev.id, fix.node.id],
             suggestedFix: `Shift ${devName} laterally onto adjacent countertop wall clear of the cooktop.`,
           })
-        } else if (fix.kind === 'sink' && isReceptacle && horizDist === 0 && devY <= 1.05) {
+        } else if (fix.kind === 'sink' && isReceptacle && !isCeilingBathExhaustMep && horizDist === 0 && devY <= 1.05) {
           push({
             severity: 'error',
             codeRef: 'NEC 406.5(E)',
@@ -1214,7 +1330,8 @@ export function auditSceneElectrical(
     // 3a. Trade-priority clashes (electrical must yield to same-level plumbing, HVAC, structural)
     const runLevelId = resolveNodeLevelId(nodes, run)
     const selfMepIds = new Set<string>()
-    for (const endId of [run.fromNodeId, run.targetDeviceId, run.toNodeId]) {
+    const runMeta = run.metadata as { fromNodeId?: string } | undefined
+    for (const endId of [run.fromNodeId, runMeta?.fromNodeId, run.targetDeviceId, run.toNodeId]) {
       if (typeof endId === 'string') {
         const endNode = nodes[endId]
         const meta = endNode?.metadata as { mepSourceNodeId?: string } | undefined

@@ -27,10 +27,12 @@ import {
 import type { SceneNodeLike } from './load-calc'
 import { findNextFreePanelCircuit } from './panel-schedule'
 import {
+  type Aabb3,
   belongsToLevel,
   extractRoutingCavities,
   extractRoutingWalls,
   extractTradeObstacles,
+  getPlumbingFixtureBox,
   polylineLengthM,
   resolveLevelHeightM,
   routeElectricalRun,
@@ -52,6 +54,7 @@ import {
   clampToBranchWireGauge,
   getVoltageLineToLine,
   getVoltageLineToNeutral,
+  getWorkingClearance110_26,
   isThreePhaseSystem,
 } from './tables'
 
@@ -327,8 +330,24 @@ function extractTubBoxes(
 ): TubBox[] {
   const tubBoxes: TubBox[] = []
   for (const n of Object.values(nodes)) {
-    if (n.type !== 'item' && n.type !== 'procedural-item') continue
     if (!belongsToLevel(nodes, n, levelId)) continue
+    if (n.type === 'plumbing:fixture') {
+      const fKind = typeof n.fixtureKind === 'string' ? n.fixtureKind : ''
+      const fName = typeof n.name === 'string' ? n.name.toLowerCase() : ''
+      if (
+        fKind === 'bathtub' ||
+        fKind === 'shower' ||
+        fKind === 'tub-shower-combo' ||
+        (!fKind && /bath.?tub|\btub\b|shower/.test(fName))
+      ) {
+        const box = getPlumbingFixtureBox(n)
+        if (box) {
+          tubBoxes.push({ minX: box.min[0], maxX: box.max[0], minZ: box.min[2], maxZ: box.max[2] })
+        }
+      }
+      continue
+    }
+    if (n.type !== 'item' && n.type !== 'procedural-item') continue
     const asset = n.asset && typeof n.asset === 'object' ? (n.asset as Record<string, unknown>) : null
     const txt = [n.name, n.category, asset?.id, asset?.name, asset?.category]
       .filter((s): s is string => typeof s === 'string')
@@ -554,17 +573,157 @@ export function planNecAutoPopulate(
     let bestPanelScore = -Infinity
 
     const plumbingPipeObs = obstacles.filter(
-      (o) =>
-        (o.trade === 'plumbing' &&
-          (o.nodeType === 'plumbing:pipe-run' || o.nodeType === 'pipe-segment' || o.nodeType === 'liquid-line')) ||
-        (o.trade === 'hvac' &&
-          (o.nodeType === 'hvac:duct-run' ||
-            o.nodeType === 'duct-segment' ||
-            o.nodeType === 'lineset' ||
-            o.nodeType === 'hvac:plenum' ||
-            o.nodeType === 'hvac:equipment' ||
-            o.nodeType === 'hvac-equipment')),
+      (o) => o.trade === 'plumbing' || o.trade === 'hvac',
     )
+    const WORKING_SPACE_OBSTACLE_TYPES = new Set([
+      'hvac:equipment',
+      'hvac-equipment',
+      'hvac:plenum',
+      'plumbing:equipment',
+      'plumbing:manifold',
+      'plumbing:fixture',
+      'structural:column',
+      'column',
+    ])
+    const workingSpaceObstructionBoxes: Aabb3[] = obstacles
+      .filter((o) => WORKING_SPACE_OBSTACLE_TYPES.has(o.nodeType))
+      .map((o) => o.box)
+    for (const n of all) {
+      if (!belongsToLevel(nodes, n, levelId)) continue
+      if (n.type === 'plumbing:fixture') {
+        const fixBox = getPlumbingFixtureBox(n)
+        if (fixBox) workingSpaceObstructionBoxes.push(fixBox)
+        continue
+      }
+      if (
+        n.type !== 'item' &&
+        n.type !== 'procedural-item' &&
+        n.type !== 'cabinet' &&
+        n.type !== 'electrical:transformer'
+      ) {
+        continue
+      }
+      if (!Array.isArray(n.position) || n.position.length < 3) continue
+      const [ox, oy, oz] = n.position as number[]
+      const asset = n.asset && typeof n.asset === 'object' ? (n.asset as Record<string, unknown>) : null
+      const explicitDims = Array.isArray(n.dimensions)
+        ? (n.dimensions as number[])
+        : Array.isArray(asset?.dimensions)
+          ? (asset.dimensions as number[])
+          : Array.isArray(n.size)
+            ? (n.size as number[])
+            : null
+      const w = explicitDims?.[0] ?? (typeof n.width === 'number' ? n.width : n.type === 'electrical:transformer' ? 0.76 : 0.6)
+      const h = explicitDims?.[1] ?? (typeof n.height === 'number' ? n.height : n.type === 'electrical:transformer' ? 0.95 : 0.9)
+      const d = explicitDims?.[2] ?? (typeof n.depth === 'number' ? n.depth : n.type === 'electrical:transformer' ? 0.64 : 0.6)
+      const rot = typeof n.rotation === 'number' && Number.isFinite(n.rotation) ? n.rotation : 0
+      const hw = (w * Math.abs(Math.cos(rot)) + d * Math.abs(Math.sin(rot))) / 2
+      const hd = (w * Math.abs(Math.sin(rot)) + d * Math.abs(Math.cos(rot))) / 2
+      workingSpaceObstructionBoxes.push({
+        min: [ox! - hw, oy!, oz! - hd],
+        max: [ox! + hw, oy! + h, oz! + hd],
+      })
+    }
+
+    const panelW = occupancy === 'commercial' ? 0.51 : 0.38
+    const panelD = 0.14
+    const panelH = occupancy === 'commercial' ? 1.2 : 0.92
+    const clearance110 = getWorkingClearance110_26(voltageSystem, 2)
+    const clearW = Math.max(clearance110.widthM, panelW)
+    const clearD = clearance110.depthM
+    const clearH = Math.max(clearance110.heightM, panelH)
+
+    const hasWorkingSpaceConflict = (cx: number, cy: number, cz: number, rotY: number): boolean => {
+      const cos = Math.cos(rotY)
+      const sin = Math.sin(rotY)
+      const baseY = Math.max(0, cy - 1.52)
+      const yMax = baseY + clearH
+      const lxMin = -clearW / 2
+      const lxMax = clearW / 2
+      // Check both panel enclosure depth behind face and full NEC 110.26(A) front working space
+      const lzMin = -panelD / 2 - 0.04
+      const lzMax = panelD / 2 + 0.02 + clearD
+
+      const prismCorners: [number, number][] = [
+        [lxMin, lzMin],
+        [lxMax, lzMin],
+        [lxMax, lzMax],
+        [lxMin, lzMax],
+      ]
+      let pMinWx = Number.POSITIVE_INFINITY
+      let pMaxWx = Number.NEGATIVE_INFINITY
+      let pMinWz = Number.POSITIVE_INFINITY
+      let pMaxWz = Number.NEGATIVE_INFINITY
+      for (const [lx, lz] of prismCorners) {
+        const wx = cx + lx * cos + lz * sin
+        const wz = cz - lx * sin + lz * cos
+        if (wx < pMinWx) pMinWx = wx
+        if (wx > pMaxWx) pMaxWx = wx
+        if (wz < pMinWz) pMinWz = wz
+        if (wz > pMaxWz) pMaxWz = wz
+      }
+
+      for (const box of workingSpaceObstructionBoxes) {
+        if (box.max[1] < baseY || box.min[1] > yMax) continue
+        if (pMaxWx < box.min[0] || pMinWx > box.max[0]) continue
+        if (pMaxWz < box.min[2] || pMinWz > box.max[2]) continue
+        const boxCorners: [number, number][] = [
+          [box.min[0], box.min[2]],
+          [box.max[0], box.min[2]],
+          [box.max[0], box.max[2]],
+          [box.min[0], box.max[2]],
+        ]
+        let minLx = Number.POSITIVE_INFINITY
+        let maxLx = Number.NEGATIVE_INFINITY
+        let minLz = Number.POSITIVE_INFINITY
+        let maxLz = Number.NEGATIVE_INFINITY
+        for (const [wx, wz] of boxCorners) {
+          const dx = wx - cx
+          const dz = wz - cz
+          const lx = dx * cos - dz * sin
+          const lz = dx * sin + dz * cos
+          if (lx < minLx) minLx = lx
+          if (lx > maxLx) maxLx = lx
+          if (lz < minLz) minLz = lz
+          if (lz > maxLz) maxLz = lz
+        }
+        if (maxLx < lxMin || minLx > lxMax) continue
+        if (maxLz < lzMin || minLz > lzMax) continue
+        return true
+      }
+
+      // NEC 240.24(F): Keep panels clear of stairway footprints
+      for (const stair of stairs) {
+        if (!Array.isArray(stair.position) || stair.position.length < 3) continue
+        const sx = Number(stair.position[0])
+        const sz = Number(stair.position[2])
+        const sRot = typeof stair.rotation === 'number' ? stair.rotation : 0
+        const sw = typeof stair.width === 'number' ? stair.width : 1.0
+        const sLen = typeof stair.length === 'number' ? stair.length : 2.8
+        const sc = Math.cos(sRot)
+        const ss = Math.sin(sRot)
+        const scx = [
+          sx - (sw / 2) * sc,
+          sx + (sw / 2) * sc,
+          sx + (sw / 2) * sc + sLen * ss,
+          sx - (sw / 2) * sc + sLen * ss,
+        ]
+        const scz = [
+          sz + (sw / 2) * ss,
+          sz - (sw / 2) * ss,
+          sz - (sw / 2) * ss + sLen * sc,
+          sz + (sw / 2) * ss + sLen * sc,
+        ]
+        const sMinX = Math.min(...scx) - 0.25
+        const sMaxX = Math.max(...scx) + 0.25
+        const sMinZ = Math.min(...scz) - 0.25
+        const sMaxZ = Math.max(...scz) + 0.25
+        if (cx >= sMinX && cx <= sMaxX && cz >= sMinZ && cz <= sMaxZ) return true
+      }
+
+      return false
+    }
+
     const hasPlumbingPipeInPanelColumn = (
       cx: number,
       cz: number,
@@ -575,7 +734,7 @@ export function planNecAutoPopulate(
     ): boolean => {
       // NEC 110.26(E)(1)(a): Dedicated electrical space equals panel width (~0.42 m) x depth (~0.18 m)
       // from floor (0) to structural ceiling / 6 ft above panel (including overhead attic HVAC trunks).
-      const halfAlong = 0.26
+      const halfAlong = Math.max(0.26, panelW / 2 + 0.04)
       const halfPerp = 0.16
       const halfX = Math.abs(wallDx) * halfAlong + Math.abs(wallNx) * halfPerp
       const halfZ = Math.abs(wallDz) * halfAlong + Math.abs(wallNz) * halfPerp
@@ -600,34 +759,52 @@ export function planNecAutoPopulate(
       const sp = panelAnchor
       const hostWall = sp.wallId ? walls.find((w) => w.id === sp.wallId) : undefined
       if (hostWall && typeof sp.wallT === 'number') {
-        const rawT = Math.max(0.25, Math.min(hostWall.length - 0.25, sp.wallT * hostWall.length))
+        const baseRawT = Math.max(0.25, Math.min(hostWall.length - 0.25, sp.wallT * hostWall.length))
         const spans = wallRoomSpans(hostWall, walls, true)
-        const enclosing = spans.find(([a, b]) => rawT >= a && rawT <= b) ?? [0, hostWall.length]
-        const bayT = snapPanelOffsetToStudBay(hostWall.length, rawT, {
-          spanMin: enclosing[0],
-          spanMax: enclosing[1],
-          rule: resolveWallFramingRule(bonesCtx, hostWall.id),
-        })
-        const px = hostWall.start[0] + hostWall.dx * bayT
-        const pz = hostWall.start[1] + hostWall.dz * bayT
-        for (const side of [1, -1] as const) {
-          const nx = hostWall.nx * side
-          const nz = hostWall.nz * side
-          const zProbe = zoneAtPoint(zones, px + nx * 0.45, pz + nz * 0.45)
-          if (!zProbe) continue
-          if (isBathroom(zProbe.category) || /closet|wardrobe/.test(zProbe.category) || isOutdoorCategory(zProbe.category)) {
-            continue
+        const candY = round3(sp.heightAff ?? 1.52)
+        for (const shift of [0, 0.55, -0.55, 1.1, -1.1, 1.65, -1.65]) {
+          const rawT = baseRawT + shift
+          if (rawT < 0.25 || rawT > hostWall.length - 0.25) continue
+          const enclosing = spans.find(([a, b]) => rawT >= a && rawT <= b)
+          if (!enclosing && shift !== 0) continue
+          const spanBounds = enclosing ?? [0, hostWall.length]
+          const bayT = snapPanelOffsetToStudBay(hostWall.length, rawT, {
+            spanMin: spanBounds[0],
+            spanMax: spanBounds[1],
+            rule: resolveWallFramingRule(bonesCtx, hostWall.id),
+          })
+          const px = hostWall.start[0] + hostWall.dx * bayT
+          const pz = hostWall.start[1] + hostWall.dz * bayT
+          let foundCleanAnchor = false
+          for (const side of [1, -1] as const) {
+            const nx = hostWall.nx * side
+            const nz = hostWall.nz * side
+            const zProbe = zoneAtPoint(zones, px + nx * 0.45, pz + nz * 0.45)
+            if (!zProbe) continue
+            if (isBathroom(zProbe.category) || /closet|wardrobe/.test(zProbe.category) || isOutdoorCategory(zProbe.category)) {
+              continue
+            }
+            const candX = round3(px + nx * (hostWall.thickness / 2 + 0.072))
+            const candZ = round3(pz + nz * (hostWall.thickness / 2 + 0.072))
+            const candRot = side === 1 ? hostWall.yaw : hostWall.yaw + Math.PI
+            const pipeConflict = hasPlumbingPipeInPanelColumn(candX, candZ, hostWall.dx, hostWall.dz, nx, nz)
+            const wsConflict = hasWorkingSpaceConflict(candX, candY, candZ, candRot)
+            const candScore =
+              500 -
+              Math.abs(shift) * 5 -
+              (wsConflict ? 450 : 0) -
+              (pipeConflict ? 250 : 0)
+            if (candScore > bestPanelScore) {
+              bestPanelScore = candScore
+              panelPos = [candX, candY, candZ]
+              panelRot = candRot
+            }
+            if (!pipeConflict && !wsConflict) {
+              foundCleanAnchor = true
+              break
+            }
           }
-          const candX = round3(px + nx * (hostWall.thickness / 2 + 0.072))
-          const candZ = round3(pz + nz * (hostWall.thickness / 2 + 0.072))
-          const pipeConflict = hasPlumbingPipeInPanelColumn(candX, candZ, hostWall.dx, hostWall.dz, nx, nz)
-          const candScore = pipeConflict ? 50 : 500
-          if (candScore > bestPanelScore) {
-            bestPanelScore = candScore
-            panelPos = [candX, round3(sp.heightAff ?? 1.52), candZ]
-            panelRot = side === 1 ? hostWall.yaw : hostWall.yaw + Math.PI
-          }
-          if (!pipeConflict) break
+          if (foundCleanAnchor) break
         }
       } else if (sp.position && bonesCtx.servicePanel) {
         bestPanelScore = 500
@@ -636,18 +813,33 @@ export function planNecAutoPopulate(
       }
     }
 
-    if (bestPanelScore < 500) {
+    if (bestPanelScore < 450) {
       for (const w of walls) {
         const wRule = resolveWallFramingRule(bonesCtx, w.id)
         const wSpans = wallRoomSpans(w, walls, true)
+        const candidateTs: Array<{ t: number; span: [number, number] }> = []
         for (const frac of [0.5, 0.25, 0.75]) {
           const rawT = w.length * frac
           const enclosing = wSpans.find(([a, b]) => rawT >= a && rawT <= b) ?? [0, w.length]
+          candidateTs.push({ t: rawT, span: enclosing })
+        }
+        for (const span of wSpans) {
+          const spanLen = span[1] - span[0]
+          if (spanLen < 0.45) continue
+          for (const frac of [0.5, 0.25, 0.75, 0.15, 0.85]) {
+            candidateTs.push({ t: span[0] + spanLen * frac, span })
+          }
+        }
+        const triedBayTs = new Set<number>()
+        for (const { t: rawT, span } of candidateTs) {
           const bayT = snapPanelOffsetToStudBay(w.length, rawT, {
-            spanMin: enclosing[0],
-            spanMax: enclosing[1],
+            spanMin: span[0],
+            spanMax: span[1],
             rule: wRule,
           })
+          const keyT = Math.round(bayT * 20)
+          if (triedBayTs.has(keyT)) continue
+          triedBayTs.add(keyT)
           const px = w.start[0] + w.dx * bayT
           const pz = w.start[1] + w.dz * bayT
           for (const side of [1, -1] as const) {
@@ -661,7 +853,9 @@ export function planNecAutoPopulate(
             if (isBathroom(cat) || /closet|wardrobe/.test(cat) || isOutdoorCategory(cat)) continue
             const candX = round3(px + nx * (w.thickness / 2 + 0.072))
             const candZ = round3(pz + nz * (w.thickness / 2 + 0.072))
+            const candRot = side === 1 ? w.yaw : w.yaw + Math.PI
             const pipeConflict = hasPlumbingPipeInPanelColumn(candX, candZ, w.dx, w.dz, nx, nz)
+            const wsConflict = hasWorkingSpaceConflict(candX, 1.52, candZ, candRot)
             const baseScore =
               isGarage(cat) || isBasementOrUtility(cat)
                 ? 100
@@ -670,11 +864,11 @@ export function planNecAutoPopulate(
                   : /living|family|dining|bed|office|study|den/.test(cat)
                     ? 65
                     : 40
-            const score = pipeConflict ? baseScore - 200 : baseScore
+            const score = baseScore - (wsConflict ? 400 : 0) - (pipeConflict ? 200 : 0)
             if (score > bestPanelScore) {
               bestPanelScore = score
               panelPos = [candX, 1.52, candZ]
-              panelRot = side === 1 ? w.yaw : w.yaw + Math.PI
+              panelRot = candRot
             }
           }
         }
@@ -767,7 +961,16 @@ export function planNecAutoPopulate(
       onlyEquipment = false,
     ): boolean => {
       for (const obs of obstacles) {
-        if (onlyEquipment && obs.nodeType !== 'hvac:equipment' && obs.nodeType !== 'hvac-equipment' && obs.nodeType !== 'plumbing:equipment') {
+        if (
+          onlyEquipment &&
+          obs.nodeType !== 'hvac:equipment' &&
+          obs.nodeType !== 'hvac-equipment' &&
+          obs.nodeType !== 'hvac:plenum' &&
+          obs.nodeType !== 'plumbing:equipment' &&
+          obs.nodeType !== 'plumbing:manifold' &&
+          obs.nodeType !== 'structural:column' &&
+          obs.nodeType !== 'column'
+        ) {
           continue
         }
         const b = obs.box
@@ -785,11 +988,16 @@ export function planNecAutoPopulate(
       }
       return false
     }
-    // Keep non-MEP wall outlets out from directly behind HVAC/Plumbing mechanical equipment (NEC 110.26)
+    // Keep non-MEP wall outlets/switches out from behind HVAC/Plumbing equipment or inside wall-embedded structural columns
     if (
       !resolved.mepSourceNodeId &&
       !resolved.bonesSourceId &&
-      (resolved.deviceKind === 'duplex' || resolved.deviceKind === 'gfci' || resolved.deviceKind === 'afci') &&
+      (resolved.deviceKind === 'duplex' ||
+        resolved.deviceKind === 'gfci' ||
+        resolved.deviceKind === 'afci' ||
+        resolved.deviceKind === 'weatherproof-gfci' ||
+        resolved.deviceKind === 'switch-1p' ||
+        resolved.deviceKind === 'switch-3way') &&
       hitsTradeObstacle(resolved.position[0], resolved.position[1], resolved.position[2], 0.22, 0.25, true)
     ) {
       const hostW = walls.find((w) => {
@@ -801,12 +1009,17 @@ export function planNecAutoPopulate(
       })
       if (hostW) {
         const curAlong = (resolved.position[0] - hostW.start[0]) * hostW.dx + (resolved.position[2] - hostW.start[1]) * hostW.dz
-        for (const shift of [0.75, -0.75, 1.3, -1.3]) {
+        for (const shift of [0.45, -0.45, 0.75, -0.75, 1.15, -1.15, 1.55, -1.55]) {
           const na = curAlong + shift
-          if (na < 0.35 || na > hostW.length - 0.35) continue
+          if (na < 0.28 || na > hostW.length - 0.28) continue
+          const hitsOpening = hostW.openings.some((o) => o.kind === 'door' && na > o.tMin && na < o.tMax)
+          if (hitsOpening) continue
           const nx = round3(resolved.position[0] + hostW.dx * shift)
           const nz = round3(resolved.position[2] + hostW.dz * shift)
-          if (!hitsTradeObstacle(nx, resolved.position[1], nz, 0.22, 0.25, true)) {
+          if (
+            !hitsTradeObstacle(nx, resolved.position[1], nz, 0.22, 0.25, true) &&
+            !isNearExisting([nx, resolved.position[1], nz], resolved.rotation, 0.35)
+          ) {
             resolved.position = [nx, resolved.position[1], nz]
             break
           }
@@ -914,6 +1127,34 @@ export function planNecAutoPopulate(
   ): { position: Vec3; rotation: number } => {
     const avoidWin = opts.avoidWindows ?? opts.mountY >= 0.95
     const minTub = opts.minTubDistM ?? 0
+    const isWallSpotClearOfEquipment = (wx: number, wy: number, wz: number): boolean => {
+      for (const obs of obstacles) {
+        if (
+          obs.nodeType !== 'hvac:equipment' &&
+          obs.nodeType !== 'hvac-equipment' &&
+          obs.nodeType !== 'hvac:plenum' &&
+          obs.nodeType !== 'plumbing:equipment' &&
+          obs.nodeType !== 'plumbing:manifold' &&
+          obs.nodeType !== 'structural:column' &&
+          obs.nodeType !== 'column'
+        ) {
+          continue
+        }
+        const b = obs.box
+        const pad = Math.max(0.24, obs.requiredClearanceM + 0.08)
+        if (
+          wx >= b.min[0] - pad &&
+          wx <= b.max[0] + pad &&
+          wz >= b.min[2] - pad &&
+          wz <= b.max[2] + pad &&
+          wy >= b.min[1] - 0.28 &&
+          wy <= b.max[1] + 0.28
+        ) {
+          return false
+        }
+      }
+      return true
+    }
 
     // Pass 1: For room entry switches, snap flush beside a door jamb opening into this room
     if (opts.preferNearDoor) {
@@ -943,7 +1184,8 @@ export function planNecAutoPopulate(
               const rot = sign === 1 ? wall.yaw : wall.yaw + Math.PI
               const pos: Vec3 = [wx, opts.mountY, wz]
               const clearOfExisting = !isNearExisting(pos, rot, 0.32)
-              const score = (clearOfExisting ? 100 : 0) - Math.abs(rawT - doorMidT)
+              const clearOfEquip = isWallSpotClearOfEquipment(wx, opts.mountY, wz)
+              const score = (clearOfEquip ? 250 : 0) + (clearOfExisting ? 100 : 0) - Math.abs(rawT - doorMidT)
               if (!bestDoorSpot || score > bestDoorSpot.score) {
                 bestDoorSpot = { pos, rot, score }
               }
@@ -993,7 +1235,9 @@ export function planNecAutoPopulate(
             const rot = sign === 1 ? wall.yaw : wall.yaw + Math.PI
             const pos: Vec3 = [wx, opts.mountY, wz]
             const clearOfExisting = !isNearExisting(pos, rot, 0.35)
+            const clearOfEquip = isWallSpotClearOfEquipment(wx, opts.mountY, wz)
             const score =
+              (clearOfEquip ? 250 : 0) +
               (clearOfExisting ? 120 : 0) +
               (matchesZone ? 60 : 20) +
               (minTub > 0 ? Math.min(5, tubDist) * 12 : 0) -
@@ -1502,19 +1746,43 @@ export function planNecAutoPopulate(
     'main-shutoff-prv',
     'backwater-valve',
   ])
+  const PLUMBING_120V_ONLY_KINDS = new Set([
+    'water-heater-tankless-gas',
+    'recirc-pump',
+    'sump-pump',
+    'sewage-ejector',
+    'water-softener',
+    'boiler-hydronic',
+  ])
+  const PASSIVE_HVAC_EQUIPMENT_KINDS = new Set(['mini-split-indoor'])
+  const HVAC_120V_ONLY_KINDS = new Set([
+    'gas-furnace-96',
+    'gas-furnace-80',
+    'erv-ventilator',
+    'dehumidifier-whole-house',
+    'range-hood',
+    'bath-exhaust-fan',
+  ])
+  const HVAC_HIGH_VOLT_ONLY_KINDS = new Set([
+    'heat-pump-condenser',
+    'ac-condenser',
+    'rooftop-package-unit',
+    'mini-split-outdoor',
+  ])
+
+  const nextStdBreaker = (minAmps: number): number => {
+    for (const std of [15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 125, 150, 175, 200]) {
+      if (std >= minAmps) return std
+    }
+    return 200
+  }
 
   const fallbackMepDemandForNode = (mepNode: SceneNodeLike): RawMepDemand | null => {
     if (mepNode.type === 'plumbing:equipment') {
       const kind = typeof mepNode.equipmentKind === 'string' ? mepNode.equipmentKind : ''
       if (PASSIVE_PLUMBING_EQUIPMENT_KINDS.has(kind)) return null
       const watts = typeof mepNode.watts === 'number' && mepNode.watts > 0 ? mepNode.watts : 4500
-      const calc240Breaker = (w: number): number => {
-        const minAmps = Math.max(30, (w / 240) * 1.25)
-        for (const std of [15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 125, 150, 175, 200]) {
-          if (std >= minAmps) return std
-        }
-        return 200
-      }
+      const calc240Breaker = (w: number): number => nextStdBreaker(Math.max(30, (w / 240) * 1.25))
       switch (kind) {
         case 'water-heater-tank-electric':
           return { required: true, voltage: 240, poles: 2, breakerAmps: calc240Breaker(watts), loadVa: watts, continuous: true, dedicatedCircuit: true, loadCategory: 'fixed', label: 'Electric Water Heater' }
@@ -1553,7 +1821,225 @@ export function planNecAutoPopulate(
           return null
       }
     }
+    if (mepNode.type === 'hvac:equipment' || mepNode.type === 'hvac-equipment') {
+      const kind = typeof mepNode.equipmentKind === 'string' ? mepNode.equipmentKind : ''
+      if (PASSIVE_HVAC_EQUIPMENT_KINDS.has(kind)) return null
+      const coolingTons =
+        typeof mepNode.coolingTons === 'number' && mepNode.coolingTons > 0 ? mepNode.coolingTons : 3
+      const isCommercial3P = occupancy === 'commercial' && isThreePhaseSystem(panelVoltageSystem)
+      switch (kind) {
+        case 'air-handler': {
+          const heatStripKw =
+            typeof mepNode.heatStripKw === 'number' && mepNode.heatStripKw >= 0 ? mepNode.heatStripKw : 10
+          if (heatStripKw <= 0) {
+            return {
+              required: true,
+              voltage: 120,
+              poles: 1,
+              breakerAmps: 15,
+              loadVa: 600,
+              continuous: false,
+              dedicatedCircuit: true,
+              loadCategory: 'motor',
+              label: 'Air Handler Blower',
+            }
+          }
+          const loadVa = Math.round(heatStripKw * 1000 + 600)
+          return {
+            required: true,
+            voltage: 240,
+            poles: 2,
+            breakerAmps: Math.max(30, nextStdBreaker((loadVa / 240) * 1.25)),
+            loadVa,
+            continuous: true,
+            dedicatedCircuit: true,
+            loadCategory: 'hvac-heating',
+            label: `Air Handler (${heatStripKw} kW Aux Heat)`,
+          }
+        }
+        case 'heat-pump-condenser': {
+          const loadVa = Math.round(coolingTons * 1450)
+          const use3P = isCommercial3P && coolingTons >= 4
+          const voltage = use3P ? 208 : 240
+          const poles: 1 | 2 | 3 = use3P ? 3 : 2
+          const breakerAmps = use3P
+            ? nextStdBreaker(Math.max(20, (loadVa / (208 * Math.sqrt(3))) * 1.45))
+            : coolingTons <= 2
+              ? 25
+              : coolingTons <= 3
+                ? 35
+                : coolingTons <= 4
+                  ? 45
+                  : 60
+          return {
+            required: true,
+            voltage,
+            poles,
+            breakerAmps,
+            loadVa,
+            continuous: true,
+            dedicatedCircuit: true,
+            loadCategory: 'heat-pump',
+            label: `${coolingTons}-Ton Heat Pump Condenser`,
+          }
+        }
+        case 'ac-condenser': {
+          const loadVa = Math.round(coolingTons * 1350)
+          const use3P = isCommercial3P && coolingTons >= 4
+          const voltage = use3P ? 208 : 240
+          const poles: 1 | 2 | 3 = use3P ? 3 : 2
+          const breakerAmps = use3P
+            ? nextStdBreaker(Math.max(20, (loadVa / (208 * Math.sqrt(3))) * 1.45))
+            : coolingTons <= 2
+              ? 25
+              : coolingTons <= 3
+                ? 30
+                : coolingTons <= 4
+                  ? 40
+                  : 50
+          return {
+            required: true,
+            voltage,
+            poles,
+            breakerAmps,
+            loadVa,
+            continuous: true,
+            dedicatedCircuit: true,
+            loadCategory: 'hvac-cooling',
+            label: `${coolingTons}-Ton AC Condenser`,
+          }
+        }
+        case 'rooftop-package-unit': {
+          const rtuTons =
+            typeof mepNode.coolingTons === 'number' && mepNode.coolingTons > 0
+              ? mepNode.coolingTons
+              : occupancy === 'commercial'
+                ? 5
+                : 3
+          const loadVa = Math.round(rtuTons * 1850)
+          const voltage = isCommercial3P ? 208 : 240
+          const poles: 1 | 2 | 3 = isCommercial3P ? 3 : 2
+          const breakerAmps = Math.max(
+            30,
+            nextStdBreaker((loadVa / (poles === 3 ? voltage * Math.sqrt(3) : voltage)) * 1.35),
+          )
+          return {
+            required: true,
+            voltage,
+            poles,
+            breakerAmps,
+            loadVa,
+            continuous: true,
+            dedicatedCircuit: true,
+            loadCategory: 'heat-pump',
+            label: `${rtuTons}-Ton Packaged RTU`,
+          }
+        }
+        case 'gas-furnace-96':
+        case 'gas-furnace-80':
+          return {
+            required: true,
+            voltage: 120,
+            poles: 1,
+            breakerAmps: 15,
+            loadVa: 850,
+            continuous: false,
+            dedicatedCircuit: true,
+            loadCategory: 'hvac-heating',
+            label: kind === 'gas-furnace-96' ? '96% Gas Furnace Blower/Controls' : '80% Gas Furnace Blower/Controls',
+          }
+        case 'erv-ventilator':
+          return {
+            required: true,
+            voltage: 120,
+            poles: 1,
+            breakerAmps: 15,
+            loadVa: 180,
+            continuous: true,
+            dedicatedCircuit: false,
+            loadCategory: 'motor',
+            label: 'Energy Recovery Ventilator (ERV)',
+          }
+        case 'dehumidifier-whole-house':
+          return {
+            required: true,
+            voltage: 120,
+            poles: 1,
+            breakerAmps: 15,
+            loadVa: 750,
+            continuous: true,
+            dedicatedCircuit: false,
+            gfciRequired: true,
+            loadCategory: 'appliance',
+            label: 'Whole-House Dehumidifier',
+          }
+        case 'range-hood':
+          return {
+            required: true,
+            voltage: 120,
+            poles: 1,
+            breakerAmps: 15,
+            loadVa: 300,
+            continuous: false,
+            dedicatedCircuit: false,
+            afciRequired: true,
+            loadCategory: 'appliance',
+            label: 'Kitchen Range Exhaust Hood',
+          }
+        case 'bath-exhaust-fan':
+          return {
+            required: true,
+            voltage: 120,
+            poles: 1,
+            breakerAmps: 15,
+            loadVa: 50,
+            continuous: false,
+            dedicatedCircuit: false,
+            gfciRequired: true,
+            loadCategory: 'motor',
+            label: 'Bath Exhaust Fan',
+          }
+        case 'mini-split-outdoor': {
+          const loadVa = Math.round(Math.max(1.5, coolingTons) * 1250)
+          const breakerAmps = coolingTons <= 2 ? 20 : coolingTons <= 3 ? 30 : 40
+          return {
+            required: true,
+            voltage: 240,
+            poles: 2,
+            breakerAmps,
+            loadVa,
+            continuous: true,
+            dedicatedCircuit: true,
+            loadCategory: 'heat-pump',
+            label: `Inverter Mini-Split Outdoor (${coolingTons}-Ton)`,
+          }
+        }
+        default:
+          return null
+      }
+    }
     return null
+  }
+
+  const isExplicitDemandKindMismatched = (mepNode: SceneNodeLike, demand: RawMepDemand): boolean => {
+    const eqKind = typeof mepNode.equipmentKind === 'string' ? mepNode.equipmentKind : ''
+    if (!eqKind) return false
+    const v = demand.voltage ?? 120
+    const p = demand.poles ?? (v >= 208 ? 2 : 1)
+    const a = demand.breakerAmps ?? 15
+    const va = demand.loadVa ?? 0
+    if (mepNode.type === 'hvac:equipment' || mepNode.type === 'hvac-equipment') {
+      if (HVAC_120V_ONLY_KINDS.has(eqKind)) {
+        return v >= 208 || p >= 2 || a > 20 || va > 2400
+      }
+      if (HVAC_HIGH_VOLT_ONLY_KINDS.has(eqKind)) {
+        return v < 200 || p < 2
+      }
+    }
+    if (mepNode.type === 'plumbing:equipment' && PLUMBING_120V_ONLY_KINDS.has(eqKind)) {
+      return v >= 208 || p >= 2 || a > 20
+    }
+    return false
   }
 
   const auxCircuitLoadState = new Map<number, { index: number; usedVa: number }>()
@@ -1569,37 +2055,122 @@ export function planNecAutoPopulate(
       continue
     }
     if (wiredMepSourceIds.has(mepNode.id)) continue
+    const eqKind = typeof mepNode.equipmentKind === 'string' ? mepNode.equipmentKind : ''
     if (
-      mepNode.type === 'plumbing:equipment' &&
-      typeof mepNode.equipmentKind === 'string' &&
-      PASSIVE_PLUMBING_EQUIPMENT_KINDS.has(mepNode.equipmentKind)
+      (mepNode.type === 'plumbing:equipment' && PASSIVE_PLUMBING_EQUIPMENT_KINDS.has(eqKind)) ||
+      ((mepNode.type === 'hvac:equipment' || mepNode.type === 'hvac-equipment') &&
+        PASSIVE_HVAC_EQUIPMENT_KINDS.has(eqKind))
     ) {
       continue
     }
     const explicitDemand = mepNode.electricalDemand as RawMepDemand | null | undefined
     const rawDemand: RawMepDemand | null =
-      explicitDemand === undefined ? fallbackMepDemandForNode(mepNode) : explicitDemand
+      explicitDemand === undefined
+        ? fallbackMepDemandForNode(mepNode)
+        : explicitDemand && isExplicitDemandKindMismatched(mepNode, explicitDemand)
+          ? fallbackMepDemandForNode(mepNode)
+          : explicitDemand
     if (!rawDemand || rawDemand.required !== true) continue
     if (!Array.isArray(mepNode.position) || mepNode.position.length < 3) continue
 
     const mepRot = typeof mepNode.rotation === 'number' ? mepNode.rotation : 0
+    const label =
+      rawDemand.label || (typeof mepNode.name === 'string' && mepNode.name ? mepNode.name : mepNode.id)
+    const isHvacEquip = mepNode.type === 'hvac:equipment' || mepNode.type === 'hvac-equipment'
+    const mepRawY = Number(mepNode.position[1]) || 0
+    const isCeilingHardwiredExhaust =
+      isHvacEquip &&
+      (eqKind === 'bath-exhaust-fan' ||
+        (/bath.*exhaust|exhaust.*fan/i.test(`${eqKind} ${String(mepNode.name ?? '')} ${label}`) &&
+          mepRawY >= 2.2))
+
     // Offset power receptacle/disconnect cleanly outside equipment footprint + clearance so wires never self-clash.
-    // For plumbing fixtures (dishwasher/disposal/washer), place the outlet laterally in the adjacent under-sink bay
-    // (standard NEC practice) so the electrical riser never climbs straight through the fixture's supply/drain/vent pipes.
-    const radialOffsetM =
-      mepNode.type === 'hvac:equipment' || mepNode.type === 'hvac-equipment'
+    // For HVAC/Plumbing equipment, pick a face (+/-X, +/-Z, or rotated local faces) whose terminal point AND
+    // vertical riser do NOT land inside an adjacent side-return duct (`hvac:duct-run`) or plenum (`hvac:plenum`).
+    // For plumbing fixtures (dishwasher/disposal/washer), place the outlet laterally in the adjacent under-sink bay.
+    const radialOffsetM = isCeilingHardwiredExhaust
+      ? 0.22
+      : isHvacEquip
         ? 0.56
         : mepNode.type === 'plumbing:equipment'
           ? 0.42
           : 0
     const lateralOffsetM = mepNode.type === 'plumbing:fixture' ? 0.36 : 0
-    const pos: Vec3 = [
+    const targetY = isCeilingHardwiredExhaust
+      ? round3(Math.max(2.44, Math.min(levelHeight - 0.03, mepRawY >= 2.2 ? mepRawY : ceilingLightY)))
+      : Math.max(0.38, Math.min(1.5, mepRawY || 0.9))
+
+    const basePos: Vec3 = [
       round3(Number(mepNode.position[0]) + Math.sin(mepRot) * radialOffsetM + Math.cos(mepRot) * lateralOffsetM),
-      Math.max(0.38, Math.min(1.5, Number(mepNode.position[1]) || 0.9)),
+      targetY,
       round3(Number(mepNode.position[2]) + Math.cos(mepRot) * radialOffsetM - Math.sin(mepRot) * lateralOffsetM),
     ]
-    const label =
-      rawDemand.label || (typeof mepNode.name === 'string' && mepNode.name ? mepNode.name : mepNode.id)
+    let pos: Vec3 = basePos
+
+    if ((isHvacEquip || mepNode.type === 'plumbing:equipment') && !isCeilingHardwiredExhaust) {
+      const mepOriginX = Number(mepNode.position[0])
+      const mepOriginZ = Number(mepNode.position[2])
+      const mepOriginZone = zoneAtPoint(zones, mepOriginX, mepOriginZ)
+      const otherObstacles = obstacles.filter((o) => o.nodeId !== mepNode.id)
+      const pointOrRiserHitsObstacle = (cx: number, cy: number, cz: number): boolean => {
+        const yLo = Math.min(cy, effectiveChaseY)
+        const yHi = Math.max(cy, effectiveChaseY)
+        for (const obs of otherObstacles) {
+          const pad = Math.max(obs.requiredClearanceM, 0.05) + 0.04
+          const b = obs.box
+          if (cx < b.min[0] - pad || cx > b.max[0] + pad) continue
+          if (cz < b.min[2] - pad || cz > b.max[2] + pad) continue
+          if (yHi >= b.min[1] - 0.05 && yLo <= b.max[1] + 0.05) return true
+        }
+        return false
+      }
+      const pointOnlyHitsObstacle = (cx: number, cy: number, cz: number): boolean => {
+        for (const obs of otherObstacles) {
+          const pad = Math.max(obs.requiredClearanceM, 0.05) + 0.04
+          const b = obs.box
+          if (cx < b.min[0] - pad || cx > b.max[0] + pad) continue
+          if (cz < b.min[2] - pad || cz > b.max[2] + pad) continue
+          if (cy >= b.min[1] - 0.08 && cy <= b.max[1] + 0.08) return true
+        }
+        return false
+      }
+      if (pointOrRiserHitsObstacle(basePos[0], basePos[1], basePos[2])) {
+        const dirCandidates: Array<[number, number]> = [
+          [Math.sin(mepRot), Math.cos(mepRot)],
+          [Math.cos(mepRot), -Math.sin(mepRot)],
+          [-Math.cos(mepRot), Math.sin(mepRot)],
+          [-Math.sin(mepRot), -Math.cos(mepRot)],
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1],
+        ]
+        let bestFace: { p: Vec3; score: number } | null = null
+        for (const distOff of [radialOffsetM, round3(radialOffsetM + 0.22)]) {
+          for (let di = 0; di < dirCandidates.length; di++) {
+            const [ux, uz] = dirCandidates[di]!
+            const cx = round3(mepOriginX + ux * distOff)
+            const cz = round3(mepOriginZ + uz * distOff)
+            const hitsPoint = pointOnlyHitsObstacle(cx, targetY, cz)
+            const hitsRiser = pointOrRiserHitsObstacle(cx, targetY, cz)
+            const candZone = zoneAtPoint(zones, cx, cz)
+            const sameRoom = !mepOriginZone || candZone?.id === mepOriginZone.id
+            const score =
+              (hitsPoint ? -500 : 0) +
+              (hitsRiser ? -200 : 0) +
+              (sameRoom ? 40 : 0) -
+              (distOff - radialOffsetM) * 25 -
+              di * 0.5
+            if (!bestFace || score > bestFace.score) {
+              bestFace = { p: [cx, targetY, cz], score }
+            }
+          }
+        }
+        if (bestFace) {
+          pos = bestFace.p
+        }
+      }
+    }
 
     if (importedBonesServices.length > 0) {
       const mepDescriptor = `${String(mepNode.equipmentKind ?? '')} ${String(mepNode.name ?? '')} ${label}`.toLowerCase()
@@ -1642,9 +2213,12 @@ export function planNecAutoPopulate(
     const loadVa =
       typeof rawDemand.loadVa === 'number' ? rawDemand.loadVa : poles >= 2 ? 4500 : 1200
     const wireGauge: WireGauge = minWireGaugeForBreakerAmps(breakerAmps)
-    const mepZone = zoneAtPoint(zones, pos[0], pos[2])
+    const mepZone =
+      zoneAtPoint(zones, pos[0], pos[2]) ??
+      zoneAtPoint(zones, Number(mepNode.position[0]), Number(mepNode.position[2]))
     const mepZoneCat = mepZone ? mepZone.category.toLowerCase() : ''
     const isMepInBathroom = Boolean(mepZone && isBathroom(mepZoneCat))
+    const isMepInKitchen = Boolean(mepZone && isKitchen(mepZoneCat))
     const isDedicated =
       rawDemand.dedicatedCircuit === true ||
       poles >= 2 ||
@@ -1661,6 +2235,9 @@ export function planNecAutoPopulate(
     } else if (isMepInBathroom) {
       // NEC 210.11(C)(3): Never mix bathroom MEP outlets onto a shared general MEP aux circuit with other rooms
       circuitGroup = `Bathroom MEP Aux (120V ${breakerAmps}A)`
+    } else if (isMepInKitchen) {
+      // NEC 210.11(C)(1): Never mix kitchen MEP outlets (e.g. range hood) onto a shared general MEP aux circuit with other rooms
+      circuitGroup = `Kitchen MEP Aux (120V ${breakerAmps}A)`
     } else {
       const maxAuxVa = Math.floor(120 * breakerAmps * 0.8)
       const st = auxCircuitLoadState.get(breakerAmps) ?? { index: 1, usedVa: 0 }
@@ -1676,8 +2253,13 @@ export function planNecAutoPopulate(
           ? `MEP Aux Loads (120V ${breakerAmps}A)`
           : `MEP Aux Loads (120V ${breakerAmps}A) #${st.index}`
     }
-    const devKind: PlannedDeviceSpec['deviceKind'] =
-      poles >= 2 ? 'dedicated-240v' : rawDemand.gfciRequired ? 'gfci' : 'duplex'
+    const devKind: PlannedDeviceSpec['deviceKind'] = isCeilingHardwiredExhaust
+      ? 'luminaire'
+      : poles >= 2
+        ? 'dedicated-240v'
+        : rawDemand.gfciRequired
+          ? 'gfci'
+          : 'duplex'
     const isMep120v15Or20 = poles === 1 && breakerAmps <= 20
     const isMepResidentialHabitable =
       occupancy === 'residential' &&
@@ -1717,7 +2299,11 @@ export function planNecAutoPopulate(
         rawDemand.loadCategory === 'heat-pump' ||
         rawDemand.loadCategory === 'hvac-cooling',
       loadCategory: rawDemand.loadCategory,
-      boxType: poles >= 2 ? '4-sq-2.125' : 'single-gang-deep',
+      boxType: isCeilingHardwiredExhaust
+        ? '4-oct-2.125'
+        : poles >= 2
+          ? '4-sq-2.125'
+          : 'single-gang-deep',
       wireGauge,
       mepSourceNodeId: mepNode.id,
     })
@@ -2567,9 +3153,36 @@ export function planNecAutoPopulate(
 
   let runSeq = 1
   let totalAvoided = 0
+  let circuitIndex = 0
+  const panelRotY = typeof panelNode.rotation === 'number' && Number.isFinite(panelNode.rotation) ? panelNode.rotation : 0
+  const chaseBandTop = round3(Math.min(effectiveChaseY, levelHeight - 0.12))
+  const chaseBandBot = round3(Math.max(1.85, Math.min(chaseBandTop - 0.1, levelHeight - 0.34)))
+  const laneBaseChaseY = round3(chaseBandTop - 0.048)
 
   for (const bucket of circuitBuckets) {
     if (bucket.items.length === 0) continue
+
+    // VIS-02: Deterministic per-circuit vertical + lateral lane offsets so parallel conduit runs sit cleanly
+    // side-by-side without coplanar barber-pole Z-fighting, while staying inside safe ceiling & wall-cavity bounds.
+    const laneOffsetY = round3(((circuitIndex % 5) - 2) * 0.022)
+    const circuitChaseY = round3(
+      Math.max(chaseBandBot, Math.min(chaseBandTop, laneBaseChaseY + laneOffsetY)),
+    )
+    const lateralBucket = Math.floor(circuitIndex / 5) % 3
+    // Keep lateral wall-chase stagger <= 0.014 m so even outer wall corners (sqrt(2) * 0.014 = 0.0198 m) stay inside stud wall cavity (<= 0.02 m)
+    const circuitLaneLateralM = lateralBucket === 0 ? 0 : lateralBucket === 1 ? 0.014 : -0.014
+    const circuitCavities = {
+      ...cavities,
+      atticY: round3(cavities.atticY + (circuitIndex % 5) * 0.022),
+      crawlSpaceY: round3(cavities.crawlSpaceY - (circuitIndex % 5) * 0.022),
+    }
+    const knockoutOffM = round3((((circuitIndex % 7) - 3) / 3) * 0.12)
+    const panelStartPt: Vec3 = [
+      round3(panelTopPt[0] + Math.cos(panelRotY) * knockoutOffM),
+      panelTopPt[1],
+      round3(panelTopPt[2] - Math.sin(panelRotY) * knockoutOffM),
+    ]
+    circuitIndex += 1
 
     const circuitPoles: 1 | 2 | 3 = bucket.items.some((d) => d.poles === 3)
       ? 3
@@ -2633,23 +3246,24 @@ export function planNecAutoPopulate(
       return skip.size > 0 ? obstacles.filter((o) => !skip.has(o.nodeId)) : obstacles
     }
 
-    const hrRoute =
-      includeWiring && ordered.length > 0
-        ? routeElectricalRun(
-            panelTopPt,
-            ordered[0]!.position,
-            obstaclesForTarget([ordered[0]!.mepSourceNodeId]),
-            {
-              preferredChaseY: effectiveChaseY,
-              clearanceM: 0.05,
-              walls: routingWalls,
-              racewayType,
-              wireGauge: circuitWireGauge,
-              cavities,
-              routingStrategy,
-            },
-          )
-        : null
+    const hrRoute = (() => {
+      if (!includeWiring || ordered.length === 0) return null
+      const hrObs = obstaclesForTarget([ordered[0]!.mepSourceNodeId])
+      const hrOpts = {
+        preferredChaseY: circuitChaseY,
+        clearanceM: 0.05,
+        walls: routingWalls,
+        racewayType,
+        wireGauge: circuitWireGauge,
+        cavities: circuitCavities,
+        routingStrategy,
+        laneOffsetLateralM: circuitLaneLateralM,
+      }
+      const koRoute = routeElectricalRun(panelStartPt, ordered[0]!.position, hrObs, hrOpts)
+      if (koRoute.remainingClashes.length === 0 || knockoutOffM === 0) return koRoute
+      const centerRoute = routeElectricalRun(panelTopPt, ordered[0]!.position, hrObs, hrOpts)
+      return centerRoute.remainingClashes.length < koRoute.remainingClashes.length ? centerRoute : koRoute
+    })()
     const hopRoutes: Array<ReturnType<typeof routeElectricalRun>> = []
     if (includeWiring && ordered.length > 1) {
       for (let i = 0; i < ordered.length - 1; i++) {
@@ -2661,13 +3275,14 @@ export function planNecAutoPopulate(
             toDev.position,
             obstaclesForTarget([fromDev.mepSourceNodeId, toDev.mepSourceNodeId]),
             {
-              preferredChaseY: effectiveChaseY,
+              preferredChaseY: circuitChaseY,
               clearanceM: 0.05,
               walls: routingWalls,
               racewayType,
               wireGauge: circuitWireGauge,
-              cavities,
+              cavities: circuitCavities,
               routingStrategy,
+              laneOffsetLateralM: circuitLaneLateralM,
             },
           ),
         )

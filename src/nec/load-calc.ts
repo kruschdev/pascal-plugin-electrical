@@ -538,9 +538,15 @@ export function calculateSceneLoad(
         ? (primaryPanel.voltageSystem as VoltageSystem)
         : '120/208V-3P')
 
+    const hasMepLoad = (d: SceneNodeLike): boolean => {
+      const meta = d.metadata as { mepSourceNodeId?: string } | undefined
+      const loadVa = typeof d.loadVa === 'number' ? d.loadVa : 0
+      return typeof meta?.mepSourceNodeId === 'string' && loadVa > 0
+    }
     const receptacles = devices.filter(
       (d) =>
         d.isMotor !== true &&
+        !hasMepLoad(d) &&
         (d.deviceKind === 'duplex' ||
           d.deviceKind === 'gfci' ||
           d.deviceKind === 'afci' ||
@@ -561,7 +567,8 @@ export function calculateSceneLoad(
           (d.deviceKind === 'dedicated-240v' ||
             d.deviceKind === 'evse' ||
             d.deviceKind === 'exit-sign' ||
-            d.deviceKind === 'battery-ess'),
+            d.deviceKind === 'battery-ess' ||
+            hasMepLoad(d)),
       )
       .map((d) => ({
         name: (typeof d.name === 'string' && d.name) || d.id,

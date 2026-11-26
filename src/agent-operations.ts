@@ -22,6 +22,7 @@ import {
 } from './nec/panel-schedule'
 import { formatElectricalBomCsv } from './nec/pricing'
 import {
+  belongsToLevel,
   extractRoutingCavities,
   extractRoutingWalls,
   extractTradeObstacles,
@@ -75,6 +76,7 @@ function deterministicId(prefix: string, nodes: SceneNodes): string {
 export type ElectricalOpChanges = {
   create?: Array<{ node: AnyNode; parentId?: string }>
   update?: Array<{ id: string; data: Partial<AnyNode> }>
+  delete?: string[]
 }
 
 export type ElectricalOpOutcome<TResult extends Record<string, unknown>> = {
@@ -727,11 +729,32 @@ export const electricalAgentOperations = {
       includeWiring?: boolean
       routingStrategy?: 'auto' | 'wall-only'
       bonesMode?: BonesIngestionMode
+      clearExisting?: boolean
     },
     context: AgentContext,
   ) => {
     const parentId = resolveLevelId(nodes, input.levelId, context)
-    const plan = planNecAutoPopulate(asRecord(nodes), {
+    const origRecord = asRecord(nodes)
+    const deleteIds: string[] = []
+    const workingNodes: Record<string, SceneNodeLike> = { ...origRecord }
+    const CLEARABLE_ELECTRICAL_TYPES = new Set([
+      'electrical:conduit-run',
+      'electrical:device',
+      'electrical:panel',
+      'electrical:circuit',
+      'electrical:transformer',
+      'electrical:busway',
+    ])
+    if (input.clearExisting === true) {
+      for (const [id, n] of Object.entries(origRecord)) {
+        if (CLEARABLE_ELECTRICAL_TYPES.has(n.type) && belongsToLevel(origRecord, n, parentId)) {
+          deleteIds.push(id)
+          delete workingNodes[id]
+        }
+      }
+    }
+
+    const plan = planNecAutoPopulate(workingNodes, {
       levelId: parentId,
       occupancy: input.occupancy,
       protectionMode: input.protectionMode ?? 'hybrid',
@@ -874,15 +897,24 @@ export const electricalAgentOperations = {
       creates.push({ node: rNode, parentId: parentId ?? undefined })
     }
 
+    const changes: ElectricalOpChanges | undefined =
+      creates.length > 0 || deleteIds.length > 0
+        ? {
+            ...(deleteIds.length > 0 ? { delete: deleteIds } : {}),
+            ...(creates.length > 0 ? { create: creates } : {}),
+          }
+        : undefined
+
     return {
       result: {
         panelId: realPanelId,
         levelId: parentId,
         protectionMode: input.protectionMode ?? 'hybrid',
+        clearedExistingCount: deleteIds.length,
         ...plan.summary,
         circuits: plan.circuitSummary,
       },
-      changes: (creates.length > 0 ? { create: creates } : undefined) as ElectricalOpChanges | undefined,
+      changes,
     }
   },
 } satisfies AgentOperations

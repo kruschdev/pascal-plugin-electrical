@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { AnyNode, GeometryContext } from '@pascal-app/core'
 import { Box3 } from 'three'
 import { electricalAgentOperations } from '../agent-operations'
+import { electricalAgentTools } from '../agent-tools'
 import { buildDeviceCad, buildTransformerCad } from '../cad/equipment'
 import {
   buildSmartDimmerCad,
@@ -13,7 +14,12 @@ import { auditSceneElectrical } from '../nec/audit'
 import { planDeviceAutoConnection, planNecAutoPopulate } from '../nec/autopopulate'
 import { calculateResidentialLoad, calculateSceneLoad, type SceneNodeLike } from '../nec/load-calc'
 import { buildPanelSchedule } from '../nec/panel-schedule'
-import { extractRoutingWalls, extractTradeObstacles, routeElectricalRun } from '../nec/routing'
+import {
+  detectRunTradeClashes,
+  extractRoutingWalls,
+  extractTradeObstacles,
+  routeElectricalRun,
+} from '../nec/routing'
 import { calculateDeratedAmpacity } from '../nec/sizing'
 import {
   buildElectricalDeviceFloorplan,
@@ -831,5 +837,558 @@ describe('Full Claims-vs-Reality Audit Regression Suite (AUD-01..AUD-21)', () =>
       }
     })
     expect(handleFound).toBe(true)
+  })
+
+  test('XT-03: Kitchen MEP aux loads (range-hood) isolate onto Kitchen MEP Aux separate from general MEP Aux (0 NEC 210.11(C)(1) errors)', () => {
+    const scene: Record<string, unknown> = {
+      level_0: { id: 'level_0', type: 'level', height: 2.7 },
+      w1: { id: 'w1', type: 'wall', parentId: 'level_0', start: [0, 0], end: [10, 0], thickness: 0.16, height: 2.7 },
+      w2: { id: 'w2', type: 'wall', parentId: 'level_0', start: [10, 0], end: [10, 6], thickness: 0.16, height: 2.7 },
+      w3: { id: 'w3', type: 'wall', parentId: 'level_0', start: [10, 6], end: [0, 6], thickness: 0.16, height: 2.7 },
+      w4: { id: 'w4', type: 'wall', parentId: 'level_0', start: [0, 6], end: [0, 0], thickness: 0.16, height: 2.7 },
+      wm: { id: 'wm', type: 'wall', parentId: 'level_0', start: [5, 0], end: [5, 6], thickness: 0.12, height: 2.7 },
+      z_kit: { id: 'z_kit', type: 'zone', parentId: 'level_0', name: 'Kitchen', category: 'kitchen', polygon: [[0, 0], [5, 0], [5, 6], [0, 6]] },
+      z_liv: { id: 'z_liv', type: 'zone', parentId: 'level_0', name: 'Living Room', category: 'living', polygon: [[5, 0], [10, 0], [10, 6], [5, 6]] },
+      hood_1: {
+        id: 'hood_1',
+        type: 'hvac:equipment',
+        equipmentKind: 'range-hood',
+        name: 'Range Hood',
+        parentId: 'level_0',
+        position: [2.5, 1.8, 0.5],
+        electricalDemand: {
+          required: true,
+          voltage: 120,
+          poles: 1,
+          breakerAmps: 15,
+          loadVa: 300,
+          dedicatedCircuit: false,
+          gfciRequired: false,
+          afciRequired: true,
+          loadCategory: 'appliance',
+          label: 'Kitchen Range Exhaust Hood',
+        },
+      },
+      erv_1: {
+        id: 'erv_1',
+        type: 'hvac:equipment',
+        equipmentKind: 'erv-ventilator',
+        name: 'ERV Ventilator',
+        parentId: 'level_0',
+        position: [7.5, 2.0, 1.0],
+        electricalDemand: {
+          required: true,
+          voltage: 120,
+          poles: 1,
+          breakerAmps: 15,
+          loadVa: 180,
+          dedicatedCircuit: false,
+          gfciRequired: false,
+          loadCategory: 'motor',
+          label: 'ERV Ventilator',
+        },
+      },
+    }
+    const out = electricalAgentOperations.electrical_autopopulate_nec(
+      scene as never,
+      { levelId: 'level_0', includeWiring: true },
+      { activeLevelId: 'level_0' },
+    )
+    const merged: Record<string, SceneNodeLike> = { ...(scene as Record<string, SceneNodeLike>) }
+    for (const c of out.changes?.create ?? []) merged[c.node.id] = c.node as unknown as SceneNodeLike
+    const hoodDev = Object.values(merged).find(
+      (n) => (n.metadata as { mepSourceNodeId?: string } | undefined)?.mepSourceNodeId === 'hood_1',
+    )!
+    const ervDev = Object.values(merged).find(
+      (n) => (n.metadata as { mepSourceNodeId?: string } | undefined)?.mepSourceNodeId === 'erv_1',
+    )!
+    expect(hoodDev).toBeDefined()
+    expect(ervDev).toBeDefined()
+    expect((hoodDev.metadata as { circuitGroup?: string }).circuitGroup).toBe('Kitchen MEP Aux (120V 15A)')
+    expect(hoodDev.circuitNumber).not.toBe(ervDev.circuitNumber)
+    const audit = auditSceneElectrical(merged)
+    expect(audit.findings.filter((f) => f.codeRef === 'NEC 210.11(C)(1)')).toHaveLength(0)
+  })
+
+  test('XT-05(a): electrical_autopopulate_nec supports clearExisting to rebuild cleanly around newly added plumbing/HVAC obstacles without touching other levels', () => {
+    const autoTool = electricalAgentTools.tools.find((t) => t.name === 'electrical_autopopulate_nec')!
+    expect('clearExisting' in autoTool.input).toBe(true)
+
+    let scene: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level', height: 2.7 },
+      level_1: { id: 'level_1', type: 'level', height: 2.7 },
+      w1: { id: 'w1', type: 'wall', parentId: 'level_0', start: [0, 0], end: [8, 0], thickness: 0.16, height: 2.7 },
+      w2: { id: 'w2', type: 'wall', parentId: 'level_0', start: [8, 0], end: [8, 6], thickness: 0.16, height: 2.7 },
+      w3: { id: 'w3', type: 'wall', parentId: 'level_0', start: [8, 6], end: [0, 6], thickness: 0.16, height: 2.7 },
+      w4: { id: 'w4', type: 'wall', parentId: 'level_0', start: [0, 6], end: [0, 0], thickness: 0.16, height: 2.7 },
+      z_liv: { id: 'z_liv', type: 'zone', parentId: 'level_0', name: 'Living Room', category: 'living', polygon: [[0, 0], [8, 0], [8, 6], [0, 6]] },
+      l1_dev: { id: 'l1_dev', type: 'electrical:device', parentId: 'level_1', name: 'Upstairs Outlet', deviceKind: 'duplex', position: [2, 0.38, 0.1] },
+    }
+    const first = electricalAgentOperations.electrical_autopopulate_nec(
+      scene as never,
+      { levelId: 'level_0', includeWiring: true },
+      { activeLevelId: 'level_0' },
+    )
+    const firstIds = (first.changes?.create ?? []).map((c) => c.node.id)
+    for (const c of first.changes?.create ?? []) scene[c.node.id] = c.node as unknown as SceneNodeLike
+
+    // Insert plumbing pipe & HVAC duct directly through the existing first-pass conduit chase!
+    const sampleRun = Object.values(scene).find((n) => n.type === 'electrical:conduit-run' && Array.isArray(n.path) && n.path.length >= 2)!
+    const midPt = (sampleRun.path as [number, number, number][])[1]!
+    scene.late_pipe = {
+      id: 'late_pipe',
+      type: 'plumbing:pipe-run',
+      parentId: 'level_0',
+      nominalSize: '3"',
+      path: [
+        [midPt[0] - 0.5, midPt[1], midPt[2] - 0.5],
+        [midPt[0] + 0.5, midPt[1], midPt[2] + 0.5],
+      ],
+    }
+    scene.late_duct = {
+      id: 'late_duct',
+      type: 'hvac:duct-run',
+      parentId: 'level_0',
+      shape: 'round',
+      diameter: 8,
+      path: [
+        [0.5, 2.45, 3.0],
+        [7.5, 2.45, 3.0],
+      ],
+    }
+    const staleAudit = auditSceneElectrical(scene)
+    expect(staleAudit.findings.filter((f) => f.category === 'trade-clash').length).toBeGreaterThan(0)
+
+    // Re-run with clearExisting: true
+    const rebuilt = electricalAgentOperations.electrical_autopopulate_nec(
+      scene as never,
+      { levelId: 'level_0', includeWiring: true, clearExisting: true },
+      { activeLevelId: 'level_0' },
+    )
+    expect(rebuilt.changes?.delete?.length).toBe(firstIds.length)
+    for (const oldId of firstIds) {
+      expect(rebuilt.changes?.delete).toContain(oldId)
+    }
+    expect(rebuilt.changes?.delete).not.toContain('l1_dev')
+
+    const nextScene: Record<string, SceneNodeLike> = { ...scene }
+    for (const id of rebuilt.changes?.delete ?? []) delete nextScene[id]
+    for (const c of rebuilt.changes?.create ?? []) nextScene[c.node.id] = c.node as unknown as SceneNodeLike
+    expect(nextScene.l1_dev).toBeDefined()
+    const cleanAudit = auditSceneElectrical(nextScene)
+    expect(cleanAudit.findings.filter((f) => f.category === 'trade-clash')).toHaveLength(0)
+  })
+
+  test('XT-05(b) & XT-05(c): Wall-embedded structural columns are bypassed with 0 clashes and MDP-1 selects a 100% clear NEC 110.26(A) working space', () => {
+    // 1. Direct routeElectricalRun around a wall-embedded 6x6 ridge bearing post at [0, 0, 4.5]
+    const colScene: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level', height: 2.8 },
+      roof_1: { id: 'roof_1', type: 'roof', parentId: 'level_0' },
+      w_w: { id: 'w_w', type: 'wall', parentId: 'level_0', start: [0, 0], end: [0, 9], thickness: 0.16, height: 2.8 },
+      w_n: { id: 'w_n', type: 'wall', parentId: 'level_0', start: [0, 0], end: [10, 0], thickness: 0.16, height: 2.8 },
+      w_e: { id: 'w_e', type: 'wall', parentId: 'level_0', start: [10, 0], end: [10, 9], thickness: 0.16, height: 2.8 },
+      w_s: { id: 'w_s', type: 'wall', parentId: 'level_0', start: [10, 9], end: [0, 9], thickness: 0.16, height: 2.8 },
+      z_liv: { id: 'z_liv', type: 'zone', parentId: 'level_0', name: 'Living Room', category: 'living', polygon: [[0, 0], [10, 0], [10, 9], [0, 9]] },
+      col_1: { id: 'col_1', type: 'structural:column', parentId: 'level_0', name: 'Ridge Beam Bearing Post #1', position: [0, 0, 4.5], widthIn: 5.5, depthIn: 5.5, heightM: 4.8 },
+      col_2: { id: 'col_2', type: 'structural:column', parentId: 'level_0', name: 'Ridge Beam Bearing Post #2', position: [10, 0, 4.5], widthIn: 5.5, depthIn: 5.5, heightM: 4.8 },
+    }
+    const walls = extractRoutingWalls(colScene, 'level_0')
+    const obs = extractTradeObstacles(colScene, 'level_0')
+    const branch = routeElectricalRun([0.088, 0.38, 2.0], [0.088, 0.38, 7.0], obs, {
+      walls,
+      racewayType: 'nm-b',
+      preferredChaseY: 2.55,
+    })
+    expect(branch.remainingClashes).toHaveLength(0)
+    expect(branch.avoidedObstacles.some((a) => a.nodeId === 'col_1')).toBe(true)
+
+    // Full Scenario D auto-populate -> 0 trade clashes and 0 working-space errors
+    const scenD = electricalAgentOperations.electrical_autopopulate_nec(
+      colScene as never,
+      { levelId: 'level_0', includeWiring: true },
+      { activeLevelId: 'level_0' },
+    )
+    const mergedD: Record<string, SceneNodeLike> = { ...colScene }
+    for (const c of scenD.changes?.create ?? []) mergedD[c.node.id] = c.node as unknown as SceneNodeLike
+    const auditD = auditSceneElectrical(mergedD)
+    expect(auditD.findings.filter((f) => f.category === 'trade-clash')).toHaveLength(0)
+    expect(auditD.findings.filter((f) => f.category === 'working-space')).toHaveLength(0)
+
+    // 2. XT-05(c): Utility room with HVAC air handler & plumbing manifold blocking preferred wall midpoint -> MDP-1 slides to clear NEC 110.26(A) spot
+    const utilScene: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level', height: 2.7 },
+      w1: { id: 'w1', type: 'wall', parentId: 'level_0', start: [0, 0], end: [6, 0], thickness: 0.16, height: 2.7 },
+      w2: { id: 'w2', type: 'wall', parentId: 'level_0', start: [6, 0], end: [6, 4], thickness: 0.16, height: 2.7 },
+      w3: { id: 'w3', type: 'wall', parentId: 'level_0', start: [6, 4], end: [0, 4], thickness: 0.16, height: 2.7 },
+      w4: { id: 'w4', type: 'wall', parentId: 'level_0', start: [0, 4], end: [0, 0], thickness: 0.16, height: 2.7 },
+      z_util: { id: 'z_util', type: 'zone', parentId: 'level_0', name: 'Utility Room', category: 'utility', polygon: [[0, 0], [6, 0], [6, 4], [0, 4]] },
+      ahu_block: { id: 'ahu_block', type: 'hvac:equipment', equipmentKind: 'air-handler', parentId: 'level_0', position: [3.0, 0, 0.55] },
+      man_block: { id: 'man_block', type: 'plumbing:manifold', parentId: 'level_0', position: [1.5, 1.2, 0.4] },
+      plenum_block: { id: 'plenum_block', type: 'hvac:plenum', parentId: 'level_0', position: [3.0, 1.65, 0.55], widthIn: 18, heightIn: 12, depthIn: 24 },
+    }
+    const utilOut = electricalAgentOperations.electrical_autopopulate_nec(
+      utilScene as never,
+      { levelId: 'level_0', includeWiring: true },
+      { activeLevelId: 'level_0' },
+    )
+    const mergedUtil: Record<string, SceneNodeLike> = { ...utilScene }
+    for (const c of utilOut.changes?.create ?? []) mergedUtil[c.node.id] = c.node as unknown as SceneNodeLike
+    const utilAudit = auditSceneElectrical(mergedUtil)
+    expect(utilAudit.findings.filter((f) => f.category === 'working-space')).toHaveLength(0)
+    expect(utilAudit.findings.filter((f) => f.category === 'dedicated-space')).toHaveLength(0)
+  })
+
+  test('VIS-02: Multi-circuit home runs stagger vertically across ceiling lanes and laterally without coplanar overlap or new clashes', () => {
+    const multiRoom: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level', height: 2.7 },
+      w1: { id: 'w1', type: 'wall', parentId: 'level_0', start: [0, 0], end: [12, 0], thickness: 0.14, height: 2.7 },
+      w2: { id: 'w2', type: 'wall', parentId: 'level_0', start: [12, 0], end: [12, 8], thickness: 0.14, height: 2.7 },
+      w3: { id: 'w3', type: 'wall', parentId: 'level_0', start: [12, 8], end: [0, 8], thickness: 0.14, height: 2.7 },
+      w4: { id: 'w4', type: 'wall', parentId: 'level_0', start: [0, 8], end: [0, 0], thickness: 0.14, height: 2.7 },
+      wm1: { id: 'wm1', type: 'wall', parentId: 'level_0', start: [4, 0], end: [4, 8], thickness: 0.12, height: 2.7 },
+      wm2: { id: 'wm2', type: 'wall', parentId: 'level_0', start: [8, 0], end: [8, 8], thickness: 0.12, height: 2.7 },
+      wh: { id: 'wh', type: 'wall', parentId: 'level_0', start: [0, 4], end: [12, 4], thickness: 0.12, height: 2.7 },
+      z1: { id: 'z1', type: 'zone', parentId: 'level_0', name: 'Garage', category: 'garage', polygon: [[0, 0], [4, 0], [4, 4], [0, 4]] },
+      z2: { id: 'z2', type: 'zone', parentId: 'level_0', name: 'Kitchen', category: 'kitchen', polygon: [[4, 0], [8, 0], [8, 4], [4, 4]] },
+      z3: { id: 'z3', type: 'zone', parentId: 'level_0', name: 'Bathroom', category: 'bathroom', polygon: [[8, 0], [12, 0], [12, 4], [8, 4]] },
+      z4: { id: 'z4', type: 'zone', parentId: 'level_0', name: 'Living Room', category: 'living', polygon: [[0, 4], [4, 4], [4, 8], [0, 8]] },
+      z5: { id: 'z5', type: 'zone', parentId: 'level_0', name: 'Bedroom 1', category: 'bedroom', polygon: [[4, 4], [8, 4], [8, 8], [4, 8]] },
+      z6: { id: 'z6', type: 'zone', parentId: 'level_0', name: 'Laundry', category: 'laundry', polygon: [[8, 4], [12, 4], [12, 8], [8, 8]] },
+    }
+    const out = electricalAgentOperations.electrical_autopopulate_nec(
+      multiRoom as never,
+      { levelId: 'level_0', includeWiring: true },
+      { activeLevelId: 'level_0' },
+    )
+    const merged: Record<string, SceneNodeLike> = { ...multiRoom }
+    for (const c of out.changes?.create ?? []) merged[c.node.id] = c.node as unknown as SceneNodeLike
+    const homeRuns = Object.values(merged).filter(
+      (n) =>
+        n.type === 'electrical:conduit-run' &&
+        (n.metadata as { runKind?: string } | undefined)?.runKind === 'home-run',
+    )
+    expect(homeRuns.length).toBeGreaterThanOrEqual(6)
+
+    // Collect distinct chase elevations across home runs (must span multiple staggered lanes, not all identical Y!)
+    const chaseYs = new Set<number>()
+    for (const r of homeRuns) {
+      const path = r.path as [number, number, number][]
+      for (const pt of path.slice(1, -1)) {
+        if (pt[1] >= 2.2 && pt[1] <= 2.6) chaseYs.add(pt[1])
+      }
+    }
+    expect(chaseYs.size).toBeGreaterThanOrEqual(4)
+    const audit = auditSceneElectrical(merged)
+    expect(audit.errorCount).toBe(0)
+  })
+
+  test('XT-08, XT-09, XT-10 & XT-13: Trade obstacle & audit parity (center-anchored manifold, hvac:plenum/terminal, plumbing:fixture wet+clearance, rotated column, nominal HVAC dims, diagonal pipe subdivision)', () => {
+    const scene: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level', height: 2.8 },
+      z_bath: { id: 'z_bath', type: 'zone', parentId: 'level_0', name: 'Bath', category: 'bathroom', polygon: [[0, 0], [6, 0], [6, 6], [0, 6]] },
+      man_1: { id: 'man_1', type: 'plumbing:manifold', parentId: 'level_0', position: [1.0, 1.2, 1.0] },
+      plenum_1: { id: 'plenum_1', type: 'hvac:plenum', parentId: 'level_0', position: [2.0, 1.5, 2.0], widthIn: 24, heightIn: 12, depthIn: 12, rotation: Math.PI / 2 },
+      term_1: { id: 'term_1', type: 'hvac:terminal', parentId: 'level_0', terminalKind: 'supply-ceiling-diffuser', position: [3.0, 2.6, 3.0], neckSizeIn: 8 },
+      tub_1: { id: 'tub_1', type: 'plumbing:fixture', parentId: 'level_0', fixtureKind: 'bathtub', position: [1.5, 0.15, 4.5] },
+      sink_1: { id: 'sink_1', type: 'plumbing:fixture', parentId: 'level_0', fixtureKind: 'lavatory', position: [4.5, 0.53, 4.5] },
+      col_rot: { id: 'col_rot', type: 'structural:column', parentId: 'level_0', position: [5.0, 0, 1.0], widthIn: 12, depthIn: 4, heightM: 2.8, rotation: Math.PI / 2 },
+      rtu_1: { id: 'rtu_1', type: 'hvac:equipment', parentId: 'level_0', equipmentKind: 'rooftop-package-unit', position: [10, 0, 10] },
+      ahu_1: { id: 'ahu_1', type: 'hvac:equipment', parentId: 'level_0', equipmentKind: 'air-handler', position: [12, 0, 10] },
+      hp_1: { id: 'hp_1', type: 'hvac:equipment', parentId: 'level_0', equipmentKind: 'heat-pump-condenser', position: [14, 0, 10] },
+      erv_1: { id: 'erv_1', type: 'hvac:equipment', parentId: 'level_0', equipmentKind: 'erv-ventilator', position: [16, 0, 10] },
+      hood_1: { id: 'hood_1', type: 'hvac:equipment', parentId: 'level_0', equipmentKind: 'range-hood', position: [18, 0, 10] },
+      fan_1: { id: 'fan_1', type: 'hvac:equipment', parentId: 'level_0', equipmentKind: 'bath-exhaust-fan', position: [20, 0, 10] },
+      diag_pipe: { id: 'diag_pipe', type: 'plumbing:pipe-run', parentId: 'level_0', nominalSize: '2"', path: [[1, 2.2, 1], [7, 2.2, 7]] },
+    }
+    const obs = extractTradeObstacles(scene, 'level_0')
+
+    // XT-08: plumbing:manifold center-anchored minY = y - 0.35, maxY = y + 0.35
+    const manObs = obs.find((o) => o.nodeId === 'man_1')!
+    expect(manObs.box.min[1]).toBeCloseTo(0.85, 3)
+    expect(manObs.box.max[1]).toBeCloseTo(1.55, 3)
+
+    // XT-09: hvac:plenum (inches->meters + rotated 90 deg) and hvac:terminal are conduit routing obstacles,
+    // while plumbing:fixture is audited by NEC 406.9(C)/406.5(E)/110.26(A) without blocking dry stud-cavity conduits behind walls
+    const plObs = obs.find((o) => o.nodeId === 'plenum_1')!
+    expect(plObs).toBeDefined()
+    // widthIn=24 (0.6096m) rotated 90deg -> Z span ~ 0.6096, X span ~ 12in (0.3048m)
+    expect(plObs.box.max[0] - plObs.box.min[0]).toBeCloseTo(12 * 0.0254, 3)
+    expect(plObs.box.max[2] - plObs.box.min[2]).toBeCloseTo(24 * 0.0254, 3)
+    expect(obs.some((o) => o.nodeId === 'term_1')).toBe(true)
+    expect(obs.some((o) => o.nodeId === 'tub_1')).toBe(false)
+
+    // XT-10: structural:column rotated 90 deg swaps widthIn (12") and depthIn (4")
+    const colObs = obs.find((o) => o.nodeId === 'col_rot')!
+    expect(colObs.box.max[0] - colObs.box.min[0]).toBeCloseTo(4 * 0.0254, 3)
+    expect(colObs.box.max[2] - colObs.box.min[2]).toBeCloseTo(12 * 0.0254, 3)
+
+    // XT-13: nominal hvac:equipment dimensions & diagonal plumbing:pipe-run subdivision
+    const rtuObs = obs.find((o) => o.nodeId === 'rtu_1')!
+    expect(rtuObs.box.max[0] - rtuObs.box.min[0]).toBeCloseTo(1.55, 2)
+    expect(rtuObs.box.max[2] - rtuObs.box.min[2]).toBeCloseTo(1.05, 2)
+    expect(rtuObs.box.max[1] - rtuObs.box.min[1]).toBeCloseTo(1.15, 2)
+    const ahuObs = obs.find((o) => o.nodeId === 'ahu_1')!
+    expect(ahuObs.box.max[1] - ahuObs.box.min[1]).toBeCloseTo(1.42, 2)
+    const hpObs = obs.find((o) => o.nodeId === 'hp_1')!
+    expect(hpObs.box.max[0] - hpObs.box.min[0]).toBeCloseTo(0.85, 2)
+    const ervObs = obs.find((o) => o.nodeId === 'erv_1')!
+    expect(ervObs.box.max[1] - ervObs.box.min[1]).toBeCloseTo(0.45, 2)
+    const hoodObs = obs.find((o) => o.nodeId === 'hood_1')!
+    expect(hoodObs.box.max[1] - hoodObs.box.min[1]).toBeCloseTo(0.35, 2)
+    const fanObs = obs.find((o) => o.nodeId === 'fan_1')!
+    expect(fanObs.box.max[1] - fanObs.box.min[1]).toBeCloseTo(0.22, 2)
+
+    const diagSegs = obs.filter((o) => o.nodeId === 'diag_pipe')
+    expect(diagSegs.length).toBeGreaterThan(2)
+    // Conduit far off the diagonal (at x=1, z=7) has 0 false clashes against subdivided diagonal pipe!
+    expect(detectRunTradeClashes([[1, 2.2, 6.5], [1, 2.2, 7.5]], diagSegs)).toHaveLength(0)
+
+    // XT-09 + XT-10 audit checks: tub/shower NEC 406.9(C), sink NEC 406.5(E), and NEC 110.26(A) against manifold, fixture, plenum, & rotated column
+    const auditScene: Record<string, SceneNodeLike> = {
+      ...scene,
+      dev_tub: { id: 'dev_tub', type: 'electrical:device', parentId: 'level_0', name: 'Bad Tub Outlet', deviceKind: 'gfci', position: [1.5, 1.0, 4.9], gfciProtected: true },
+      dev_sink: { id: 'dev_sink', type: 'electrical:device', parentId: 'level_0', name: 'Bad Sink Outlet', deviceKind: 'gfci', position: [4.5, 0.85, 4.5], gfciProtected: true },
+      p_man: { id: 'p_man', type: 'electrical:panel', parentId: 'level_0', name: 'P-Manifold', position: [1.0, 1.52, 0.5], rotation: 0 },
+      p_plenum: { id: 'p_plenum', type: 'electrical:panel', parentId: 'level_0', name: 'P-Plenum', position: [2.0, 1.52, 1.5], rotation: 0 },
+      p_fix: { id: 'p_fix', type: 'electrical:panel', parentId: 'level_0', name: 'P-Fixture', position: [4.5, 1.52, 4.0], rotation: 0 },
+      p_rotcol: { id: 'p_rotcol', type: 'electrical:panel', parentId: 'level_0', name: 'P-RotCol', position: [5.0, 1.52, 0.25], rotation: 0 },
+    }
+    const rep = auditSceneElectrical(auditScene)
+    expect(rep.findings.some((f) => f.codeRef === 'NEC 406.9(C)' && f.nodeIds.includes('tub_1'))).toBe(true)
+    expect(rep.findings.some((f) => f.codeRef === 'NEC 406.5(E)' && f.nodeIds.includes('sink_1'))).toBe(true)
+    expect(rep.findings.some((f) => f.codeRef === 'NEC 110.26(A)' && f.nodeIds.includes('man_1'))).toBe(true)
+    expect(rep.findings.some((f) => f.codeRef === 'NEC 110.26(A)' && f.nodeIds.includes('plenum_1'))).toBe(true)
+    expect(rep.findings.some((f) => f.codeRef === 'NEC 110.26(A)' && f.nodeIds.includes('sink_1'))).toBe(true)
+    // Rotated column at z=1.0 extends +/-0.1524m along Z (zMin=0.8476), inside p_rotcol front prism (0.25 + 0.09..1.004)
+    expect(rep.findings.some((f) => f.codeRef === 'NEC 110.26(A)' && f.nodeIds.includes('col_rot'))).toBe(true)
+  })
+
+  test('XT-11 & XT-12: Commercial 120V MEP load calc counts dedicatedLoads without 180VA receptacle duplication, and hvac:equipment fallback + stale kind-mismatch validation works', () => {
+    // XT-11: Commercial 120V non-motor MEP loads counted in dedicatedLoads, excluded from generic 180VA receptacles
+    const commScene: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level' },
+      p1: { id: 'p1', type: 'electrical:panel', occupancy: 'commercial', voltageSystem: '120/208V-3P' },
+      std_rec: { id: 'std_rec', type: 'electrical:device', deviceKind: 'duplex', name: 'Office Duplex', loadVa: 180 },
+      mep_dw: {
+        id: 'mep_dw',
+        type: 'electrical:device',
+        deviceKind: 'gfci',
+        name: 'Commercial Dishwasher Power',
+        isMotor: false,
+        loadVa: 1500,
+        metadata: { mepSourceNodeId: 'dw_1' },
+      },
+      mep_furn: {
+        id: 'mep_furn',
+        type: 'electrical:device',
+        deviceKind: 'duplex',
+        name: 'Gas Furnace Power',
+        isMotor: false,
+        loadVa: 850,
+        metadata: { mepSourceNodeId: 'furn_1' },
+      },
+    }
+    const commLoad = calculateSceneLoad(commScene, { occupancy: 'commercial', fallbackSquareFootage: 1000 })
+    expect(commLoad.occupancy).toBe('commercial')
+    if (commLoad.occupancy === 'commercial') {
+      expect(commLoad.receptacleRawVa).toBe(180) // Only std_rec, NOT mep_dw or mep_furn
+      expect(commLoad.dedicatedTotalVa).toBe(2350) // 1500 + 850
+    }
+
+    // XT-12: hvac:equipment fallback demands + stale kind-mismatch override + passive mini-split-indoor skip
+    const hvacScene: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level', height: 2.7 },
+      w1: { id: 'w1', type: 'wall', parentId: 'level_0', start: [0, 0], end: [10, 0], thickness: 0.16, height: 2.7 },
+      w2: { id: 'w2', type: 'wall', parentId: 'level_0', start: [10, 0], end: [10, 6], thickness: 0.16, height: 2.7 },
+      w3: { id: 'w3', type: 'wall', parentId: 'level_0', start: [10, 6], end: [0, 6], thickness: 0.16, height: 2.7 },
+      w4: { id: 'w4', type: 'wall', parentId: 'level_0', start: [0, 6], end: [0, 0], thickness: 0.16, height: 2.7 },
+      z_util: { id: 'z_util', type: 'zone', parentId: 'level_0', name: 'Utility', category: 'utility', polygon: [[0, 0], [10, 0], [10, 6], [0, 6]] },
+      // No explicit electricalDemand -> fallback derives 240V 2P 35A 4350VA
+      hp_no_demand: { id: 'hp_no_demand', type: 'hvac:equipment', equipmentKind: 'heat-pump-condenser', coolingTons: 3, parentId: 'level_0', position: [2, 0, 1] },
+      // Stale 240V 60A air-handler demand on a gas-furnace-96 -> overridden to 120V 1P 15A 850VA!
+      furn_stale: {
+        id: 'furn_stale',
+        type: 'hvac:equipment',
+        equipmentKind: 'gas-furnace-96',
+        parentId: 'level_0',
+        position: [5, 0, 1],
+        electricalDemand: {
+          required: true,
+          voltage: 240,
+          poles: 2,
+          breakerAmps: 60,
+          loadVa: 10600,
+          dedicatedCircuit: true,
+          loadCategory: 'hvac-heating',
+          label: 'Stale Air Handler',
+        },
+      },
+      // Passive mini-split-indoor with stale demand -> completely ignored (no breaker created)
+      ms_indoor_stale: {
+        id: 'ms_indoor_stale',
+        type: 'hvac:equipment',
+        equipmentKind: 'mini-split-indoor',
+        parentId: 'level_0',
+        position: [8, 2.2, 1],
+        electricalDemand: {
+          required: true,
+          voltage: 240,
+          poles: 2,
+          breakerAmps: 30,
+          loadVa: 4000,
+          dedicatedCircuit: true,
+          loadCategory: 'heat-pump',
+          label: 'Stale Mini Split',
+        },
+      },
+    }
+    const hvacPlan = planNecAutoPopulate(hvacScene, { levelId: 'level_0', includeWiring: false })
+    const hpDev = hvacPlan.devices.find((d) => d.mepSourceNodeId === 'hp_no_demand')!
+    expect(hpDev).toBeDefined()
+    expect(hpDev.poles).toBe(2)
+    expect(hpDev.breakerAmps).toBe(35)
+    expect(hpDev.loadVa).toBe(4350)
+
+    const furnDev = hvacPlan.devices.find((d) => d.mepSourceNodeId === 'furn_stale')!
+    expect(furnDev).toBeDefined()
+    expect(furnDev.poles).toBe(1)
+    expect(furnDev.breakerAmps).toBe(15)
+    expect(furnDev.loadVa).toBe(850)
+
+    expect(hvacPlan.devices.some((d) => d.mepSourceNodeId === 'ms_indoor_stale')).toBe(false)
+  })
+
+  test('Live 6-Scenario Edge Cases: plumbing:fixture wall-cavity clearance, NEC 406.9(C) partition-wall separation + ceiling bath-exhaust-fan, and HVAC side-return duct drop avoidance', () => {
+    // 1. Kitchen conduit inside dividing wall at x=6.0 behind Master Bath Walk-In Shower (x=6.34) has 0 false clashes
+    const showerWallScene: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level', height: 2.7 },
+      w_div: { id: 'w_div', type: 'wall', parentId: 'level_0', start: [6.0, 0], end: [6.0, 6.0], thickness: 0.14, height: 2.7 },
+      shower_1: { id: 'shower_1', type: 'plumbing:fixture', parentId: 'level_0', fixtureKind: 'shower', name: 'Master Bath Walk-In Shower', roomName: 'Master Bath', position: [6.34, 0.05, 3.0] },
+      kit_gfci_run: {
+        id: 'kit_gfci_run',
+        type: 'electrical:conduit-run',
+        parentId: 'level_0',
+        name: 'Kitchen GFCI Wall Chase',
+        racewayType: 'nm-b',
+        wireGauge: '12',
+        path: [[6.0, 1.12, 1.0], [6.0, 1.12, 5.0]],
+      },
+      // 2a. Guest Bedroom Outlet 3 on opposite side of drywall partition wall (x=5.92) from Guest Bath shower (x=6.34) -> 0 NEC 406.9(C) false positive!
+      guest_bed_outlet: {
+        id: 'guest_bed_outlet',
+        type: 'electrical:device',
+        parentId: 'level_0',
+        name: 'Guest Bedroom Outlet 3',
+        roomName: 'Guest Bedroom',
+        deviceKind: 'duplex',
+        position: [5.92, 0.38, 3.0],
+        rotation: -Math.PI / 2,
+      },
+      // Same-room bath outlet on east side of wall (x=6.08, same side as shower x=6.34) -> STILL flagged by NEC 406.9(C)!
+      bad_bath_outlet: {
+        id: 'bad_bath_outlet',
+        type: 'electrical:device',
+        parentId: 'level_0',
+        name: 'Bad Same-Room Bath Outlet',
+        roomName: 'Master Bath',
+        deviceKind: 'gfci',
+        position: [6.08, 1.12, 3.0],
+        rotation: Math.PI / 2,
+        gfciProtected: true,
+      },
+      // Legacy duplex device referencing ceiling bath-exhaust-fan via mepSourceNodeId -> exempt from NEC 406.9(C)
+      bath_fan_mep: {
+        id: 'bath_fan_mep',
+        type: 'hvac:equipment',
+        parentId: 'level_0',
+        equipmentKind: 'bath-exhaust-fan',
+        name: 'Bath Exhaust Fan',
+        position: [6.5, 2.69, 3.0],
+      },
+      legacy_fan_dev: {
+        id: 'legacy_fan_dev',
+        type: 'electrical:device',
+        parentId: 'level_0',
+        name: 'Bath Exhaust Fan Power',
+        deviceKind: 'duplex',
+        position: [6.5, 1.5, 3.0],
+        gfciProtected: true,
+        metadata: { mepSourceNodeId: 'bath_fan_mep' },
+      },
+    }
+    const showerAudit = auditSceneElectrical(showerWallScene)
+    expect(showerAudit.findings.filter((f) => f.category === 'trade-clash')).toHaveLength(0)
+    expect(
+      showerAudit.findings.filter((f) => f.codeRef === 'NEC 406.9(C)' && f.nodeIds.includes('guest_bed_outlet')),
+    ).toHaveLength(0)
+    expect(
+      showerAudit.findings.filter((f) => f.codeRef === 'NEC 406.9(C)' && f.nodeIds.includes('legacy_fan_dev')),
+    ).toHaveLength(0)
+    expect(
+      showerAudit.findings.filter((f) => f.codeRef === 'NEC 406.9(C)' && f.nodeIds.includes('bad_bath_outlet')),
+    ).toHaveLength(1)
+
+    // 2b. Autopopulate emits ceiling bath-exhaust-fan as hardwired luminaire at ceiling height (>= 2.44m) with 0 NEC 406.9(C) / 410.10(D) errors
+    const bathFanScene: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level', height: 2.7 },
+      w1: { id: 'w1', type: 'wall', parentId: 'level_0', start: [0, 0], end: [6, 0], thickness: 0.16, height: 2.7 },
+      w2: { id: 'w2', type: 'wall', parentId: 'level_0', start: [6, 0], end: [6, 4], thickness: 0.16, height: 2.7 },
+      w3: { id: 'w3', type: 'wall', parentId: 'level_0', start: [6, 4], end: [0, 4], thickness: 0.16, height: 2.7 },
+      w4: { id: 'w4', type: 'wall', parentId: 'level_0', start: [0, 4], end: [0, 0], thickness: 0.16, height: 2.7 },
+      wm: { id: 'wm', type: 'wall', parentId: 'level_0', start: [3, 0], end: [3, 4], thickness: 0.12, height: 2.7 },
+      z_hall: { id: 'z_hall', type: 'zone', parentId: 'level_0', name: 'Hallway', category: 'hallway', polygon: [[0, 0], [3, 0], [3, 4], [0, 4]] },
+      z_bath: { id: 'z_bath', type: 'zone', parentId: 'level_0', name: 'Guest Bath', category: 'bathroom', polygon: [[3, 0], [6, 0], [6, 4], [3, 4]] },
+      tub_guest: { id: 'tub_guest', type: 'plumbing:fixture', parentId: 'level_0', fixtureKind: 'tub-shower-combo', position: [5.1, 0.15, 2.0] },
+      fan_guest: { id: 'fan_guest', type: 'hvac:equipment', parentId: 'level_0', equipmentKind: 'bath-exhaust-fan', name: 'Guest Bath Exhaust Fan', position: [5.0, 2.69, 2.0] },
+    }
+    const bathAuto = electricalAgentOperations.electrical_autopopulate_nec(
+      bathFanScene as never,
+      { levelId: 'level_0', includeWiring: true },
+      { activeLevelId: 'level_0' },
+    )
+    const mergedBath: Record<string, SceneNodeLike> = { ...bathFanScene }
+    for (const c of bathAuto.changes?.create ?? []) mergedBath[c.node.id] = c.node as unknown as SceneNodeLike
+    const fanDev = Object.values(mergedBath).find(
+      (n) => (n.metadata as { mepSourceNodeId?: string } | undefined)?.mepSourceNodeId === 'fan_guest',
+    )!
+    expect(fanDev).toBeDefined()
+    expect(fanDev.deviceKind).toBe('luminaire')
+    expect((fanDev.position as [number, number, number])[1]).toBeGreaterThanOrEqual(2.44)
+    const bathAudit = auditSceneElectrical(mergedBath)
+    expect(bathAudit.findings.filter((f) => f.codeRef === 'NEC 406.9(C)' || f.codeRef === 'NEC 410.10(D)')).toHaveLength(0)
+
+    // 3. HVAC side-return vertical duct drop immediately beside Air Handler (~0.55m away):
+    //    MEP power terminal avoids return drop face AND conduit routes around vertical HVAC drop with 0 clashes!
+    const hvacDropScene: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level', height: 2.7 },
+      w1: { id: 'w1', type: 'wall', parentId: 'level_0', start: [0, 0], end: [8, 0], thickness: 0.16, height: 2.7 },
+      w2: { id: 'w2', type: 'wall', parentId: 'level_0', start: [8, 0], end: [8, 5], thickness: 0.16, height: 2.7 },
+      w3: { id: 'w3', type: 'wall', parentId: 'level_0', start: [8, 5], end: [0, 5], thickness: 0.16, height: 2.7 },
+      w4: { id: 'w4', type: 'wall', parentId: 'level_0', start: [0, 5], end: [0, 0], thickness: 0.16, height: 2.7 },
+      z_util: { id: 'z_util', type: 'zone', parentId: 'level_0', name: 'Utility', category: 'utility', polygon: [[0, 0], [8, 0], [8, 5], [0, 5]] },
+      ahu_main: { id: 'ahu_main', type: 'hvac:equipment', equipmentKind: 'air-handler', parentId: 'level_0', position: [4.0, 0, 1.0], rotation: 0 },
+      // Vertical side-return duct drop right in front (+Z) of Air Handler at z=1.55 (where naive +0.56m offset would land!)
+      hvacduct_auto_12: {
+        id: 'hvacduct_auto_12',
+        type: 'hvac:duct-run',
+        parentId: 'level_0',
+        shape: 'rect',
+        width: 14,
+        height: 10,
+        path: [
+          [4.0, 2.5, 1.55],
+          [4.0, 0.35, 1.55],
+        ],
+      },
+    }
+    const dropAuto = electricalAgentOperations.electrical_autopopulate_nec(
+      hvacDropScene as never,
+      { levelId: 'level_0', includeWiring: true },
+      { activeLevelId: 'level_0' },
+    )
+    const mergedDrop: Record<string, SceneNodeLike> = { ...hvacDropScene }
+    for (const c of dropAuto.changes?.create ?? []) mergedDrop[c.node.id] = c.node as unknown as SceneNodeLike
+    const dropAudit = auditSceneElectrical(mergedDrop)
+    expect(dropAudit.findings.filter((f) => f.category === 'trade-clash')).toHaveLength(0)
   })
 })
