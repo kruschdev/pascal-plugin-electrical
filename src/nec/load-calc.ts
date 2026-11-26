@@ -540,12 +540,13 @@ export function calculateSceneLoad(
 
     const receptacles = devices.filter(
       (d) =>
-        d.deviceKind === 'duplex' ||
-        d.deviceKind === 'gfci' ||
-        d.deviceKind === 'afci' ||
-        d.deviceKind === 'usb-duplex' ||
-        d.deviceKind === 'weatherproof-gfci' ||
-        d.deviceKind === 'floor-box',
+        d.isMotor !== true &&
+        (d.deviceKind === 'duplex' ||
+          d.deviceKind === 'gfci' ||
+          d.deviceKind === 'afci' ||
+          d.deviceKind === 'usb-duplex' ||
+          d.deviceKind === 'weatherproof-gfci' ||
+          d.deviceKind === 'floor-box'),
     )
     const motors = devices
       .filter((d) => d.deviceKind === 'motor-load' || d.deviceKind === 'vfd' || d.isMotor === true)
@@ -556,10 +557,11 @@ export function calculateSceneLoad(
     const dedicatedLoads = devices
       .filter(
         (d) =>
-          d.deviceKind === 'dedicated-240v' ||
-          d.deviceKind === 'evse' ||
-          d.deviceKind === 'exit-sign' ||
-          d.deviceKind === 'battery-ess',
+          d.isMotor !== true &&
+          (d.deviceKind === 'dedicated-240v' ||
+            d.deviceKind === 'evse' ||
+            d.deviceKind === 'exit-sign' ||
+            d.deviceKind === 'battery-ess'),
       )
       .map((d) => ({
         name: (typeof d.name === 'string' && d.name) || d.id,
@@ -604,17 +606,21 @@ export function calculateSceneLoad(
       d.isMotor === true ||
       hasMepLoad
     ) {
+      const devName = (typeof d.name === 'string' && d.name) || kind
+      const isWaterHeaterName = /water.?heat|hpwh|tankless/i.test(devName)
       const metaCat = meta?.loadCategory
       const explicitCategory: ResidentialApplianceLoad['category'] | undefined =
         kind === 'evse'
           ? 'evse'
-          : metaCat === 'hvac-heating' || metaCat === 'hvac-cooling' || metaCat === 'heat-pump'
-            ? metaCat
-            : metaCat === 'fixed' || metaCat === 'appliance' || metaCat === 'motor'
-              ? 'fixed'
-              : undefined
+          : isWaterHeaterName
+            ? 'fixed'
+            : metaCat === 'hvac-heating' || metaCat === 'hvac-cooling' || metaCat === 'heat-pump'
+              ? metaCat
+              : metaCat === 'fixed' || metaCat === 'appliance' || metaCat === 'motor'
+                ? 'fixed'
+                : undefined
       appliances.push({
-        name: (typeof d.name === 'string' && d.name) || kind,
+        name: devName,
         watts:
           loadVa > 0
             ? loadVa

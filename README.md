@@ -4,7 +4,7 @@
 [![npm version](https://img.shields.io/npm/v/@kruschdev/pascal-plugin-electrical?color=cb3837)](https://www.npmjs.com/package/@kruschdev/pascal-plugin-electrical)
 [![Pascal Plugin API v1](https://img.shields.io/badge/Pascal_Plugin_API-v1-38bdf8.svg)](https://github.com/pascalorg/editor)
 [![3D CAD Models](https://img.shields.io/badge/MIT_3D_CAD_Models-50_.glb-10b981.svg)](./docs/CAD-CATALOG.md)
-[![NEC Tests](https://img.shields.io/badge/Tests-82%2F82_Passing-22c55e.svg)](./src/__tests__)
+[![NEC Tests](https://img.shields.io/badge/Tests-83%2F83_Passing-22c55e.svg)](./src/__tests__)
 
 An open-source, MIT-licensed **Residential and Commercial NEC Electrical** plugin for [Pascal Editor](https://github.com/pascalorg/editor).
 
@@ -114,7 +114,7 @@ setPluginDiscovery(async () => [electricalRenderPlugin])
 
 ```bash
 bun install
-bun run check              # tsc --noEmit + bun test src (82/82 tests) + 5/5 boundary gates + dist build
+bun run check              # tsc --noEmit + bun test src (83/83 tests) + 5/5 boundary gates + dist build
 bun run export:cad         # Regenerate all 50 binary .glb models in assets/cad/
 bun scripts/render-cad-thumbnails.ts # Re-render all 50 thumbnails + 5x10 contact sheet
 PASCAL_EDITOR_URL=http://127.0.0.1:3099/project/<id> bun run render:walkthrough # Re-render assets/demo-walkthrough.mp4 and .gif

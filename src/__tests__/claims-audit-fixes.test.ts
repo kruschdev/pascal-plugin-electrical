@@ -678,4 +678,158 @@ describe('Full Claims-vs-Reality Audit Regression Suite (AUD-01..AUD-21)', () =>
     expect(runFields.some((f) => f.key === 'insulationRating')).toBe(true)
     expect(runFields.some((f) => f.key === 'phases')).toBe(true)
   })
+
+  test('Pass-2 Referee Regressions: WindowNode centerY, HPWH non-HVAC load, commercial motor dedupe, exterior/master-bath audit parity, panel min 60A, mainHandle userData', () => {
+    // 1. Real Pascal WindowNode position[1] is vertical center (1.6m with height 1.2m => sillY=1.0m, headY=2.2m)
+    const winScene: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level', height: 2.6 },
+      w1: { id: 'w1', type: 'wall', parentId: 'level_0', start: [0, 0], end: [6, 0], thickness: 0.14, height: 2.6 },
+      win_real: { id: 'win_real', type: 'window', parentId: 'w1', position: [3.0, 1.6, 0], width: 1.5, height: 1.2 },
+    }
+    const winWalls = extractRoutingWalls(winScene, 'level_0')
+    expect(winWalls[0]!.windowSpans?.[0]?.sillY).toBeCloseTo(1.0, 2)
+    expect(winWalls[0]!.windowSpans?.[0]?.headY).toBeCloseTo(2.2, 2)
+    const counterRoute = routeElectricalRun([1.5, 1.15, 0.08], [4.5, 1.15, 0.08], [], {
+      walls: winWalls,
+      preferredChaseY: 2.5,
+      racewayType: 'nm-b',
+    })
+    const crossesRealGlass = counterRoute.path.some((p, idx) => {
+      const next = counterRoute.path[idx + 1]
+      if (!next) return false
+      const midX = (p[0] + next[0]) / 2
+      const midY = (p[1] + next[1]) / 2
+      return midX > 2.3 && midX < 3.7 && midY > 1.05 && midY < 2.15
+    })
+    expect(crossesRealGlass).toBe(false)
+
+    // 2. Auto-populated HPWH + Electric Furnace: HPWH is NEVER omitted as non-coincident HVAC
+    const hpwhScene: Record<string, unknown> = {
+      level_0: { id: 'level_0', type: 'level', height: 2.6 },
+      w1: { id: 'w1', type: 'wall', parentId: 'level_0', start: [0, 0], end: [6, 0], thickness: 0.14, height: 2.6 },
+      w2: { id: 'w2', type: 'wall', parentId: 'level_0', start: [6, 0], end: [6, 4], thickness: 0.14, height: 2.6 },
+      w3: { id: 'w3', type: 'wall', parentId: 'level_0', start: [6, 4], end: [0, 4], thickness: 0.14, height: 2.6 },
+      w4: { id: 'w4', type: 'wall', parentId: 'level_0', start: [0, 4], end: [0, 0], thickness: 0.14, height: 2.6 },
+      hpwh_1: {
+        id: 'hpwh_1',
+        type: 'plumbing:equipment',
+        equipmentKind: 'water-heater-hpwh',
+        name: 'Heat-Pump Water Heater',
+        parentId: 'level_0',
+        position: [1.5, 0, 0.5],
+      },
+      furnace_1: {
+        id: 'furnace_1',
+        type: 'electrical:device',
+        deviceKind: 'dedicated-240v',
+        name: 'Electric Furnace',
+        parentId: 'level_0',
+        poles: 2,
+        breakerAmps: 60,
+        loadVa: 10000,
+        position: [4.5, 1.0, 0.5],
+      },
+    }
+    const hpwhAuto = electricalAgentOperations.electrical_autopopulate_nec(
+      hpwhScene as never,
+      { levelId: 'level_0', includeWiring: false },
+      { activeLevelId: 'level_0' },
+    )
+    const mergedHpwh: Record<string, SceneNodeLike> = { ...(hpwhScene as Record<string, SceneNodeLike>) }
+    for (const c of hpwhAuto.changes?.create ?? []) mergedHpwh[c.node.id] = c.node as unknown as SceneNodeLike
+    const hpwhLoad = calculateSceneLoad(mergedHpwh, { occupancy: 'residential', residentialMethod: 'standard', fallbackSquareFootage: 1500 })
+    expect(hpwhLoad.occupancy).toBe('residential')
+    if (hpwhLoad.occupancy === 'residential') {
+      expect(hpwhLoad.hvacOmitVa).toBe(0)
+    }
+
+    // 3. Commercial calculateSceneLoad does NOT double-count isMotor=true dedicated-240v / gfci pumps
+    const commMotorScene: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level' },
+      p1: { id: 'p1', type: 'electrical:panel', occupancy: 'commercial', voltageSystem: '120/208V-3P' },
+      pump_240: {
+        id: 'pump_240',
+        type: 'electrical:device',
+        deviceKind: 'dedicated-240v',
+        name: 'Well Booster Pump',
+        isMotor: true,
+        loadVa: 1800,
+      },
+      sump_120: {
+        id: 'sump_120',
+        type: 'electrical:device',
+        deviceKind: 'gfci',
+        name: 'Sump Pump',
+        isMotor: true,
+        loadVa: 1200,
+      },
+    }
+    const commLoad = calculateSceneLoad(commMotorScene, { occupancy: 'commercial', fallbackSquareFootage: 1000 })
+    expect(commLoad.occupancy).toBe('commercial')
+    if (commLoad.occupancy === 'commercial') {
+      expect(commLoad.motorTotalVa).toBe(3000)
+      expect(commLoad.dedicatedTotalVa).toBe(0)
+      expect(commLoad.receptacleRawVa).toBe(0)
+    }
+
+    // 4. Exterior zone + Master Bath + Master Closet auto-populate -> 0 NEC 210.8 errors and 0 false IRC R314.3 warnings
+    const parityScene: Record<string, unknown> = {
+      level_0: { id: 'level_0', type: 'level', height: 2.6 },
+      w1: { id: 'w1', type: 'wall', parentId: 'level_0', start: [0, 0], end: [8, 0], thickness: 0.14, height: 2.6 },
+      w2: { id: 'w2', type: 'wall', parentId: 'level_0', start: [8, 0], end: [8, 6], thickness: 0.14, height: 2.6 },
+      w3: { id: 'w3', type: 'wall', parentId: 'level_0', start: [8, 6], end: [0, 6], thickness: 0.14, height: 2.6 },
+      w4: { id: 'w4', type: 'wall', parentId: 'level_0', start: [0, 6], end: [0, 0], thickness: 0.14, height: 2.6 },
+      wm: { id: 'wm', type: 'wall', parentId: 'level_0', start: [4, 0], end: [4, 6], thickness: 0.12, height: 2.6 },
+      wh: { id: 'wh', type: 'wall', parentId: 'level_0', start: [4, 3], end: [8, 3], thickness: 0.12, height: 2.6 },
+      z_bed: { id: 'z_bed', type: 'zone', parentId: 'level_0', name: 'Master Bedroom', category: 'bedroom', polygon: [[0, 0], [4, 0], [4, 3], [0, 3]] },
+      z_bath: { id: 'z_bath', type: 'zone', parentId: 'level_0', name: 'Master Bath', category: 'bathroom', polygon: [[4, 0], [8, 0], [8, 3], [4, 3]] },
+      z_closet: { id: 'z_closet', type: 'zone', parentId: 'level_0', name: 'Master Closet', category: 'closet', polygon: [[4, 3], [8, 3], [8, 6], [4, 6]] },
+      z_ext: { id: 'z_ext', type: 'zone', parentId: 'level_0', name: 'Exterior Side', category: 'exterior', polygon: [[0, 3], [4, 3], [4, 6], [0, 6]] },
+    }
+    const parityAuto = electricalAgentOperations.electrical_autopopulate_nec(
+      parityScene as never,
+      { levelId: 'level_0', occupancy: 'residential', includeWiring: true },
+      { activeLevelId: 'level_0' },
+    )
+    const mergedParity: Record<string, SceneNodeLike> = { ...(parityScene as Record<string, SceneNodeLike>) }
+    for (const c of parityAuto.changes?.create ?? []) mergedParity[c.node.id] = c.node as unknown as SceneNodeLike
+    const parityAudit = auditSceneElectrical(mergedParity)
+    expect(parityAudit.findings.filter((f) => f.category === 'gfci-afci')).toHaveLength(0)
+    expect(
+      parityAudit.findings.filter(
+        (f) => f.category === 'life-safety' && /Master Bath|Master Closet/.test(f.title),
+      ),
+    ).toHaveLength(0)
+
+    // 5. Panel parametrics min (60A) matches ElectricalPanelNode Zod schema
+    const busField = electricalPanelParametrics.groups
+      .flatMap((g) => g.fields)
+      .find((f) => f.key === 'busRatingAmps') as { min?: number; step?: number }
+    expect(busField.min).toBe(60)
+    expect(
+      ElectricalPanelNode.safeParse({
+        id: 'elecpanel_min',
+        type: 'electrical:panel',
+        busRatingAmps: busField.min,
+        mainBreakerAmps: busField.min,
+      }).success,
+    ).toBe(true)
+
+    // 6. Main breaker handle in Panel Cover On carries main breaker userData for opaque-first raycasting
+    const panelCover = buildWiredPanelInteriorCad({
+      schedule: buildPanelSchedule(
+        ElectricalPanelNode.parse({ id: 'elecpanel_main', type: 'electrical:panel', mainType: 'main-breaker' }),
+        [],
+      ),
+      viewMode: 'panel-cover-on',
+    })
+    let handleFound = false
+    panelCover.traverse((obj) => {
+      const m = obj as { geometry?: { type?: string }; userData?: { kind?: string; description?: string }; position?: { z: number } }
+      if (m.userData?.kind === 'breaker' && /Main Circuit Breaker/.test(m.userData.description ?? '') && (m.position?.z ?? 0) > -0.02) {
+        handleFound = true
+      }
+    })
+    expect(handleFound).toBe(true)
+  })
 })

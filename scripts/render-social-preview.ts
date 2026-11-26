@@ -217,7 +217,7 @@ const html = `<!doctype html>
       <div class="stat"><div class="num amber">50</div><div class="lbl">MIT 3D CAD .glb Models</div></div>
       <div class="stat"><div class="num sky">25</div><div class="lbl">Live Equipment Kinds</div></div>
       <!-- Updated from 64/64; finalize exact passing test count after new audit tests land -->
-      <div class="stat"><div class="num emerald">82/82</div><div class="lbl">NEC &amp; CAD Tests</div></div>
+      <div class="stat"><div class="num emerald">83/83</div><div class="lbl">NEC &amp; CAD Tests</div></div>
     </div>
     <div class="tags">
       <span class="tag">Bones 16&quot; OC Stud-Snap</span>

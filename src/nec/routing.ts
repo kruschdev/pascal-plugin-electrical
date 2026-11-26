@@ -416,16 +416,46 @@ export function extractTradeObstacles(
           const p0 = path[i]
           const p1 = path[i + 1]
           if (!isVec3(p0) || !isVec3(p1)) continue
-          obstacles.push({
-            id: `${node.id}:seg${i}`,
-            nodeId: node.id,
-            nodeType: t,
-            trade: 'hvac',
-            priorityRank: 3,
-            box: segmentAabb(p0, p1, halfW, halfH),
-            requiredClearanceM: DEFAULT_CLEARANCE_M,
-            label: `${t === 'lineset' ? 'refrigerant lineset' : `HVAC ${shape} duct`} (${node.id})`,
-          })
+          const isDiagonal = Math.abs(p1[0] - p0[0]) > 0.2 && Math.abs(p1[2] - p0[2]) > 0.2
+          if (isDiagonal) {
+            const len = Math.hypot(p1[0] - p0[0], p1[2] - p0[2])
+            const steps = Math.max(2, Math.min(16, Math.ceil(len / 0.45)))
+            for (let s = 0; s < steps; s++) {
+              const t0 = s / steps
+              const t1 = (s + 1) / steps
+              const a: Vec3 = [
+                p0[0] + (p1[0] - p0[0]) * t0,
+                p0[1] + (p1[1] - p0[1]) * t0,
+                p0[2] + (p1[2] - p0[2]) * t0,
+              ]
+              const b: Vec3 = [
+                p0[0] + (p1[0] - p0[0]) * t1,
+                p0[1] + (p1[1] - p0[1]) * t1,
+                p0[2] + (p1[2] - p0[2]) * t1,
+              ]
+              obstacles.push({
+                id: `${node.id}:seg${i}_${s}`,
+                nodeId: node.id,
+                nodeType: t,
+                trade: 'hvac',
+                priorityRank: 3,
+                box: segmentAabb(a, b, halfW, halfH),
+                requiredClearanceM: DEFAULT_CLEARANCE_M,
+                label: `${t === 'lineset' ? 'refrigerant lineset' : `HVAC ${shape} duct`} (${node.id})`,
+              })
+            }
+          } else {
+            obstacles.push({
+              id: `${node.id}:seg${i}`,
+              nodeId: node.id,
+              nodeType: t,
+              trade: 'hvac',
+              priorityRank: 3,
+              box: segmentAabb(p0, p1, halfW, halfH),
+              requiredClearanceM: DEFAULT_CLEARANCE_M,
+              label: `${t === 'lineset' ? 'refrigerant lineset' : `HVAC ${shape} duct`} (${node.id})`,
+            })
+          }
         }
       }
       continue
@@ -709,7 +739,8 @@ export function extractRoutingWalls(
           Number.isFinite(child.position[1]) &&
           child.position[1] > 0
         ) {
-          sillY = child.position[1]
+          // Pascal WindowNode stores vertical center at position[1] (sillY = centerY - height / 2)
+          sillY = Math.max(0, child.position[1] - winH / 2)
         }
         const headY = sillY + winH
         windowSpans.push({
@@ -1680,7 +1711,7 @@ export function routeElectricalRun(
 
   // Candidate chase elevations stay in the overhead ceiling/top-plate zone.
   // In concealed ('in-wall') mode, NEVER climb above the wall top plate into empty air; duck inside the stud cavity instead.
-  const rawCandidateElevations =
+  const rawCeilingElevations =
     walls && wallCeilingH > 0 && wallPlacement === 'in-wall'
       ? [
           preferredChaseY,
@@ -1694,7 +1725,20 @@ export function routeElectricalRun(
           Math.min(maxY, preferredChaseY + 0.45),
           Math.max(Math.min(preferredChaseY, 2.2), preferredChaseY - 0.25),
         ]
-  const candidateElevations = Array.from(new Set(rawCandidateElevations))
+  const rawLowFallbackElevations =
+    walls && wallCeilingH > 0 && wallPlacement === 'in-wall'
+      ? [
+          Math.max(minY, round3(preferredChaseY - 0.65)),
+          Math.max(minY, round3(preferredChaseY - 1.1)),
+        ]
+      : [
+          Math.max(minY, round3(preferredChaseY - 0.65)),
+          Math.max(minY, round3(preferredChaseY - 1.05)),
+        ]
+  const ceilingElevations = Array.from(new Set(rawCeilingElevations))
+  const lowFallbackElevations = Array.from(
+    new Set(rawLowFallbackElevations.filter((y) => !ceilingElevations.includes(y))),
+  )
 
   const scorePath = (p: Vec3[]): { score: number; clashes: TradeClashFinding[] } => {
     const clashes = detectRunTradeClashes(p, obstacles, clearanceM, conduitRadiusM)
@@ -1762,33 +1806,40 @@ export function routeElectricalRun(
   let bestMode: RoutingMode = walls ? 'wall-manhattan' : 'open-manhattan'
   let bestNecNotes: string[] = []
 
-  // Step 1: Evaluate Wall-Guided (or Open) Manhattan candidates across chase elevations
-  if (walls) {
-    for (const y of candidateElevations) {
-      const candidate =
-        buildWallGuidedManhattanPath(start, end, y, walls, wallPlacement) ??
-        buildManhattanCandidate(start, end, y, 'xz')
-      const { score, clashes } = scorePath(candidate)
-      if (score < bestScore) {
-        bestScore = score
-        bestPath = candidate
-        bestMode = 'wall-manhattan'
-      }
-      if (clashes.length === 0 && y === preferredChaseY) break
-    }
-  } else {
-    for (const y of candidateElevations) {
-      for (const order of ['xz', 'zx'] as const) {
-        const candidate = buildManhattanCandidate(start, end, y, order)
+  // Step 1: Evaluate Wall-Guided (or Open) Manhattan candidates across overhead ceiling chase elevations first;
+  // only try lower mid-wall fallback elevations if overhead ceiling chases still have trade clashes.
+  const evalElevationList = (elevations: readonly number[]) => {
+    if (walls) {
+      for (const y of elevations) {
+        const candidate =
+          buildWallGuidedManhattanPath(start, end, y, walls, wallPlacement) ??
+          buildManhattanCandidate(start, end, y, 'xz')
         const { score, clashes } = scorePath(candidate)
         if (score < bestScore) {
           bestScore = score
           bestPath = candidate
-          bestMode = 'open-manhattan'
+          bestMode = 'wall-manhattan'
         }
         if (clashes.length === 0 && y === preferredChaseY) break
       }
+    } else {
+      for (const y of elevations) {
+        for (const order of ['xz', 'zx'] as const) {
+          const candidate = buildManhattanCandidate(start, end, y, order)
+          const { score, clashes } = scorePath(candidate)
+          if (score < bestScore) {
+            bestScore = score
+            bestPath = candidate
+            bestMode = 'open-manhattan'
+          }
+          if (clashes.length === 0 && y === preferredChaseY) break
+        }
+      }
     }
+  }
+  evalElevationList(ceilingElevations)
+  if (bestScore >= 1000 && lowFallbackElevations.length > 0) {
+    evalElevationList(lowFallbackElevations)
   }
 
   // Step 2: Splice orthogonal saddle/jog detours on the Manhattan candidate if clashes remain

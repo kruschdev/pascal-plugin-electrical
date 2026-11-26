@@ -262,7 +262,7 @@ function normalizeCategory(zone: SceneNodeLike): string {
 }
 
 function isOutdoorCategory(cat: string): boolean {
-  return /outdoor|patio|deck|porch|balcony|yard|terrace/.test(cat)
+  return /outdoor|patio|deck|porch|balcony|yard|terrace|exterior|rooftop/.test(cat)
 }
 
 function isKitchen(cat: string): boolean {
@@ -555,8 +555,15 @@ export function planNecAutoPopulate(
 
     const plumbingPipeObs = obstacles.filter(
       (o) =>
-        o.trade === 'plumbing' &&
-        (o.nodeType === 'plumbing:pipe-run' || o.nodeType === 'pipe-segment' || o.nodeType === 'liquid-line'),
+        (o.trade === 'plumbing' &&
+          (o.nodeType === 'plumbing:pipe-run' || o.nodeType === 'pipe-segment' || o.nodeType === 'liquid-line')) ||
+        (o.trade === 'hvac' &&
+          (o.nodeType === 'hvac:duct-run' ||
+            o.nodeType === 'duct-segment' ||
+            o.nodeType === 'lineset' ||
+            o.nodeType === 'hvac:plenum' ||
+            o.nodeType === 'hvac:equipment' ||
+            o.nodeType === 'hvac-equipment')),
     )
     const hasPlumbingPipeInPanelColumn = (
       cx: number,
@@ -567,14 +574,14 @@ export function planNecAutoPopulate(
       wallNz: number,
     ): boolean => {
       // NEC 110.26(E)(1)(a): Dedicated electrical space equals panel width (~0.42 m) x depth (~0.18 m)
-      // from floor (0) to structural ceiling / 6 ft above panel.
-      const halfAlong = 0.24
-      const halfPerp = 0.14
+      // from floor (0) to structural ceiling / 6 ft above panel (including overhead attic HVAC trunks).
+      const halfAlong = 0.26
+      const halfPerp = 0.16
       const halfX = Math.abs(wallDx) * halfAlong + Math.abs(wallNx) * halfPerp
       const halfZ = Math.abs(wallDz) * halfAlong + Math.abs(wallNz) * halfPerp
       for (const obs of plumbingPipeObs) {
         const b = obs.box
-        if (b.max[1] < 0 || b.min[1] > Math.max(levelHeight, 3.35)) continue
+        if (b.max[1] < 0 || b.min[1] > Math.max(levelHeight + 0.65, 3.6)) continue
         if (b.max[0] < cx - halfX || b.min[0] > cx + halfX) continue
         if (b.max[2] < cz - halfZ || b.min[2] > cz + halfZ) continue
         return true
@@ -1457,7 +1464,7 @@ export function planNecAutoPopulate(
         case 'water-heater-tank-electric':
           return { required: true, voltage: 240, poles: 2, breakerAmps: calc240Breaker(watts), loadVa: watts, continuous: true, dedicatedCircuit: true, loadCategory: 'fixed', label: 'Electric Water Heater' }
         case 'water-heater-hpwh':
-          return { required: true, voltage: 240, poles: 2, breakerAmps: calc240Breaker(watts), loadVa: watts, continuous: true, dedicatedCircuit: true, loadCategory: 'heat-pump', label: 'Heat-Pump Water Heater' }
+          return { required: true, voltage: 240, poles: 2, breakerAmps: calc240Breaker(watts), loadVa: watts, continuous: true, dedicatedCircuit: true, loadCategory: 'fixed', label: 'Heat-Pump Water Heater' }
         case 'water-heater-tankless-gas':
           return { required: true, voltage: 120, poles: 1, breakerAmps: 15, loadVa: 300, continuous: false, dedicatedCircuit: false, gfciRequired: true, loadCategory: 'fixed', label: 'Tankless Gas WH Ignition' }
         case 'recirc-pump':
@@ -1521,11 +1528,13 @@ export function planNecAutoPopulate(
     if (!Array.isArray(mepNode.position) || mepNode.position.length < 3) continue
 
     const mepRot = typeof mepNode.rotation === 'number' ? mepNode.rotation : 0
-    // Offset power receptacle/disconnect slightly outside equipment footprint so wires terminate cleanly without self-clash
+    // Offset power receptacle/disconnect cleanly outside equipment footprint + clearance so wires never self-clash
     const radialOffsetM =
-      mepNode.type === 'plumbing:equipment' || mepNode.type === 'hvac:equipment' || mepNode.type === 'hvac-equipment'
-        ? 0.36
-        : 0
+      mepNode.type === 'hvac:equipment' || mepNode.type === 'hvac-equipment'
+        ? 0.56
+        : mepNode.type === 'plumbing:equipment'
+          ? 0.42
+          : 0
     const pos: Vec3 = [
       round3(Number(mepNode.position[0]) + Math.sin(mepRot) * radialOffsetM),
       Math.max(0.38, Math.min(1.5, Number(mepNode.position[1]) || 0.9)),
@@ -1539,10 +1548,11 @@ export function planNecAutoPopulate(
       const isMepWaterHeater =
         mepNode.type === 'plumbing:equipment' && /water.?heater|hpwh|\bwh\b/.test(mepDescriptor)
       const isMepHeatPump =
-        mepNode.type === 'hvac:equipment' ||
-        mepNode.type === 'hvac-equipment' ||
-        rawDemand.loadCategory === 'heat-pump' ||
-        /heat.?pump|condenser/.test(mepDescriptor)
+        !isMepWaterHeater &&
+        (mepNode.type === 'hvac:equipment' ||
+          mepNode.type === 'hvac-equipment' ||
+          rawDemand.loadCategory === 'heat-pump' ||
+          /heat.?pump|condenser/.test(mepDescriptor))
       const mepXZ: [number, number] = [Number(mepNode.position[0]), Number(mepNode.position[2])]
       const duplicateOfBones = importedBonesServices.some((bs) => {
         const matchesKind =
@@ -1604,6 +1614,28 @@ export function planNecAutoPopulate(
     }
     const devKind: PlannedDeviceSpec['deviceKind'] =
       poles >= 2 ? 'dedicated-240v' : rawDemand.gfciRequired ? 'gfci' : 'duplex'
+    const mepZone = zoneAtPoint(zones, pos[0], pos[2])
+    const mepZoneCat = mepZone ? mepZone.category.toLowerCase() : ''
+    const isMep120v15Or20 = poles === 1 && breakerAmps <= 20
+    const isMepResidentialHabitable =
+      occupancy === 'residential' &&
+      isMep120v15Or20 &&
+      Boolean(
+        mepZone &&
+          !isBathroom(mepZoneCat) &&
+          /(bedroom|living|dining|kitchen|hallway|closet|laundry|family|office|study|den)/.test(mepZoneCat),
+      )
+    const isMepWet120v =
+      isMep120v15Or20 &&
+      Boolean(
+        mepZone &&
+          (isBathroom(mepZoneCat) ||
+            isKitchen(mepZoneCat) ||
+            isGarage(mepZoneCat) ||
+            isLaundry(mepZoneCat) ||
+            isBasementOrUtility(mepZoneCat) ||
+            isOutdoorCategory(mepZoneCat)),
+      )
 
     const addedMep = addPlanned({
       name: `${label} Power`,
@@ -1612,8 +1644,8 @@ export function planNecAutoPopulate(
       deviceKind: devKind,
       circuitGroup,
       necRef: `Cross-Trade MEP Power (${mepNode.type} ${mepNode.id})`,
-      requiresGfci: rawDemand.gfciRequired === true,
-      requiresAfci: rawDemand.afciRequired === true,
+      requiresGfci: rawDemand.gfciRequired === true || isMepWet120v,
+      requiresAfci: rawDemand.afciRequired === true || isMepResidentialHabitable,
       poles,
       breakerAmps,
       loadVa,
@@ -2191,7 +2223,16 @@ export function planNecAutoPopulate(
   const assignedDevices: PlannedDeviceSpec[] = []
   const plannedRuns: PlannedRunSpec[] = []
   const circuitSummary: AutoPopulatePlan['circuitSummary'] = []
-  const virtualDeviceList: SceneNodeLike[] = [...existingDevices]
+  // Include ALL devices across every level assigned to `panelNode.id` so multi-level panels
+  // never collide on existing circuit slots or distort phase balance (NEC 220.61).
+  const panelAllDevices = all.filter(
+    (n) => n.type === 'electrical:device' && n.panelId === panelNode!.id,
+  )
+  const seenDeviceIds = new Set(panelAllDevices.map((d) => d.id))
+  const virtualDeviceList: SceneNodeLike[] = [
+    ...panelAllDevices,
+    ...existingDevices.filter((d) => !seenDeviceIds.has(d.id)),
+  ]
   const panelTopPt: Vec3 = [panelPos[0], panelPos[1] + panelHeight / 2, panelPos[2]]
   const vLN = getVoltageLineToNeutral(panelVoltageSystem)
   const isThreePhasePanel = panelVoltageSystem !== '120/240V-1P'
@@ -2201,9 +2242,9 @@ export function planNecAutoPopulate(
     Math.max(4, Math.ceil((typeof panelNode.spaces === 'number' ? panelNode.spaces : 40) / 2) * 2),
   )
 
-  // Seed phase load accumulator from existing devices on this panel so new circuits balance cleanly (NEC 220.61)
+  // Seed phase load accumulator from ALL existing devices on this panel across every level (NEC 220.61)
   const phaseLoadVa = new Array<number>(phaseCount).fill(0)
-  for (const d of existingDevices) {
+  for (const d of panelAllDevices) {
     if (d.panelId !== panelNode.id) continue
     const ckt = typeof d.circuitNumber === 'number' && d.circuitNumber >= 1 ? Math.floor(d.circuitNumber) : 0
     if (ckt <= 0) continue

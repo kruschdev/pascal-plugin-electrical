@@ -916,9 +916,13 @@ export function auditSceneElectrical(
       }
 
       if (isReceptacle && zoneCat) {
+        const isHardwired240vMep =
+          devKind === 'dedicated-240v' &&
+          Boolean((dev.metadata as { mepSourceNodeId?: string } | undefined)?.mepSourceNodeId)
         const isWet = Array.from(WET_ROOM_CATEGORIES).some((w) => zoneCat.includes(w))
         if (
           isWet &&
+          !isHardwired240vMep &&
           dev.gfciProtected !== true &&
           devKind !== 'gfci' &&
           devKind !== 'weatherproof-gfci'
@@ -1106,8 +1110,14 @@ export function auditSceneElectrical(
       (n) => n.type === 'zone' && (resolveNodeLevelId(nodes, n) ?? '__root__') === lvl,
     )
     const bedroomZones = lvlZones.filter((z) => {
-      const txt = `${typeof z.category === 'string' ? z.category : ''} ${typeof z.name === 'string' ? z.name : ''}`
-      return BEDROOM_PATTERN.test(txt) && Array.isArray(z.polygon) && z.polygon.length >= 3
+      const txt = zoneDescriptorOf(z)
+      return (
+        BEDROOM_PATTERN.test(txt) &&
+        !BATHROOM_PATTERN.test(txt) &&
+        !CLOSET_PATTERN.test(txt) &&
+        Array.isArray(z.polygon) &&
+        z.polygon.length >= 3
+      )
     })
     if (bedroomZones.length === 0) continue
 

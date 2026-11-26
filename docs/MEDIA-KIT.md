@@ -24,7 +24,7 @@ Ready-to-share video, high-resolution screenshots, 3D CAD contact sheet, OpenGra
 - **Host Compatibility**: Pascal Editor Plugin API v1 (`E-014`, `E-016`, `E-017`), zero upstream core changes required
 - **3D CAD Library**: 50 exported binary `.glb` models + 50 studio thumbnails across 6 categories (Panels & Gear, Solar PV / Battery ESS / Backup, NEC 314.16 Boxes, Smart Devices & Motors, Light Fixtures, Conduit / Cable Tray / Grounding)
 - **Live Editor Equipment**: 25 placeable `electrical:device` kinds with automatic wall/ceiling/floor snapping, room-aware auto-wiring, 2D floorplan symbols, NEC compliance audit, and 2026 supply-house BOM pricing
-- **Verification**: 82/82 deterministic NEC, Bones schematic ingestion (`bones:framing` / `bones:device` / `bones:service`), cross-trade `plumbing:*` / `hvac:*` / `structural:*` coordination, hybrid attic/crawl-space routing, Smoke/CO life-safety, multi-level audit, CAD, and boundary tests (`1,455` assertions), `tsc --noEmit` clean, 5/5 entrypoint boundary gates, compiled Node 22 ESM + Bun `dist/` build
+- **Verification**: 83/83 deterministic NEC, Bones schematic ingestion (`bones:framing` / `bones:device` / `bones:service`), cross-trade `plumbing:*` / `hvac:*` / `structural:*` coordination, hybrid attic/crawl-space routing, Smoke/CO life-safety, multi-level audit, CAD, and boundary tests (`1,469` assertions), `tsc --noEmit` clean, 5/5 entrypoint boundary gates, compiled Node 22 ESM + Bun `dist/` build
 
 ## Ready-to-Post Copy
 
@@ -74,7 +74,7 @@ registerEditorHostPanel(electricalHostPanel)
 registerEditorHostView(electricalScheduleView)
 ```
 
-Or clone and run the full deterministic check suite locally (`82/82` tests, `1,455` assertions, typecheck, render-boundary gate, and compiled `dist/` build):
+Or clone and run the full deterministic check suite locally (`83/83` tests, `1,469` assertions, typecheck, render-boundary gate, and compiled `dist/` build):
 
 ```bash
 git clone https://github.com/kruschdev/pascal-plugin-electrical.git

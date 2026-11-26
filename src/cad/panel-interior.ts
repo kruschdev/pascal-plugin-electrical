@@ -374,6 +374,7 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
   if (schedule.mainType === 'main-breaker') {
     const mainHandle = new Mesh(new BoxGeometry(0.048, 0.022, 0.024), mats.accentRed)
     mainHandle.position.set(0, mainY, zBack + 0.072)
+    mainHandle.userData = mainBody.userData
     group.add(mainHandle)
   }
 

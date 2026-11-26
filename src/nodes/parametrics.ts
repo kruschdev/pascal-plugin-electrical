@@ -36,8 +36,8 @@ export const electricalPanelParametrics: ParametricDescriptor<ElectricalPanelNod
     {
       label: 'Ratings',
       fields: [
-        { key: 'busRatingAmps', kind: 'number', unit: 'A', min: 50, max: 4000, step: 5 },
-        { key: 'mainBreakerAmps', kind: 'number', unit: 'A', min: 50, max: 4000, step: 5 },
+        { key: 'busRatingAmps', kind: 'number', unit: 'A', min: 60, max: 4000, step: 5 },
+        { key: 'mainBreakerAmps', kind: 'number', unit: 'A', min: 60, max: 4000, step: 5 },
         { key: 'spaces', kind: 'number', min: 4, max: 84, step: 2 },
         { key: 'solarBackfeedAmps', kind: 'number', unit: 'A', min: 0, max: 400, step: 5 },
       ],
