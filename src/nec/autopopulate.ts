@@ -18,15 +18,19 @@
  */
 
 import {
+  BASEMENT_UTILITY_PATTERN,
   BATHROOM_PATTERN,
   BEDROOM_PATTERN,
   CLOSET_PATTERN,
+  DINING_SAB_PATTERN,
+  GARAGE_PATTERN,
   HABITABLE_AFCI_PATTERN,
   HALLWAY_PATTERN,
   KITCHEN_PATTERN,
   LAUNDRY_PATTERN,
   LIVING_COMMON_PATTERN,
   OUTDOOR_PATTERN,
+  POOL_PATTERN,
   buildAuditWallSegments,
   extractObstructionBox,
   extractWetFixtures,
@@ -233,6 +237,10 @@ type ZoneInfo = {
   areaM2: number
   widthM: number
   depthM: number
+  minX: number
+  maxX: number
+  minZ: number
+  maxZ: number
 }
 
 function pointInPolygon2D(px: number, pz: number, polygon: ReadonlyArray<readonly [number, number]>): boolean {
@@ -251,6 +259,10 @@ function polygonStats(poly: readonly [number, number][]): {
   areaM2: number
   widthM: number
   depthM: number
+  minX: number
+  maxX: number
+  minZ: number
+  maxZ: number
 } {
   let area2 = 0
   let cx = 0
@@ -276,6 +288,10 @@ function polygonStats(poly: readonly [number, number][]): {
     areaM2: Math.abs(area2) / 2,
     widthM: maxX - minX,
     depthM: maxZ - minZ,
+    minX,
+    maxX,
+    minZ,
+    maxZ,
   }
 }
 
@@ -307,11 +323,11 @@ function isLaundry(cat: string): boolean {
 }
 
 function isGarage(cat: string): boolean {
-  return /garage|carport/i.test(cat)
+  return GARAGE_PATTERN.test(cat)
 }
 
 function isBasementOrUtility(cat: string): boolean {
-  return /basement|utility|mechanical|crawl|cellar|sous.?sol|chaufferie/i.test(cat)
+  return BASEMENT_UTILITY_PATTERN.test(cat)
 }
 
 function isHallway(cat: string): boolean {
@@ -323,11 +339,16 @@ function isBedroom(cat: string): boolean {
 }
 
 function isPrimaryCommonZone(cat: string): boolean {
-  return LIVING_COMMON_PATTERN.test(cat) && !isBathroom(cat)
+  return (LIVING_COMMON_PATTERN.test(cat) || DINING_SAB_PATTERN.test(cat)) && !isBathroom(cat)
 }
 
 function isHabitableAfci(cat: string): boolean {
-  return HABITABLE_AFCI_PATTERN.test(cat) && !isBathroom(cat)
+  return (
+    HABITABLE_AFCI_PATTERN.test(cat) &&
+    !isBathroom(cat) &&
+    !isOutdoorCategory(cat) &&
+    !isGarage(cat)
+  )
 }
 
 function dist2D(a: readonly [number, number], b: readonly [number, number]): number {
@@ -348,31 +369,76 @@ function round3(n: number): number {
   return Math.round(n * 1000) / 1000
 }
 
-type TubBox = { minX: number; maxX: number; minZ: number; maxZ: number }
-
-function extractTubBoxes(
-  nodes: Readonly<Record<string, SceneNodeLike>>,
-  levelId: string | null,
-): TubBox[] {
-  return extractWetFixtures(nodes, levelId)
-    .filter((f) => f.kind === 'tub-shower')
-    .map((f) => ({
-      minX: f.box.min[0],
-      maxX: f.box.max[0],
-      minZ: f.box.min[2],
-      maxZ: f.box.max[2],
-    }))
+type WetFixtureComplianceResult = {
+  ok: boolean
+  minTubDist: number
+  hitsTub: boolean
+  hitsSink: boolean
+  hitsStove: boolean
 }
 
-function minDistToTubBoxes(tubBoxes: readonly TubBox[], x: number, z: number): number {
-  let best = Number.POSITIVE_INFINITY
-  for (const b of tubBoxes) {
-    const dx = x < b.minX ? b.minX - x : x > b.maxX ? x - b.maxX : 0
-    const dz = z < b.minZ ? b.minZ - z : z > b.maxZ ? z - b.maxZ : 0
-    const d = Math.hypot(dx, dz)
-    if (d < best) best = d
+/**
+ * Shared wet-fixture compliance checker (used by both `planNecAutoPopulate` and `findNextWallPlacement`)
+ * matching `audit.ts` NEC 406.9(C), 404.4(C), 410.10(D), 406.5(E), and 210.52(C) rules with wall separation.
+ */
+function createWetFixtureChecker(
+  nodes: Readonly<Record<string, SceneNodeLike>>,
+  levelId: string | null,
+  zones: readonly ZoneInfo[],
+) {
+  const auditWallSegs = buildAuditWallSegments(nodes, levelId)
+  const wetFixtures = extractWetFixtures(nodes, levelId).map((f) => {
+    const cx = (f.box.min[0] + f.box.max[0]) / 2
+    const cz = (f.box.min[2] + f.box.max[2]) / 2
+    const fZone = zoneAtPoint(zones, cx, cz)
+    return { ...f, cx, cz, zoneId: fZone?.id ?? null }
+  })
+
+  const checkWetFixtureCompliance = (
+    x: number,
+    y: number,
+    z: number,
+    role: 'receptacle' | 'switch' | 'luminaire',
+    deviceZoneId?: string | null,
+  ): WetFixtureComplianceResult => {
+    const resolvedZoneId =
+      deviceZoneId !== undefined ? deviceZoneId : (zoneAtPoint(zones, x, z)?.id ?? null)
+    let minTubDist = Number.POSITIVE_INFINITY
+    let hitsTub = false
+    let hitsSink = false
+    let hitsStove = false
+    for (const fix of wetFixtures) {
+      if (resolvedZoneId && fix.zoneId && resolvedZoneId !== fix.zoneId) continue
+      const horizDist = horizontalDistToAabbXZ(x, z, fix.box)
+      if (fix.kind === 'sink') {
+        if (role !== 'receptacle' || y > 1.2 || horizDist >= 0.25) continue
+        if (wallSeparatesPoints2D(x, z, fix.cx, fix.cz, auditWallSegs)) continue
+        hitsSink = true
+      } else if (fix.kind === 'stove') {
+        if (role !== 'receptacle' || y < 0.65 || y > 1.75 || horizDist >= 0.15) continue
+        if (wallSeparatesPoints2D(x, z, fix.cx, fix.cz, auditWallSegs)) continue
+        hitsStove = true
+      } else if (fix.kind === 'tub-shower') {
+        if (horizDist >= 5.0) continue
+        if (wallSeparatesPoints2D(x, z, fix.cx, fix.cz, auditWallSegs)) continue
+        if (horizDist < minTubDist) minTubDist = horizDist
+        if ((role === 'receptacle' || role === 'luminaire') && y < 2.438 && horizDist < 0.925) {
+          hitsTub = true
+        } else if (role === 'switch' && horizDist <= 0.25) {
+          hitsTub = true
+        }
+      }
+    }
+    return {
+      ok: !hitsTub && !hitsSink && !hitsStove,
+      minTubDist,
+      hitsTub,
+      hitsSink,
+      hitsStove,
+    }
   }
-  return best
+
+  return { checkWetFixtureCompliance }
 }
 
 function extractZones(nodes: Readonly<Record<string, SceneNodeLike>>, levelId: string | null): ZoneInfo[] {
@@ -450,6 +516,7 @@ function extractWalls(nodes: Readonly<Record<string, SceneNodeLike>>, levelId: s
 
 function zoneAtPoint(zones: readonly ZoneInfo[], x: number, z: number): ZoneInfo | null {
   for (const zInfo of zones) {
+    if (x < zInfo.minX || x > zInfo.maxX || z < zInfo.minZ || z > zInfo.maxZ) continue
     if (pointInPolygon2D(x, z, zInfo.polygon)) return zInfo
   }
   return null
@@ -551,57 +618,22 @@ export function planNecAutoPopulate(
   )
   const obstacles = extractTradeObstacles(nodes, levelId)
 
+  // Cache wallRoomSpans once per planNecAutoPopulate call (ELC-OPT-03)
+  const wallSpansCacheAvoidWin = new Map<string, Array<[number, number]>>()
+  const wallSpansCacheAllowWin = new Map<string, Array<[number, number]>>()
+  const getWallRoomSpans = (wall: WallSeg, avoidWindows = false): Array<[number, number]> => {
+    const cache = avoidWindows ? wallSpansCacheAvoidWin : wallSpansCacheAllowWin
+    let spans = cache.get(wall.id)
+    if (!spans) {
+      spans = wallRoomSpans(wall, walls, avoidWindows)
+      cache.set(wall.id, spans)
+    }
+    return spans
+  }
+
   // REAL-ELC-02: Build the EXACT same wetFixtures & wall-separation structures as `audit.ts`
   // (from both `plumbing:fixture` AND Pascal `item`/`procedural-item`/`cabinet` nodes, excluding rugs/carpets)
-  const auditWallSegs = buildAuditWallSegments(nodes, levelId)
-  const wetFixtures = extractWetFixtures(nodes, levelId).map((f) => {
-    const cx = (f.box.min[0] + f.box.max[0]) / 2
-    const cz = (f.box.min[2] + f.box.max[2]) / 2
-    const fZone = zoneAtPoint(zones, cx, cz)
-    return { ...f, cx, cz, zoneId: fZone?.id ?? null }
-  })
-  const checkWetFixtureCompliance = (
-    x: number,
-    y: number,
-    z: number,
-    role: 'receptacle' | 'switch' | 'luminaire',
-    deviceZoneId?: string | null,
-  ): { ok: boolean; minTubDist: number; hitsTub: boolean; hitsSink: boolean; hitsStove: boolean } => {
-    const resolvedZoneId =
-      deviceZoneId !== undefined ? deviceZoneId : (zoneAtPoint(zones, x, z)?.id ?? null)
-    let minTubDist = Number.POSITIVE_INFINITY
-    let hitsTub = false
-    let hitsSink = false
-    let hitsStove = false
-    for (const fix of wetFixtures) {
-      if (resolvedZoneId && fix.zoneId && resolvedZoneId !== fix.zoneId) continue
-      if (wallSeparatesPoints2D(x, z, fix.cx, fix.cz, auditWallSegs)) continue
-      const horizDist = horizontalDistToAabbXZ(x, z, fix.box)
-      if (fix.kind === 'tub-shower') {
-        if (horizDist < minTubDist) minTubDist = horizDist
-        if ((role === 'receptacle' || role === 'luminaire') && y < 2.438 && horizDist < 0.925) {
-          hitsTub = true
-        } else if (role === 'switch' && horizDist <= 0.25) {
-          hitsTub = true
-        }
-      } else if (fix.kind === 'sink') {
-        if (role === 'receptacle' && y <= 1.2 && horizDist < 0.25) {
-          hitsSink = true
-        }
-      } else if (fix.kind === 'stove') {
-        if (role === 'receptacle' && y >= 0.65 && y <= 1.75 && horizDist < 0.15) {
-          hitsStove = true
-        }
-      }
-    }
-    return {
-      ok: !hitsTub && !hitsSink && !hitsStove,
-      minTubDist,
-      hitsTub,
-      hitsSink,
-      hitsStove,
-    }
-  }
+  const { checkWetFixtureCompliance } = createWetFixtureChecker(nodes, levelId, zones)
   const distToNearestTub = (x: number, z: number, deviceZoneId?: string | null): number =>
     checkWetFixtureCompliance(x, 1.12, z, 'receptacle', deviceZoneId).minTubDist
   const hitsSinkBasin = (x: number, z: number, deviceZoneId?: string | null): boolean =>
@@ -726,8 +758,10 @@ export function planNecAutoPopulate(
     const sharedVll = getVoltageLineToLine(sharedVs)
     const sharedRatedVa = sharedVs === '120/240V-1P' ? sharedBusA * sharedVll : sharedBusA * sharedVll * Math.sqrt(3)
     const sharedMaxSpaces = typeof shared.spaces === 'number' ? shared.spaces : 40
+    const estLevelSpaces = Math.max(4, zones.length + 2)
     const needsSubpanel =
       occupiedSpaces.size >= Math.max(18, Math.floor(sharedMaxSpaces * 0.45)) ||
+      occupiedSpaces.size + estLevelSpaces > Math.floor(sharedMaxSpaces * 0.85) ||
       connectedVa >= sharedRatedVa * 0.55
     if (!needsSubpanel) {
       panelNode = shared
@@ -803,7 +837,11 @@ export function planNecAutoPopulate(
         voltageSystem,
         condition110_26: 2,
       }
-      const { workingPrism, dedicatedOverheadPrism } = getEquipmentSpacePrisms(candNode, 'panel')
+      const { workingPrism, dedicatedOverheadPrism } = getEquipmentSpacePrisms(
+        candNode,
+        'panel',
+        levelHeight,
+      )
       // Also check panel body itself (behind front face) so panel never embeds inside furniture/fixtures
       const bodyAndWorkingPrism = {
         ...workingPrism,
@@ -889,13 +927,13 @@ export function planNecAutoPopulate(
       const hostWall = sp.wallId ? walls.find((w) => w.id === sp.wallId) : undefined
       if (hostWall && typeof sp.wallT === 'number') {
         const baseRawT = Math.max(0.25, Math.min(hostWall.length - 0.25, sp.wallT * hostWall.length))
-        const spans = wallRoomSpans(hostWall, walls, true)
+        const spans = getWallRoomSpans(hostWall, true)
         const candY = round3(sp.heightAff ?? 1.52)
         for (const shift of [0, 0.55, -0.55, 1.1, -1.1, 1.65, -1.65]) {
           const rawT = baseRawT + shift
           if (rawT < 0.25 || rawT > hostWall.length - 0.25) continue
           const enclosing = spans.find(([a, b]) => rawT >= a && rawT <= b)
-          if (!enclosing && shift !== 0) continue
+          if (!enclosing && spans.length > 0) continue
           const spanBounds = enclosing ?? [0, hostWall.length]
           const bayT = snapPanelOffsetToStudBay(hostWall.length, rawT, {
             spanMin: spanBounds[0],
@@ -947,13 +985,8 @@ export function planNecAutoPopulate(
     const scanWallsForPanel = (allowUnzoned: boolean) => {
       for (const w of walls) {
         const wRule = resolveWallFramingRule(bonesCtx, w.id)
-        const wSpans = wallRoomSpans(w, walls, true)
+        const wSpans = getWallRoomSpans(w, true)
         const candidateTs: Array<{ t: number; span: [number, number] }> = []
-        for (const frac of [0.5, 0.25, 0.75]) {
-          const rawT = w.length * frac
-          const enclosing = wSpans.find(([a, b]) => rawT >= a && rawT <= b) ?? [0, w.length]
-          candidateTs.push({ t: rawT, span: enclosing })
-        }
         for (const span of wSpans) {
           const spanLen = span[1] - span[0]
           if (spanLen < 0.45) continue
@@ -985,6 +1018,11 @@ export function planNecAutoPopulate(
             const probeZ = pz + nz * 0.45
             const zProbe = zoneAtPoint(zones, probeX, probeZ)
             if (!allowUnzoned && !zProbe) continue
+            // NEC 110.28 / 312.2: Never mount an indoor NEMA 1 panelboard on the exterior face of a perimeter wall
+            if (zones.length > 0 && !zProbe) {
+              const oppZone = zoneAtPoint(zones, px - nx * 0.45, pz - nz * 0.45)
+              if (oppZone && !isOutdoorCategory(oppZone.category)) continue
+            }
             if (zProbe) {
               const cat = zProbe.category
               if (isBathroom(cat) || CLOSET_PATTERN.test(cat) || isOutdoorCategory(cat)) continue
@@ -1230,7 +1268,16 @@ export function planNecAutoPopulate(
         const curAlong =
           (resolved.position[0] - hostWForCheck.start[0]) * hostWForCheck.dx +
           (resolved.position[2] - hostWForCheck.start[1]) * hostWForCheck.dz
-        const origZone = zoneAtPoint(zones, resolved.position[0], resolved.position[2])
+        const avoidWinForNudge = resolved.position[1] >= 0.95
+        const hostSpans = getWallRoomSpans(hostWForCheck, avoidWinForNudge)
+        const enclosingSpan = hostSpans.find(([s0, s1]) => curAlong >= s0 - 0.12 && curAlong <= s1 + 0.12)
+        const spanMinA = enclosingSpan ? Math.max(0.24, enclosingSpan[0] + 0.08) : 0.24
+        const spanMaxA = enclosingSpan ? Math.min(hostWForCheck.length - 0.24, enclosingSpan[1] - 0.08) : hostWForCheck.length - 0.24
+        const fx = Math.sin(resolved.rotation)
+        const fz = Math.cos(resolved.rotation)
+        const origZone =
+          zoneAtPoint(zones, resolved.position[0] + fx * 0.3, resolved.position[2] + fz * 0.3) ??
+          zoneAtPoint(zones, resolved.position[0], resolved.position[2])
         const shifts =
           blockedByStack && !blockedByEquip && initWet.ok
             ? [0.25, -0.25, 0.36, -0.36, 0.55, -0.55, 0.85, -0.85]
@@ -1238,14 +1285,18 @@ export function planNecAutoPopulate(
         let nudgedClean = false
         for (const shift of shifts) {
           const na = curAlong + shift
-          if (na < 0.24 || na > hostWForCheck.length - 0.24) continue
-          const hitsOpening = hostWForCheck.openings.some((o) => o.kind === 'door' && na > o.tMin && na < o.tMax)
+          if (na < spanMinA || na > spanMaxA) continue
+          const hitsOpening = hostWForCheck.openings.some(
+            (o) => (o.kind === 'door' || (avoidWinForNudge && o.kind === 'window')) && na > o.tMin && na < o.tMax,
+          )
           if (hitsOpening) continue
           const nx = round3(resolved.position[0] + hostWForCheck.dx * shift)
           const nz = round3(resolved.position[2] + hostWForCheck.dz * shift)
           const nCenter = wallCenterOf(nx, nz, hostWForCheck)
-          const newZone = zoneAtPoint(zones, nx, nz)
-          if (origZone && newZone && origZone.id !== newZone.id) continue
+          const newZone =
+            zoneAtPoint(zones, nx + fx * 0.3, nz + fz * 0.3) ??
+            zoneAtPoint(zones, nx, nz)
+          if (origZone && (!newZone || origZone.id !== newZone.id)) continue
           if (
             !resolved.isExterior &&
             !checkWetFixtureCompliance(nx, resolved.position[1], nz, nudgeRole, newZone?.id ?? origZone?.id ?? null).ok
@@ -1265,9 +1316,11 @@ export function planNecAutoPopulate(
         }
         // If a non-mandatory general/perimeter outlet STILL violates a tub/sink/stove or sits inside
         // HVAC/Plumbing equipment after nudging, skip it rather than spawning an illegal/clashing device.
+        // Never silently drop mandatory NEC 210.70 room/stairway switches when clear of equipment & wet zones.
         const isMandatoryBathGfci =
           resolved.circuitGroup === 'Bathroom GFCI (20A)' && /Vanity GFCI/i.test(resolved.name)
-        if (!nudgedClean && !isMandatoryBathGfci && (blockedByEquip || !initWet.ok)) {
+        const isMandatorySwitchSafe = isWallSwitchForNudge && !blockedByEquip && initWet.ok
+        if (!nudgedClean && !isMandatoryBathGfci && !isMandatorySwitchSafe && (blockedByEquip || !initWet.ok)) {
           return false
         }
       }
@@ -1437,9 +1490,24 @@ export function planNecAutoPopulate(
       const marginEnd = minTub > 0 ? 0.08 : 0.12
       const stepM = minTub > 0 ? 0.12 : 0.25
       for (const wall of walls) {
+        if (!opts.preferExterior) {
+          const padW = wall.thickness + 0.5
+          const wMinX = Math.min(wall.start[0], wall.end[0])
+          const wMaxX = Math.max(wall.start[0], wall.end[0])
+          const wMinZ = Math.min(wall.start[1], wall.end[1])
+          const wMaxZ = Math.max(wall.start[1], wall.end[1])
+          if (
+            wMaxX < z.minX - padW ||
+            wMinX > z.maxX + padW ||
+            wMaxZ < z.minZ - padW ||
+            wMinZ > z.maxZ + padW
+          ) {
+            continue
+          }
+        }
         const faceOff = wall.thickness / 2 + WALL_DEVICE_OFFSET_M
         const probeOff = wall.thickness / 2 + 0.3
-        const spans = wallRoomSpans(wall, walls, skipWindows)
+        const spans = getWallRoomSpans(wall, skipWindows)
         for (const [s0, s1] of spans) {
           const spanLen = s1 - s0
           if (spanLen < 0.2) continue
@@ -1510,9 +1578,10 @@ export function planNecAutoPopulate(
                 } else {
                   const fbScore =
                     (clearOfEquip ? 300 : -400) +
+                    (Number.isFinite(tubDist) && tubDist < 0.15 ? -2000 : 0) +
                     (wet.hitsSink ? -500 : 0) +
                     (wet.hitsStove ? -300 : 0) +
-                    (Number.isFinite(tubDist) ? Math.min(5, tubDist) * 150 : 500) +
+                    (Number.isFinite(tubDist) ? Math.min(5, tubDist) * 300 : 500) +
                     (clearOfExisting ? 40 : 0)
                   if (!pass2State.fallback || fbScore > pass2State.fallback.score) {
                     pass2State.fallback = { pos, rot, score: fbScore }
@@ -1622,9 +1691,9 @@ export function planNecAutoPopulate(
     ? interiorZones.find((z) => isHallway(z.category)) ??
       interiorZones.find((z) => isPrimaryCommonZone(z.category)) ??
       interiorZones.find(
-        (z) => !isBathroom(z.category) && !isKitchen(z.category) && !/closet/.test(z.category) && !isBedroom(z.category),
+        (z) => !isBathroom(z.category) && !isKitchen(z.category) && !CLOSET_PATTERN.test(z.category) && !isBedroom(z.category),
       ) ??
-      interiorZones.find((z) => !isBathroom(z.category) && !isKitchen(z.category) && !/closet/.test(z.category)) ??
+      interiorZones.find((z) => !isBathroom(z.category) && !isKitchen(z.category) && !CLOSET_PATTERN.test(z.category)) ??
       null
     : null
   const smokeCircuitGroup =
@@ -2392,8 +2461,39 @@ export function planNecAutoPopulate(
     const radialOffsetM = radialOffsetForDir(Math.sin(mepRot), Math.cos(mepRot))
     const lateralOffsetM = mepNode.type === 'plumbing:fixture' ? 0.36 : 0
     const targetY = isCeilingHardwiredExhaust
-      ? round3(Math.max(2.44, Math.min(levelHeight - 0.03, mepRawY >= 2.2 ? mepRawY : ceilingLightY)))
+      ? round3(Math.min(levelHeight - 0.03, Math.max(2.1, mepRawY >= 2.2 ? mepRawY : ceilingLightY)))
       : Math.max(0.38, Math.min(1.5, mepRawY || 0.9))
+
+    const rawPoles =
+      typeof rawDemand.poles === 'number'
+        ? rawDemand.poles
+        : (rawDemand.voltage ?? 120) >= 208
+          ? 2
+          : 1
+    const poles: 1 | 2 | 3 =
+      rawPoles >= 3
+        ? isThreePhaseSystem(panelVoltageSystem)
+          ? 3
+          : 2
+        : rawPoles >= 2 || (rawDemand.voltage ?? 120) >= 208
+          ? 2
+          : 1
+    // REAL-ELC-01 + ELC-R-BUG-04: Flag only genuinely hardwired HVAC/plumbing equipment drops as
+    // `mepHardwired: true`. Cord-and-plug 120V receptacles (range-hood, ERV, dehumidifier,
+    // tankless gas water heater, recirc pump, sump, softener) get `mepHardwired: false` and run
+    // full NEC 406.9(C) / 406.5(E) wet-fixture compliance during placement & audit.
+    const isHardwiredMepEquipment =
+      isCeilingHardwiredExhaust ||
+      poles >= 2 ||
+      (isHvacEquip &&
+        (eqKind === 'air-handler' ||
+          eqKind === 'gas-furnace-96' ||
+          eqKind === 'gas-furnace-80')) ||
+      (mepNode.type === 'plumbing:equipment' &&
+        (eqKind === 'water-heater-tank-electric' ||
+          eqKind === 'water-heater-hpwh' ||
+          eqKind === 'boiler-hydronic' ||
+          eqKind === 'pressure-tank'))
 
     const basePos: Vec3 = [
       round3(Number(mepNode.position[0]) + Math.sin(mepRot) * radialOffsetM + Math.cos(mepRot) * lateralOffsetM),
@@ -2484,10 +2584,8 @@ export function planNecAutoPopulate(
           }
         }
       } else {
-        const isCordConnectedPlumbingEq =
-          mepNode.type === 'plumbing:equipment' &&
-          (eqKind === 'sump-pump' || eqKind === 'sewage-ejector' || eqKind === 'water-softener')
-        const baseWetEq = isCordConnectedPlumbingEq
+        const isCordConnectedMepEq = !isHardwiredMepEquipment
+        const baseWetEq = isCordConnectedMepEq
           ? checkWetFixtureCompliance(basePos[0], basePos[1], basePos[2], 'receptacle', mepOriginZone?.id ?? null)
           : { ok: true, minTubDist: Number.POSITIVE_INFINITY, hitsTub: false, hitsSink: false, hitsStove: false }
         if (pointOrRiserHitsObstacle(basePos[0], basePos[1], basePos[2]) || !baseWetEq.ok) {
@@ -2513,7 +2611,7 @@ export function planNecAutoPopulate(
               const hitsRiser = pointOrRiserHitsObstacle(cx, targetY, cz)
               const candZone = zoneAtPoint(zones, cx, cz)
               const sameRoom = !mepOriginZone || candZone?.id === mepOriginZone.id
-              const wetEq = isCordConnectedPlumbingEq
+              const wetEq = isCordConnectedMepEq
                 ? checkWetFixtureCompliance(cx, targetY, cz, 'receptacle', candZone?.id ?? mepOriginZone?.id ?? null)
                 : { ok: true, hitsTub: false, hitsSink: false, hitsStove: false }
               const score =
@@ -2521,6 +2619,7 @@ export function planNecAutoPopulate(
                 (hitsRiser ? -200 : 0) +
                 (wetEq.hitsTub ? -900 : 0) +
                 (wetEq.hitsSink ? -900 : 0) +
+                (wetEq.hitsStove ? -600 : 0) +
                 (sameRoom ? 40 : 0) -
                 extraOff * 25 -
                 di * 0.5
@@ -2558,20 +2657,6 @@ export function planNecAutoPopulate(
       if (duplicateOfBones) continue
     }
 
-    const rawPoles =
-      typeof rawDemand.poles === 'number'
-        ? rawDemand.poles
-        : (rawDemand.voltage ?? 120) >= 208
-          ? 2
-          : 1
-    const poles: 1 | 2 | 3 =
-      rawPoles >= 3
-        ? isThreePhaseSystem(panelVoltageSystem)
-          ? 3
-          : 2
-        : rawPoles >= 2 || (rawDemand.voltage ?? 120) >= 208
-          ? 2
-          : 1
     const breakerAmps =
       typeof rawDemand.breakerAmps === 'number' ? rawDemand.breakerAmps : poles >= 2 ? 30 : 20
     const loadVa =
@@ -2640,19 +2725,6 @@ export function planNecAutoPopulate(
             isBasementOrUtility(mepZoneCat) ||
             isOutdoorCategory(mepZoneCat)),
       )
-    // REAL-ELC-01: Flag hardwired HVAC & fixed plumbing equipment drops so NEC 406.9(C) receptacle
-    // checks do not falsely audit hardwired equipment disconnects/junctions as cord-and-plug outlets.
-    const isHardwiredMepEquipment =
-      isHvacEquip ||
-      (mepNode.type === 'plumbing:equipment' &&
-        (poles >= 2 ||
-          eqKind === 'water-heater-tank-electric' ||
-          eqKind === 'water-heater-hpwh' ||
-          eqKind === 'boiler-hydronic' ||
-          eqKind === 'pressure-tank' ||
-          eqKind === 'water-heater-tankless-gas' ||
-          eqKind === 'recirc-pump'))
-
     const addedMep = addPlanned({
       name: `${label} Power`,
       position: pos,
@@ -2678,7 +2750,7 @@ export function planNecAutoPopulate(
           : 'single-gang-deep',
       wireGauge,
       mepSourceNodeId: mepNode.id,
-      ...(isHardwiredMepEquipment ? { mepHardwired: true } : {}),
+      mepHardwired: isHardwiredMepEquipment,
     })
     if (addedMep && dedicatedCommit) {
       dedicatedGroupCounts.set(dedicatedCommit.base, dedicatedCommit.count)
@@ -2730,11 +2802,36 @@ export function planNecAutoPopulate(
           }
           return false
         }
+        // Bound latchCandidates strictly within the two adjacent opening-free, room-bound wall spans
+        // flanking this door so entry switches / exterior lights never land on adjacent windows or cross T-junctions.
+        const doorSpans = getWallRoomSpans(wall, true)
+        const leftFlankSpan = doorSpans
+          .filter(([, s1]) => s1 <= op.tMin + 0.15)
+          .sort((a, b) => b[1] - a[1])[0]
+        const rightFlankSpan = doorSpans
+          .filter(([s0]) => s0 >= op.tMax - 0.15)
+          .sort((a, b) => a[0] - b[0])[0]
         const latchCandidates: number[] = []
         for (let step = 0; step < 18; step++) {
           const d = 0.26 + step * 0.16
-          if (op.tMax + d <= wall.length - 0.22) latchCandidates.push(op.tMax + d)
-          if (op.tMin - d >= 0.22) latchCandidates.push(op.tMin - d)
+          const tRight = op.tMax + d
+          if (
+            tRight <= wall.length - 0.22 &&
+            rightFlankSpan &&
+            tRight >= rightFlankSpan[0] &&
+            tRight <= rightFlankSpan[1] - 0.08
+          ) {
+            latchCandidates.push(tRight)
+          }
+          const tLeft = op.tMin - d
+          if (
+            tLeft >= 0.22 &&
+            leftFlankSpan &&
+            tLeft >= leftFlankSpan[0] + 0.08 &&
+            tLeft <= leftFlankSpan[1]
+          ) {
+            latchCandidates.push(tLeft)
+          }
         }
         // REAL-ELC-02: Prefer a latch-side stud bay clear of structural headers, tub/shower 3 ft zones,
         // sink basins, stoves, and MEP equipment/terminals on the interior face!
@@ -2854,7 +2951,7 @@ export function planNecAutoPopulate(
     }
 
     // 2b. Walk T-junction-split unbroken wall segments for NEC 210.52(A) 6ft/12ft & 210.52(C) Kitchen 4ft rules
-    const spans = wallRoomSpans(wall, walls)
+    const spans = getWallRoomSpans(wall, false)
     for (const [s0, s1] of spans) {
       const spanLen = s1 - s0
       const spanMidT = (s0 + s1) / 2
@@ -2996,6 +3093,9 @@ export function planNecAutoPopulate(
     const cat = z.category
 
     if (isOutdoorCategory(cat)) {
+      // VIS-06 / NEC 680.22(A): Swimming pool zones are outdoor water basins — never place indoor
+      // ceiling lights, general habitable outlets, or floating pool-edge receptacles on them.
+      if (POOL_PATTERN.test(cat)) continue
       // NEC 210.52(E)(3): Balcony / Deck / Patio accessible Outdoor WR GFCI mounted flush on exterior wall
       const spot = snapToZoneWall(z, { mountY: 0.45, preferExterior: true, avoidWindows: false })
       addPlanned({
@@ -3070,8 +3170,23 @@ export function planNecAutoPopulate(
       const ceilingMaxY = cavities.hasAttic
         ? Math.max(levelHeight + 0.65, cavities.atticY + 0.5)
         : Math.max(levelHeight + 0.25, ceilingLightY + 0.25)
+      const ceilingMinY = Math.min(effectiveChaseY - 0.15, ceilingLightY - 0.35)
+      // ELC-OPT-05: Pre-filter obstacles once per room to the ceiling band overlapping this zone's padded XZ AABB
+      const roomCeilingObs = obstacles.filter((obs) => {
+        const b = obs.box
+        if (b.max[1] < ceilingMinY || b.min[1] > ceilingMaxY) return false
+        const pad = Math.max(0.24, obs.requiredClearanceM + 0.1)
+        return (
+          b.max[0] + pad >= z.minX &&
+          b.min[0] - pad <= z.maxX &&
+          b.max[2] + pad >= z.minZ &&
+          b.min[2] - pad <= z.maxZ
+        )
+      })
       const ceilingSpotBlocked = (px: number, pz: number, y: number, tight = false): boolean => {
-        for (const obs of obstacles) {
+        // ELC-R-BUG-05 / NEC 410.10(D): Keep ceiling luminaires (< 8 ft AFF) >= 3 ft clear of bathtub/shower zone
+        if (!checkWetFixtureCompliance(px, y, pz, 'luminaire', z.id).ok) return true
+        for (const obs of roomCeilingObs) {
           const b = obs.box
           const pad = tight
             ? Math.max(obs.requiredClearanceM, 0.05) + 0.035
@@ -3148,16 +3263,10 @@ export function planNecAutoPopulate(
         }
         // Fine interior grid scan for narrow/small rooms (first standard pad, then tight NEC clearance pad)
         if (!foundClearLum) {
-          let zMinX = Number.POSITIVE_INFINITY
-          let zMaxX = Number.NEGATIVE_INFINITY
-          let zMinZ = Number.POSITIVE_INFINITY
-          let zMaxZ = Number.NEGATIVE_INFINITY
-          for (const [pxP, pzP] of z.polygon) {
-            if (pxP < zMinX) zMinX = pxP
-            if (pxP > zMaxX) zMaxX = pxP
-            if (pzP < zMinZ) zMinZ = pzP
-            if (pzP > zMaxZ) zMaxZ = pzP
-          }
+          const zMinX = z.minX
+          const zMaxX = z.maxX
+          const zMinZ = z.minZ
+          const zMaxZ = z.maxZ
           const spanX = Math.max(0.04, zMaxX - zMinX - 0.16)
           const spanZ = Math.max(0.04, zMaxZ - zMinZ - 0.16)
           const steps = 8
@@ -3180,7 +3289,7 @@ export function planNecAutoPopulate(
             }
             if (foundClearLum) break
           }
-          // Last resort: pick the interior point maximizing minimum clearance to all ceiling obstacles
+          // Last resort: pick the interior point maximizing minimum clearance to ceiling obstacles & wet zones
           if (!foundClearLum) {
             let bestClearance = -Number.POSITIVE_INFINITY
             for (let ix = 0; ix <= steps; ix++) {
@@ -3189,14 +3298,15 @@ export function planNecAutoPopulate(
                 const tz = round3(zMinZ + 0.08 + (spanZ * iz) / steps)
                 if (!pointInPolygon2D(tx, tz, z.polygon)) continue
                 let minClear = Number.POSITIVE_INFINITY
-                for (const obs of obstacles) {
+                for (const obs of roomCeilingObs) {
                   const b = obs.box
-                  if (b.max[1] < Math.min(effectiveChaseY - 0.15, ceilingLightY - 0.35) || b.min[1] > ceilingMaxY) continue
                   const d = horizontalDistToAabbXZ(tx, tz, b) - Math.max(obs.requiredClearanceM, 0.05)
                   if (d < minClear) minClear = d
                 }
-                if (minClear > bestClearance) {
-                  bestClearance = minClear
+                const wetLum = checkWetFixtureCompliance(tx, ceilingLightY, tz, 'luminaire', z.id)
+                const scoreClear = (wetLum.ok ? 0 : -10) + (Number.isFinite(minClear) ? minClear : 5)
+                if (scoreClear > bestClearance) {
+                  bestClearance = scoreClear
                   lumX = tx
                   lumZ = tz
                 }
@@ -3368,17 +3478,27 @@ export function planNecAutoPopulate(
       const smokeMaxY = cavities.hasAttic
         ? Math.max(levelHeight + 0.65, cavities.atticY + 0.5)
         : Math.max(levelHeight + 0.25, ceilingSmokeY + 0.25)
+      const smokeMinY = Math.min(effectiveChaseY - 0.15, ceilingSmokeY - 0.35)
+      const roomSmokeObs = obstacles.filter((obs) => {
+        const b = obs.box
+        if (b.max[1] < smokeMinY || b.min[1] > smokeMaxY) return false
+        const pad = Math.max(0.26, obs.requiredClearanceM + 0.1)
+        return (
+          b.max[0] + pad >= z.minX &&
+          b.min[0] - pad <= z.maxX &&
+          b.max[2] + pad >= z.minZ &&
+          b.min[2] - pad <= z.maxZ
+        )
+      })
       const smokeBlocked = (px: number, pz: number): boolean => {
-        for (const obs of obstacles) {
+        for (const obs of roomSmokeObs) {
           const b = obs.box
           const pad = Math.max(0.26, obs.requiredClearanceM + 0.1)
           if (
             px >= b.min[0] - pad &&
             px <= b.max[0] + pad &&
             pz >= b.min[2] - pad &&
-            pz <= b.max[2] + pad &&
-            b.max[1] >= Math.min(effectiveChaseY - 0.15, ceilingSmokeY - 0.35) &&
-            b.min[1] <= smokeMaxY
+            pz <= b.max[2] + pad
           ) {
             return true
           }
@@ -3424,23 +3544,15 @@ export function planNecAutoPopulate(
         if (!isNearExisting(pos, 0, 0.45) && !smokeBlocked(px, pz)) return pos
       }
       // Fine interior polygon grid scan for narrow hallways / rooms where ceiling ducts occupy the center
-      let zMinX = Number.POSITIVE_INFINITY
-      let zMaxX = Number.NEGATIVE_INFINITY
-      let zMinZ = Number.POSITIVE_INFINITY
-      let zMaxZ = Number.NEGATIVE_INFINITY
-      for (const [pxP, pzP] of z.polygon) {
-        if (pxP < zMinX) zMinX = pxP
-        if (pxP > zMaxX) zMaxX = pxP
-        if (pzP < zMinZ) zMinZ = pzP
-        if (pzP > zMaxZ) zMaxZ = pzP
-      }
+      const spanX = Math.max(0.04, z.maxX - z.minX - 0.28)
+      const spanZ = Math.max(0.04, z.maxZ - z.minZ - 0.28)
       let bestSmoke: Vec3 | null = null
       let bestDist = Number.POSITIVE_INFINITY
       const steps = 6
       for (let ix = 0; ix <= steps; ix++) {
-        const px = round3(zMinX + 0.14 + ((zMaxX - zMinX - 0.28) * ix) / steps)
+        const px = round3(z.minX + 0.14 + (spanX * ix) / steps)
         for (let iz = 0; iz <= steps; iz++) {
-          const pz = round3(zMinZ + 0.14 + ((zMaxZ - zMinZ - 0.28) * iz) / steps)
+          const pz = round3(z.minZ + 0.14 + (spanZ * iz) / steps)
           if (!pointInPolygon2D(px, pz, z.polygon)) continue
           const pos: Vec3 = [px, ceilingSmokeY, pz]
           if (isNearExisting(pos, 0, 0.45) || smokeBlocked(px, pz)) continue
@@ -3490,7 +3602,7 @@ export function planNecAutoPopulate(
     // 3. Story-minimum guarantee (IRC R314.3(3)): at least 1 hardwired smoke/CO alarm per residential level
     if (smokeTargetZones.length === 0 && existingSmokeAlarms.length === 0) {
       const fallbackZone = [...interiorZones]
-        .filter((z) => !isBathroom(z.category) && !isKitchen(z.category) && !/closet/.test(z.category))
+        .filter((z) => !isBathroom(z.category) && !isKitchen(z.category) && !CLOSET_PATTERN.test(z.category))
         .sort((a, b) => b.areaM2 - a.areaM2)[0]
       if (fallbackZone) {
         smokeTargetZones.push({
@@ -3521,11 +3633,6 @@ export function planNecAutoPopulate(
 
   // Guarantee at least 1 Outdoor WR GFCI even if a minimal floorplan has no exterior doors/patio zones tagged yet
   if (exteriorDoorCount === 0 && !planned.some((p) => p.circuitGroup === 'Outdoor GFCI') && walls.length > 0) {
-    const w0 = walls[0]!
-    const extOff0 = w0.thickness / 2 + WALL_DEVICE_OFFSET_M
-    let outX = round3((w0.start[0] + w0.end[0]) / 2 - w0.nx * extOff0)
-    let outZ = round3((w0.start[1] + w0.end[1]) / 2 - w0.nz * extOff0)
-    let outRot = w0.yaw + Math.PI
     // Stay clear of exterior Plumbing hose-bibb vertical supply risers, sinks, tubs, and MEP equipment
     const exteriorSpotBlocked = (px: number, pz: number): boolean => {
       if (!checkWetFixtureCompliance(px, 0.45, pz, 'receptacle').ok) return true
@@ -3543,29 +3650,52 @@ export function planNecAutoPopulate(
         )
       })
     }
-    if (exteriorSpotBlocked(outX, outZ)) {
-      let foundExt = false
-      for (const wCand of walls) {
-        const extOff = wCand.thickness / 2 + WALL_DEVICE_OFFSET_M
-        const midAlong = wCand.length / 2
-        for (const sign of [-1, 1] as const) {
-          for (const shift of [0, 0.75, -0.75, 1.35, -1.35, 2.0, -2.0]) {
-            const a = midAlong + shift
-            if (a < 0.35 || a > wCand.length - 0.35) continue
-            const tx = round3(wCand.start[0] + wCand.dx * a + wCand.nx * sign * extOff)
-            const tz = round3(wCand.start[1] + wCand.dz * a + wCand.nz * sign * extOff)
-            if (!exteriorSpotBlocked(tx, tz)) {
-              outX = tx
-              outZ = tz
-              outRot = sign === 1 ? wCand.yaw : wCand.yaw + Math.PI
-              foundExt = true
-              break
-            }
+    const isExteriorWallFaceAt = (wCand: WallSeg, a: number, sign: 1 | -1): boolean => {
+      if (wCand.openings.some((o) => a > o.tMin - 0.08 && a < o.tMax + 0.08)) return false
+      if (zones.length === 0) return true
+      const cxW = wCand.start[0] + wCand.dx * a
+      const czW = wCand.start[1] + wCand.dz * a
+      const probeOff = wCand.thickness / 2 + 0.35
+      const probeZone = zoneAtPoint(zones, cxW + wCand.nx * sign * probeOff, czW + wCand.nz * sign * probeOff)
+      const oppZone = zoneAtPoint(zones, cxW - wCand.nx * sign * probeOff, czW - wCand.nz * sign * probeOff)
+      const faceIsOutdoor = probeZone === null || isOutdoorCategory(probeZone.category)
+      const oppIsIndoor = oppZone !== null && !isOutdoorCategory(oppZone.category)
+      return faceIsOutdoor && oppIsIndoor
+    }
+    let outX: number | null = null
+    let outZ: number | null = null
+    let outRot = walls[0]!.yaw + Math.PI
+    outerExtFallback: for (const wCand of walls) {
+      const extOff = wCand.thickness / 2 + WALL_DEVICE_OFFSET_M
+      const midAlong = wCand.length / 2
+      for (const sign of [-1, 1] as const) {
+        for (const shift of [0, 0.75, -0.75, 1.35, -1.35, 2.0, -2.0]) {
+          const a = midAlong + shift
+          if (a < 0.35 || a > wCand.length - 0.35) continue
+          if (!isExteriorWallFaceAt(wCand, a, sign)) continue
+          const tx = round3(wCand.start[0] + wCand.dx * a + wCand.nx * sign * extOff)
+          const tz = round3(wCand.start[1] + wCand.dz * a + wCand.nz * sign * extOff)
+          if (!exteriorSpotBlocked(tx, tz)) {
+            outX = tx
+            outZ = tz
+            outRot = sign === 1 ? wCand.yaw : wCand.yaw + Math.PI
+            break outerExtFallback
           }
-          if (foundExt) break
         }
-        if (foundExt) break
       }
+    }
+    if (outX === null || outZ === null) {
+      const w0 = walls[0]!
+      const extOff0 = w0.thickness / 2 + WALL_DEVICE_OFFSET_M
+      const midA = w0.length / 2
+      const preferSign: 1 | -1 = isExteriorWallFaceAt(w0, midA, -1)
+        ? -1
+        : isExteriorWallFaceAt(w0, midA, 1)
+          ? 1
+          : -1
+      outX = round3((w0.start[0] + w0.end[0]) / 2 + w0.nx * preferSign * extOff0)
+      outZ = round3((w0.start[1] + w0.end[1]) / 2 + w0.nz * preferSign * extOff0)
+      outRot = preferSign === 1 ? w0.yaw : w0.yaw + Math.PI
     }
     addPlanned({
       name: 'Front Exterior WR GFCI',
@@ -3624,10 +3754,12 @@ export function planNecAutoPopulate(
   const vLN = getVoltageLineToNeutral(panelVoltageSystem)
   const isThreePhasePanel = panelVoltageSystem !== '120/240V-1P'
   const phaseCount = isThreePhasePanel ? 3 : 2
-  const maxPanelSpaces = Math.min(
-    84,
-    Math.max(4, Math.ceil((typeof panelNode.spaces === 'number' ? panelNode.spaces : 40) / 2) * 2),
-  )
+  const maxPanelSpaces = createdPanel
+    ? 84
+    : Math.min(
+        84,
+        Math.max(4, Math.ceil((typeof panelNode.spaces === 'number' ? panelNode.spaces : 40) / 2) * 2),
+      )
 
   // Seed phase load accumulator from ALL existing devices on this panel across every level (NEC 220.61)
   const phaseLoadVa = new Array<number>(phaseCount).fill(0)
@@ -4080,6 +4212,7 @@ export function planNecAutoPopulate(
     }, 0)
     if (maxCktUsed > createdPanel.spaces) {
       createdPanel.spaces = maxCktUsed <= 60 ? 60 : 84
+      panelNode.spaces = createdPanel.spaces
     }
   }
 
@@ -4289,7 +4422,7 @@ export function findNextWallPlacement(
   const all = Object.values(nodes)
   const walls = extractWalls(nodes, levelId)
   const zones = extractZones(nodes, levelId)
-  const tubBoxes = extractTubBoxes(nodes, levelId)
+  const { checkWetFixtureCompliance } = createWetFixtureChecker(nodes, levelId, zones)
   const existingDevices = all.filter(
     (n) => n.type === 'electrical:device' && belongsToLevel(nodes, n, levelId),
   )
@@ -4324,11 +4457,14 @@ export function findNextWallPlacement(
                             : kind === 'weatherproof-gfci'
                               ? 0.45
                               : 0.38
-  const enforceTubClearance =
-    kind !== 'luminaire' &&
-    kind !== 'junction-box' &&
-    kind !== 'ceiling-fan' &&
-    kind !== 'smoke-co'
+  const wetCheckRole: 'receptacle' | 'switch' | 'luminaire' | null =
+    kind === 'junction-box' || kind === 'smoke-co'
+      ? null
+      : kind === 'luminaire' || kind === 'ceiling-fan' || kind === 'under-cabinet-led'
+        ? 'luminaire'
+        : kind === 'switch-1p' || kind === 'switch-3way' || kind === 'dimmer'
+          ? 'switch'
+          : 'receptacle'
 
   const isOccupied = (pos: Vec3, rot: number): boolean => {
     for (const d of existingDevices) {
@@ -4361,7 +4497,7 @@ export function findNextWallPlacement(
         const px = round3(z.centroid[0] + ox)
         const pz = round3(z.centroid[1] + oz)
         if (!zoneAtPoint(zones, px, pz)) continue
-        if (enforceTubClearance && minDistToTubBoxes(tubBoxes, px, pz) < 0.96) continue
+        if (wetCheckRole && !checkWetFixtureCompliance(px, mountY, pz, wetCheckRole, z.id).ok) continue
         const pos: Vec3 = [px, mountY, pz]
         if (!isOccupied(pos, 0)) {
           return { position: pos, rotation: 0, zoneName: z.name }
@@ -4394,8 +4530,8 @@ export function findNextWallPlacement(
           if (!z || isOutdoorCategory(z.category)) continue
           const wx = round3(cx + wall.nx * sign * faceOff)
           const wz = round3(cz + wall.nz * sign * faceOff)
-          // NEC 406.9(C): Keep receptacles/switches >= 3 ft (0.96 m) clear of bathtub & shower footprints
-          if (enforceTubClearance && minDistToTubBoxes(tubBoxes, wx, wz) < 0.96) continue
+          // NEC 406.9(C) / 404.4(C) / 410.10(D) / 406.5(E) / 210.52(C): Same wet-fixture compliance as audit.ts
+          if (wetCheckRole && !checkWetFixtureCompliance(wx, mountY, wz, wetCheckRole, z.id).ok) continue
           const rot = sign === 1 ? wall.yaw : wall.yaw + Math.PI
           const pos: Vec3 = [wx, mountY, wz]
           if (isOccupied(pos, rot)) continue

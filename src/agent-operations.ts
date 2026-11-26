@@ -495,7 +495,8 @@ export const electricalAgentOperations = {
     const endPt: Vec3 = (device.position as Vec3) ?? [2, 0.38, 0]
 
     const parentId =
-      (typeof panel.parentId === 'string' ? panel.parentId : null) ??
+      resolveNodeLevelId(record, device) ??
+      resolveNodeLevelId(record, panel) ??
       resolveLevelId(nodes, undefined, context)
     const occupancy: OccupancyType =
       input.occupancy ?? (panel.occupancy === 'commercial' ? 'commercial' : 'residential')
@@ -781,12 +782,14 @@ export const electricalAgentOperations = {
       }
     }
 
+    const levelHeight = resolveLevelHeightM(workingNodes, parentId)
+    const defaultChaseY = Math.round(Math.min(2.55, levelHeight - 0.06) * 1000) / 1000
     const plan = planNecAutoPopulate(workingNodes, {
       levelId: parentId,
       occupancy: input.occupancy,
       protectionMode: input.protectionMode ?? 'hybrid',
       racewayType: input.racewayType,
-      preferredChaseY: input.preferredChaseY ?? 2.55,
+      preferredChaseY: input.preferredChaseY ?? defaultChaseY,
       includeLighting: input.includeLighting ?? true,
       includeSmokeAlarms: input.includeSmokeAlarms,
       includeWiring: input.includeWiring ?? true,
@@ -858,7 +861,7 @@ export const electricalAgentOperations = {
           ...(dev.bonesServiceType ? { bonesServiceType: dev.bonesServiceType } : {}),
           ...(dev.bonesUserMoved ? { bonesUserMoved: true } : {}),
           ...(dev.mepSourceNodeId ? { mepSourceNodeId: dev.mepSourceNodeId } : {}),
-          ...(dev.mepHardwired ? { mepHardwired: true } : {}),
+          ...(typeof dev.mepHardwired === 'boolean' ? { mepHardwired: dev.mepHardwired } : {}),
           ...(dev.loadCategory ? { loadCategory: dev.loadCategory } : {}),
         },
         position: dev.position,

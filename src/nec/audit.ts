@@ -34,6 +34,7 @@ import {
   getPlumbingFixtureBox,
   getStructuralColumnBox,
   polylineLengthM,
+  resolveLevelHeightM,
   resolveNodeLevelId,
 } from './routing'
 import {
@@ -212,6 +213,7 @@ export function prismIntersectsAabb(prism: OrientedPrismY, box: Aabb3): boolean 
 export function getEquipmentSpacePrisms(
   equip: SceneNodeLike,
   kind: 'panel' | 'transformer',
+  structuralCeilingY?: number,
 ): {
   workingPrism: OrientedPrismY
   dedicatedOverheadPrism: OrientedPrismY
@@ -238,11 +240,17 @@ export function getEquipmentSpacePrisms(
   const clearance = getWorkingClearance110_26(voltageSystem, condition)
   const clearW = Math.max(clearance.widthM, w)
   const clearD = clearance.depthM
-  const clearH = Math.max(clearance.heightM, h)
   const cos = Math.cos(rotY)
   const sin = Math.sin(rotY)
-  const baseY = kind === 'transformer' ? pos[1] : Math.max(0, pos[1] - 1.52)
+  const baseY = kind === 'transformer' ? pos[1] : 0
   const topY = kind === 'transformer' ? pos[1] + h : pos[1] + h / 2
+  const workingYMax = Math.max(baseY + clearance.heightM, topY)
+  const dedicatedYMax =
+    typeof structuralCeilingY === 'number' &&
+    Number.isFinite(structuralCeilingY) &&
+    structuralCeilingY > topY
+      ? Math.min(topY + 1.829, structuralCeilingY)
+      : topY + 1.829
   const zFront = d / 2 + 0.02
 
   const workingPrism: OrientedPrismY = {
@@ -255,10 +263,11 @@ export function getEquipmentSpacePrisms(
     lzMin: zFront,
     lzMax: zFront + clearD,
     yMin: baseY,
-    yMax: baseY + clearH,
+    yMax: workingYMax,
   }
 
-  // Dedicated overhead electrical space: equipment footprint extending 6 ft (1.829 m) above top
+  // NEC 110.26(E)(1)(a): Dedicated electrical space extends from floor to 6 ft (1.829 m) above
+  // equipment or to the structural ceiling, whichever is lower.
   const dedicatedOverheadPrism: OrientedPrismY = {
     centerX: pos[0],
     centerZ: pos[2],
@@ -268,8 +277,8 @@ export function getEquipmentSpacePrisms(
     lxMax: w / 2,
     lzMin: -d / 2,
     lzMax: d / 2,
-    yMin: topY,
-    yMax: topY + 1.829,
+    yMin: baseY,
+    yMax: dedicatedYMax,
   }
 
   return { workingPrism, dedicatedOverheadPrism, depthIn: clearance.depthIn }
@@ -370,7 +379,7 @@ export function extractObstructionBox(node: SceneNodeLike): Aabb3 | null {
   }
 }
 
-const WET_ROOM_CATEGORIES = new Set([
+const WET_ROOM_CATEGORIES: readonly string[] = [
   'kitchen',
   'bathroom',
   'bath',
@@ -390,9 +399,12 @@ const WET_ROOM_CATEGORIES = new Set([
   'restroom',
   'rooftop',
   'utility',
-])
+  'pool',
+  'swimming',
+  'piscine',
+]
 
-const HABITABLE_AFCI_CATEGORIES = new Set([
+const HABITABLE_AFCI_CATEGORIES: readonly string[] = [
   'bedroom',
   'living',
   'living-room',
@@ -406,25 +418,44 @@ const HABITABLE_AFCI_CATEGORIES = new Set([
   'office',
   'study',
   'den',
-])
+]
 
 export const BATHROOM_PATTERN =
   /(bath|restroom|shower|powder|washroom|\bwc\b|salle\s*de\s*bains?|salle\s*d['’]eau|\bsdb\b|toilettes?|\bbad\b|badezimmer|ba[ñn]o)/i
 export const KITCHEN_PATTERN = /(kitchen|pantry|cuisine|k[üu]che|cocina)/i
+export const DINING_SAB_PATTERN = /(dining|breakfast|comedor)/i
 export const LAUNDRY_PATTERN = /(laundry|mudroom|buanderie|lavander[íi]a|waschk[üu]che)/i
 export const BEDROOM_PATTERN =
   /(bed|sleeping|master|guest|nursery|chambre|schlafzimmer|dormitorio|habitaci[óo]n)/i
 export const LIVING_COMMON_PATTERN =
-  /(living|great|family|foyer|entry|dining|s[ée]jour|salon|wohnzimmer|\bsala\b|comedor)/i
+  /(living|great|family|foyer|entry|s[ée]jour|salon|wohnzimmer|\bsala\b)/i
 export const HALLWAY_PATTERN = /(hall|corridor|foyer|entry|entr[ée]e|couloir|\bflur\b|pasillo)/i
 export const CLOSET_PATTERN = /(closet|wardrobe|dressing|placard|kleiderschrank|armario)/i
+export const GARAGE_PATTERN = /\b(garage|carport)\b/i
+export const BASEMENT_UTILITY_PATTERN =
+  /(basement|utility|mechanical|crawl|cellar|sous.?sol|chaufferie)/i
+export const POOL_PATTERN = /\b(pool|swimming|piscine)\b/i
 export const OUTDOOR_PATTERN =
-  /(outdoor|patio|deck|porch|balcony|rooftop|exterior|yard|terrace|terrasse|balcon|jardin)/i
-export const HABITABLE_AFCI_PATTERN =
-  /(bed|sleeping|master|guest|nursery|living|great|family|dining|kitchen|hall|corridor|foyer|entry|closet|wardrobe|laundry|office|study|den|chambre|schlafzimmer|dormitorio|s[ée]jour|salon|wohnzimmer|\bsala\b|cuisine|k[üu]che|cocina|buanderie|lavander[íi]a|entr[ée]e|couloir|\bflur\b|pasillo|bureau|dressing)/i
+  /(outdoor|patio|deck|porch|balcony|rooftop|exterior|yard|terrace|terrasse|balcon|jardin|\bpool\b|swimming|piscine|\bspawn\b)/i
+export const HABITABLE_AFCI_PATTERN = new RegExp(
+  [
+    BEDROOM_PATTERN.source,
+    LIVING_COMMON_PATTERN.source,
+    DINING_SAB_PATTERN.source,
+    KITCHEN_PATTERN.source,
+    HALLWAY_PATTERN.source,
+    CLOSET_PATTERN.source,
+    LAUNDRY_PATTERN.source,
+    '(office|study|\\bden\\b|bureau)',
+  ].join('|'),
+  'i',
+)
 
 export const NON_FIXTURE_ITEM_PATTERN =
-  /\b(rug|mat|bathmat|carpet|curtain|towel|mirror|soap|caddy|rack|holder|shelf|stool|bench|chair|table|plant|lamp|art|frame|poster|pillow|blanket|bed|sofa|couch|desk|book|tv|monitor|speaker)\b/i
+  /\b(rugs?|mats?|bathmats?|carpets?|curtains?|towels?|mirrors?|soaps?|cadd(?:y|ies)|racks?|holders?|shel(?:f|ves)|stools?|bench(?:es)?|chairs?|tables?|plants?|lamps?|art|frames?|posters?|pillows?|blankets?|beds?|sofas?|couch(?:es)?|desks?|books?|tvs?|monitors?|speakers?)\b/i
+
+const FIXTURE_ACCESSORY_PATTERN =
+  /\b(bath|tub|shower|sink|stove|range|oven)\s+(rugs?|mats?|bathmats?|curtains?|towels?|cadd(?:y|ies)|racks?|holders?|shel(?:f|ves)|lamps?)\b/i
 
 const TUB_SHOWER_FIXTURE_PATTERN = /bath.?tub|\btub\b|shower/i
 const STOVE_FIXTURE_PATTERN = /\bstove\b|\brange\b|\bcooktop\b|\boven\b/i
@@ -450,11 +481,24 @@ function zoneDescriptorOf(zone: SceneNodeLike | null | undefined): string {
 }
 
 export function isNonFixtureItem(node: SceneNodeLike): boolean {
-  if (node.type === 'plumbing:fixture') return false
+  if (node.type === 'plumbing:fixture' || node.type === 'cabinet') return false
   const asset =
     node.asset && typeof node.asset === 'object'
       ? (node.asset as Record<string, unknown>)
       : null
+  const nameText = [node.name, asset?.name]
+    .filter((p): p is string => typeof p === 'string')
+    .join(' ')
+    .replace(/[-_/]+/g, ' ')
+  if (
+    nameText.length > 0 &&
+    NON_FIXTURE_ITEM_PATTERN.test(nameText) &&
+    !TUB_SHOWER_FIXTURE_PATTERN.test(nameText) &&
+    !STOVE_FIXTURE_PATTERN.test(nameText) &&
+    !SINK_FIXTURE_PATTERN.test(nameText)
+  ) {
+    return true
+  }
   const primaryParts: unknown[] = [
     node.name,
     node.category,
@@ -466,6 +510,14 @@ export function isNonFixtureItem(node: SceneNodeLike): boolean {
     .filter((p): p is string => typeof p === 'string')
     .join(' ')
     .replace(/[-_/]+/g, ' ')
+  if (FIXTURE_ACCESSORY_PATTERN.test(primaryText)) return true
+  if (
+    TUB_SHOWER_FIXTURE_PATTERN.test(primaryText) ||
+    STOVE_FIXTURE_PATTERN.test(primaryText) ||
+    SINK_FIXTURE_PATTERN.test(primaryText)
+  ) {
+    return false
+  }
   return NON_FIXTURE_ITEM_PATTERN.test(primaryText)
 }
 
@@ -487,7 +539,11 @@ function fixtureTextOf(node: SceneNodeLike): string {
     asset?.src,
     ...(Array.isArray(asset?.tags) ? asset.tags : []),
   ]
-  return parts.filter((p): p is string => typeof p === 'string').join(' ').toLowerCase()
+  return parts
+    .filter((p): p is string => typeof p === 'string')
+    .join(' ')
+    .replace(/[-_/]+/g, ' ')
+    .toLowerCase()
 }
 
 export function extractWetFixtures(
@@ -745,6 +801,21 @@ export function auditSceneElectrical(
   }
 
   const wetFixtures = extractWetFixtures(nodes)
+  const wetFixtureEntries = wetFixtures.map((fix) => {
+    const cx = (fix.box.min[0] + fix.box.max[0]) / 2
+    const cz = (fix.box.min[2] + fix.box.max[2]) / 2
+    const fixZone = getZoneAt(nodes, cx, cz, fix.levelId, zones)
+    const roomTag = (
+      (typeof fix.node.roomName === 'string' && fix.node.roomName) ||
+      (typeof fix.node.zoneName === 'string' && fix.node.zoneName) ||
+      (typeof fixZone?.name === 'string' && fixZone.name) ||
+      ''
+    )
+      .trim()
+      .toLowerCase()
+    return { fix, cx, cz, zone: fixZone, roomTag }
+  })
+  const maxAchievableTubDistByZone = new Map<string, number>()
 
   const findings: NecAuditFinding[] = []
   let seq = 1
@@ -752,11 +823,36 @@ export function auditSceneElectrical(
     findings.push({ id: `nec-${seq++}`, ...f })
   }
 
+  const ceilingByLevel = new Map<string, number | undefined>()
+  const getStructuralCeilingForLevel = (levelId: string | null): number | undefined => {
+    const key = levelId ?? '__all__'
+    if (ceilingByLevel.has(key)) return ceilingByLevel.get(key)
+    const lvlNode = levelId ? nodes[levelId] : all.find((n) => n.type === 'level')
+    const hasExplicitLevelHeight = Boolean(
+      lvlNode && typeof lvlNode.height === 'number' && lvlNode.height >= 1.8 && lvlNode.height <= 12,
+    )
+    const hasEnvelopeNodes =
+      hasExplicitLevelHeight ||
+      all.some(
+        (n) =>
+          (n.type === 'wall' || n.type === 'ceiling') &&
+          belongsToLevel(nodes, n, levelId),
+      )
+    const ceilingY = hasEnvelopeNodes ? resolveLevelHeightM(nodes, levelId) : undefined
+    ceilingByLevel.set(key, ceilingY)
+    return ceilingY
+  }
+
   const auditEquipmentClearances = (equip: SceneNodeLike, kind: 'panel' | 'transformer') => {
     const equipName = (typeof equip.name === 'string' && equip.name) || equip.id
     const equipLevelId = resolveNodeLevelId(nodes, equip)
     const levelObstacles = getObstaclesForLevel(equipLevelId)
-    const { workingPrism, dedicatedOverheadPrism, depthIn } = getEquipmentSpacePrisms(equip, kind)
+    const structuralCeilingY = getStructuralCeilingForLevel(equipLevelId)
+    const { workingPrism, dedicatedOverheadPrism, depthIn } = getEquipmentSpacePrisms(
+      equip,
+      kind,
+      structuralCeilingY,
+    )
 
     // NEC 110.26(A) Working Space vs same-level furniture / cabinets / HVAC equipment / columns / floor transformers
     for (const other of all) {
@@ -1063,27 +1159,26 @@ export function auditSceneElectrical(
               Array.isArray(mepSource.position) &&
               Number(mepSource.position[1]) >= 2.2)),
       )
-      // REAL-ELC-01: Hardwired MEP equipment disconnects/junctions (Air Handler, Water Heater, ERV,
-      // Range Hood, Furnace, Condenser, RTU, etc.) are NOT receptacles under NEC 406.9(C) / 406.5(E).
-      // Cord-and-plug receptacles (duplex, gfci, weatherproof-gfci, dishwasher/disposal/washer/sump)
-      // remain strictly audited.
+      // REAL-ELC-01: Hardwired MEP equipment disconnects/junctions (Air Handler, Electric/HPWH Water Heater,
+      // Furnace, Condenser, RTU, etc.) are NOT receptacles under NEC 406.9(C) / 406.5(E).
+      // Explicit `mepHardwired: false` and cord-and-plug receptacles (duplex, gfci, weatherproof-gfci,
+      // tankless-gas, recirc-pump, dishwasher/disposal/washer/sump) remain strictly audited.
       const isHardwiredMepEquip = Boolean(
-        devMeta?.mepHardwired === true ||
-          devKind === 'junction-box' ||
+        devKind === 'junction-box' ||
           devKind === 'disconnect' ||
-          (devKind === 'dedicated-240v' && Boolean(devMeta?.mepSourceNodeId)) ||
-          (mepSource &&
-            (mepSource.type === 'hvac:equipment' ||
-              mepSource.type === 'hvac-equipment' ||
-              (mepSource.type === 'plumbing:equipment' &&
-                (devKind === 'dedicated-240v' ||
-                  (typeof dev.poles === 'number' && dev.poles >= 2) ||
-                  mepSource.equipmentKind === 'water-heater-tank-electric' ||
-                  mepSource.equipmentKind === 'water-heater-hpwh' ||
-                  mepSource.equipmentKind === 'boiler-hydronic' ||
-                  mepSource.equipmentKind === 'pressure-tank' ||
-                  mepSource.equipmentKind === 'water-heater-tankless-gas' ||
-                  mepSource.equipmentKind === 'recirc-pump')))),
+          devMeta?.mepHardwired === true ||
+          (devMeta?.mepHardwired !== false &&
+            ((devKind === 'dedicated-240v' && Boolean(devMeta?.mepSourceNodeId)) ||
+              (mepSource &&
+                (mepSource.type === 'hvac:equipment' ||
+                  mepSource.type === 'hvac-equipment' ||
+                  (mepSource.type === 'plumbing:equipment' &&
+                    (devKind === 'dedicated-240v' ||
+                      (typeof dev.poles === 'number' && dev.poles >= 2) ||
+                      mepSource.equipmentKind === 'water-heater-tank-electric' ||
+                      mepSource.equipmentKind === 'water-heater-hpwh' ||
+                      mepSource.equipmentKind === 'boiler-hydronic' ||
+                      mepSource.equipmentKind === 'pressure-tank')))))),
       )
       const devRoomTag = (
         (typeof dev.roomName === 'string' && dev.roomName) ||
@@ -1115,133 +1210,139 @@ export function auditSceneElectrical(
 
       // NEC 406.9(C), 404.4(C), 410.10(D), & 406.5 Fixture-Proximity Prohibited Zones
       // Only enforce within the same level and same room zone (solid partition walls & floor slabs separate spaces)
-      const levelWallSegs = getWallsForLevel(devLevelId)
-      for (const fix of wetFixtures) {
-        if (devLevelId && fix.levelId && devLevelId !== fix.levelId) continue
-        const fixCx = (fix.box.min[0] + fix.box.max[0]) / 2
-        const fixCz = (fix.box.min[2] + fix.box.max[2]) / 2
-        const fixZone = getZoneAt(nodes, fixCx, fixCz, fix.levelId ?? devLevelId, zones)
-        if (zone && fixZone && zone.id !== fixZone.id) continue
-        const fixRoomTag = (
-          (typeof fix.node.roomName === 'string' && fix.node.roomName) ||
-          (typeof fix.node.zoneName === 'string' && fix.node.zoneName) ||
-          (typeof fixZone?.name === 'string' && fixZone.name) ||
-          ''
-        )
-          .trim()
-          .toLowerCase()
-        if (!zone || !fixZone) {
-          if (devRoomTag && fixRoomTag && devRoomTag !== fixRoomTag) continue
-        }
-        // Solid partition wall strictly between device and fixture separates adjacent rooms
-        if (wallSeparatesPoints2D(x, z, fixCx, fixCz, levelWallSegs)) continue
-        const horizDist = horizontalDistToAabbXZ(x, z, fix.box)
+      if (isReceptacle || isSwitch || isLuminaire) {
+        const levelWallSegs = getWallsForLevel(devLevelId)
         const devY = devPos[1]
-        if (fix.kind === 'tub-shower') {
-          if (isReceptacle && !isCeilingBathExhaustMep && horizDist < 0.914 && devY < 2.438) {
-            // NEC 2023 406.9(C) Exception: In compact bathrooms with less than the required 3 ft zone,
-            // the mandatory NEC 210.52(D) basin GFCI receptacle is permitted on the farthest wall
-            // outside the tub/shower rim (horizDist > 0.15 m).
-            let qualifiesCompactBathException = false
-            if (
-              devKind === 'gfci' &&
-              horizDist > 0.15 &&
-              zone &&
-              Array.isArray(zone.polygon) &&
-              zone.polygon.length >= 3
-            ) {
-              const roomTubs = wetFixtures.filter((wf) => {
-                if (wf.kind !== 'tub-shower') return false
-                if (devLevelId && wf.levelId && devLevelId !== wf.levelId) return false
-                const cx = (wf.box.min[0] + wf.box.max[0]) / 2
-                const cz = (wf.box.min[2] + wf.box.max[2]) / 2
-                const wfZone = getZoneAt(nodes, cx, cz, wf.levelId ?? devLevelId, zones)
-                return Boolean(wfZone && wfZone.id === zone.id)
-              })
-              if (roomTubs.length > 0) {
-                let maxAchievableDist = 0
-                const poly = zone.polygon as ReadonlyArray<readonly [number, number]>
-                for (let pi = 0; pi < poly.length; pi++) {
-                  const a = poly[pi]!
-                  const b = poly[(pi + 1) % poly.length]!
-                  for (const frac of [0, 0.25, 0.5, 0.75]) {
-                    const px = a[0] + (b[0] - a[0]) * frac
-                    const pz = a[1] + (b[1] - a[1]) * frac
-                    const minDistToAnyTub = Math.min(
-                      ...roomTubs.map((rt) => horizontalDistToAabbXZ(px, pz, rt.box)),
-                    )
-                    if (minDistToAnyTub > maxAchievableDist) maxAchievableDist = minDistToAnyTub
+        for (const entry of wetFixtureEntries) {
+          const { fix, cx: fixCx, cz: fixCz, zone: fixZone, roomTag: fixRoomTag } = entry
+          if (devLevelId && fix.levelId && devLevelId !== fix.levelId) continue
+          const horizDist = horizontalDistToAabbXZ(x, z, fix.box)
+          if (horizDist >= 0.914) continue
+          if (zone && fixZone && zone.id !== fixZone.id) continue
+          if (!zone || !fixZone) {
+            if (devRoomTag && fixRoomTag && devRoomTag !== fixRoomTag) continue
+          }
+          // Solid partition wall strictly between device and fixture separates adjacent rooms
+          if (wallSeparatesPoints2D(x, z, fixCx, fixCz, levelWallSegs)) continue
+          if (fix.kind === 'tub-shower') {
+            if (isReceptacle && !isCeilingBathExhaustMep && horizDist < 0.914 && devY < 2.438) {
+              // NEC 2023 406.9(C) Exception: In compact bathrooms with less than the required 3 ft zone,
+              // the mandatory NEC 210.52(D) basin GFCI receptacle is permitted on the farthest wall
+              // outside the tub/shower rim (horizDist > 0.15 m).
+              let qualifiesCompactBathException = false
+              const isGfciProtected =
+                devKind === 'gfci' || devKind === 'weatherproof-gfci' || dev.gfciProtected === true
+              if (
+                isGfciProtected &&
+                BATHROOM_PATTERN.test(zoneCat) &&
+                horizDist > 0.15 &&
+                zone &&
+                Array.isArray(zone.polygon) &&
+                zone.polygon.length >= 3
+              ) {
+                const cacheKey = fixZone && fixZone.id === zone.id ? zone.id : `${zone.id}::${fix.node.id}`
+                let maxAchievableDist = maxAchievableTubDistByZone.get(cacheKey)
+                if (maxAchievableDist === undefined) {
+                  const roomTubs = wetFixtureEntries
+                    .filter((wfEntry) => {
+                      const wf = wfEntry.fix
+                      if (wf.kind !== 'tub-shower') return false
+                      if (devLevelId && wf.levelId && devLevelId !== wf.levelId) return false
+                      if (wf === fix) return true
+                      return Boolean(wfEntry.zone && wfEntry.zone.id === zone.id)
+                    })
+                    .map((wfEntry) => wfEntry.fix)
+                  if (roomTubs.length > 0) {
+                    maxAchievableDist = 0
+                    const poly = zone.polygon as ReadonlyArray<readonly [number, number]>
+                    for (let pi = 0; pi < poly.length; pi++) {
+                      const a = poly[pi]!
+                      const b = poly[(pi + 1) % poly.length]!
+                      for (const frac of [0, 0.25, 0.5, 0.75]) {
+                        const px = a[0] + (b[0] - a[0]) * frac
+                        const pz = a[1] + (b[1] - a[1]) * frac
+                        let minDistToAnyTub = Number.POSITIVE_INFINITY
+                        for (const rt of roomTubs) {
+                          const d = horizontalDistToAabbXZ(px, pz, rt.box)
+                          if (d < minDistToAnyTub) minDistToAnyTub = d
+                        }
+                        if (minDistToAnyTub > maxAchievableDist) maxAchievableDist = minDistToAnyTub
+                      }
+                    }
+                  } else {
+                    maxAchievableDist = Number.POSITIVE_INFINITY
                   }
+                  maxAchievableTubDistByZone.set(cacheKey, maxAchievableDist)
                 }
                 if (maxAchievableDist < 0.914 && horizDist >= maxAchievableDist - 0.18) {
                   qualifiesCompactBathException = true
                 }
               }
+              if (qualifiesCompactBathException) {
+                push({
+                  severity: 'warning',
+                  codeRef: 'NEC 406.9(C) Exception',
+                  category: 'prohibited-location',
+                  title: `Compact bathroom GFCI ${devName} installed under NEC 406.9(C) Exception`,
+                  message: `${devName} is ${round2(horizDist * METERS_TO_FEET)} ft from ${fix.node.name ?? fix.node.id} in a compact bathroom with less than 3 ft clear wall zone; permitted on the farthest wall per NEC 406.9(C) Exception.`,
+                  nodeIds: [dev.id, fix.node.id],
+                  suggestedFix: `Keep ${devName} GFCI-protected and mounted on the wall farthest from the tub/shower rim.`,
+                })
+              } else {
+                push({
+                  severity: 'error',
+                  codeRef: 'NEC 406.9(C)',
+                  category: 'prohibited-location',
+                  title: `Receptacle ${devName} inside bathtub/shower restricted zone`,
+                  message: `${devName} is ${round2(horizDist * METERS_TO_FEET)} ft horizontally from ${fix.node.name ?? fix.node.id} at ${round2(devY * METERS_TO_FEET)} ft high; receptacles are prohibited within 3 ft horizontally and 8 ft vertically of a bathtub or shower space.`,
+                  nodeIds: [dev.id, fix.node.id],
+                  suggestedFix: `Move ${devName} at least 3 ft (0.92 m) away from the bathtub/shower rim.`,
+                })
+              }
             }
-            if (qualifiesCompactBathException) {
-              push({
-                severity: 'warning',
-                codeRef: 'NEC 406.9(C) Exception',
-                category: 'prohibited-location',
-                title: `Compact bathroom GFCI ${devName} installed under NEC 406.9(C) Exception`,
-                message: `${devName} is ${round2(horizDist * METERS_TO_FEET)} ft from ${fix.node.name ?? fix.node.id} in a compact bathroom with less than 3 ft clear wall zone; permitted on the farthest wall per NEC 406.9(C) Exception.`,
-                nodeIds: [dev.id, fix.node.id],
-                suggestedFix: `Keep ${devName} GFCI-protected and mounted on the wall farthest from the tub/shower rim.`,
-              })
-            } else {
+            if (isSwitch && horizDist <= 0.15) {
               push({
                 severity: 'error',
-                codeRef: 'NEC 406.9(C)',
+                codeRef: 'NEC 404.4(C)',
                 category: 'prohibited-location',
-                title: `Receptacle ${devName} inside bathtub/shower restricted zone`,
-                message: `${devName} is ${round2(horizDist * METERS_TO_FEET)} ft horizontally from ${fix.node.name ?? fix.node.id} at ${round2(devY * METERS_TO_FEET)} ft high; receptacles are prohibited within 3 ft horizontally and 8 ft vertically of a bathtub or shower space.`,
+                title: `Wall switch ${devName} prohibited inside tub/shower space`,
+                message: `Switches cannot be installed within wet locations in tub or shower spaces (${fix.node.name ?? fix.node.id}) per NEC 404.4(C).`,
                 nodeIds: [dev.id, fix.node.id],
-                suggestedFix: `Move ${devName} at least 3 ft (0.92 m) away from the bathtub/shower rim.`,
+                suggestedFix: `Relocate switch ${devName} outside the tub/shower enclosure.`,
               })
             }
-          }
-          if (isSwitch && horizDist <= 0.15) {
+            if (isLuminaire && !isCeilingBathExhaustMep && horizDist < 0.914 && devY < 2.438) {
+              push({
+                severity: 'error',
+                codeRef: 'NEC 410.10(D)',
+                category: 'prohibited-location',
+                title: `Luminaire ${devName} too low in bathtub/shower zone (< 8 ft)`,
+                message: `${devName} is ${round2(devY * METERS_TO_FEET)} ft AFF inside the 3 ft x 8 ft bathtub/shower zone (${fix.node.name ?? fix.node.id}). Cord-connected, hanging, or non-wet-rated luminaires are prohibited here.`,
+                nodeIds: [dev.id, fix.node.id],
+                suggestedFix: `Raise ${devName} to >= 8 ft (2.44 m) AFF or move >= 3 ft outside the tub/shower rim.`,
+              })
+            }
+          } else if (fix.kind === 'stove' && isReceptacle && horizDist <= 0.08 && devY >= 0.75 && devY <= 1.65) {
             push({
               severity: 'error',
-              codeRef: 'NEC 404.4(C)',
+              codeRef: 'NEC 210.52(C) / 110.11',
               category: 'prohibited-location',
-              title: `Wall switch ${devName} prohibited inside tub/shower space`,
-              message: `Switches cannot be installed within wet locations in tub or shower spaces (${fix.node.name ?? fix.node.id}) per NEC 404.4(C).`,
+              title: `Receptacle ${devName} located directly over stove/cooktop`,
+              message: `${devName} is mounted directly above cooking surface "${fix.node.name ?? fix.node.id}", creating a heat/cord hazard.`,
               nodeIds: [dev.id, fix.node.id],
-              suggestedFix: `Relocate switch ${devName} outside the tub/shower enclosure.`,
+              suggestedFix: `Shift ${devName} laterally onto adjacent countertop wall clear of the cooktop.`,
             })
-          }
-          if (isLuminaire && !isCeilingBathExhaustMep && horizDist < 0.914 && devY < 2.438) {
+          } else if (fix.kind === 'sink' && isReceptacle && !isCeilingBathExhaustMep && horizDist === 0 && devY <= 1.05) {
             push({
               severity: 'error',
-              codeRef: 'NEC 410.10(D)',
+              codeRef: 'NEC 406.5(E)',
               category: 'prohibited-location',
-              title: `Luminaire ${devName} too low in bathtub/shower zone (< 8 ft)`,
-              message: `${devName} is ${round2(devY * METERS_TO_FEET)} ft AFF inside the 3 ft x 8 ft bathtub/shower zone (${fix.node.name ?? fix.node.id}). Cord-connected, hanging, or non-wet-rated luminaires are prohibited here.`,
+              title: `Receptacle ${devName} placed inside sink basin footprint`,
+              message: `${devName} sits directly inside the sink footprint (${fix.node.name ?? fix.node.id}).`,
               nodeIds: [dev.id, fix.node.id],
-              suggestedFix: `Raise ${devName} to >= 8 ft (2.44 m) AFF or move >= 3 ft outside the tub/shower rim.`,
+              suggestedFix: `Move ${devName} to the wall beside the sink (>= 44" AFF) with GFCI protection.`,
             })
           }
-        } else if (fix.kind === 'stove' && isReceptacle && horizDist <= 0.08 && devY >= 0.75 && devY <= 1.65) {
-          push({
-            severity: 'error',
-            codeRef: 'NEC 210.52(C) / 110.11',
-            category: 'prohibited-location',
-            title: `Receptacle ${devName} located directly over stove/cooktop`,
-            message: `${devName} is mounted directly above cooking surface "${fix.node.name ?? fix.node.id}", creating a heat/cord hazard.`,
-            nodeIds: [dev.id, fix.node.id],
-            suggestedFix: `Shift ${devName} laterally onto adjacent countertop wall clear of the cooktop.`,
-          })
-        } else if (fix.kind === 'sink' && isReceptacle && !isCeilingBathExhaustMep && horizDist === 0 && devY <= 1.05) {
-          push({
-            severity: 'error',
-            codeRef: 'NEC 406.5(E)',
-            category: 'prohibited-location',
-            title: `Receptacle ${devName} placed inside sink basin footprint`,
-            message: `${devName} sits directly inside the sink footprint (${fix.node.name ?? fix.node.id}).`,
-            nodeIds: [dev.id, fix.node.id],
-            suggestedFix: `Move ${devName} to the wall beside the sink (>= 44" AFF) with GFCI protection.`,
-          })
         }
       }
 
@@ -1259,18 +1360,14 @@ export function auditSceneElectrical(
       }
 
       if (isReceptacle && zoneCat) {
-        const isHardwired240vMep =
-          devKind === 'dedicated-240v' &&
-          Boolean((dev.metadata as { mepSourceNodeId?: string } | undefined)?.mepSourceNodeId)
         const isWet =
           BATHROOM_PATTERN.test(zoneCat) ||
           KITCHEN_PATTERN.test(zoneCat) ||
           LAUNDRY_PATTERN.test(zoneCat) ||
           OUTDOOR_PATTERN.test(zoneCat) ||
-          Array.from(WET_ROOM_CATEGORIES).some((w) => zoneCat.includes(w))
+          WET_ROOM_CATEGORIES.some((w) => zoneCat.includes(w))
         if (
           isWet &&
-          !isHardwired240vMep &&
           dev.gfciProtected !== true &&
           devKind !== 'gfci' &&
           devKind !== 'weatherproof-gfci'
@@ -1289,8 +1386,12 @@ export function auditSceneElectrical(
         if (occupancy === 'residential') {
           const isHabitable =
             !BATHROOM_PATTERN.test(zoneCat) &&
+            !OUTDOOR_PATTERN.test(zoneCat) &&
+            !GARAGE_PATTERN.test(zoneCat) &&
             (HABITABLE_AFCI_PATTERN.test(zoneCat) ||
-              Array.from(HABITABLE_AFCI_CATEGORIES).some((h) => zoneCat.includes(h)))
+              HABITABLE_AFCI_CATEGORIES.some((h) =>
+                h === 'den' ? /\bden\b/.test(zoneCat) : zoneCat.includes(h),
+              ))
           const devPoles = typeof dev.poles === 'number' ? dev.poles : 1
           const devAmps = typeof dev.breakerAmps === 'number' ? dev.breakerAmps : 15
           // NEC 210.12(A): Dwelling AFCI applies only to 120V, single-phase, 15A and 20A branch circuits
@@ -1318,47 +1419,68 @@ export function auditSceneElectrical(
   }
 
   // 2b. NEC 210.11(C)(1)/(3) Dedicated Circuit Isolation Check (no mixing bathroom or kitchen SAB circuits with bedroom/living outlets)
-  const circuitZones = new Map<string, { bath: string[]; kitchen: string[]; general: string[]; ckt: number }>()
+  // Per NEC 210.52(B)(1), Dining Room / Breakfast Nook receptacles ARE permitted on Kitchen SAB circuits (but NOT mixed with Bathroom circuits).
+  const circuitZones = new Map<
+    string,
+    { bath: string[]; kitchen: string[]; dining: string[]; general: string[]; ckt: number }
+  >()
   for (const dev of devices) {
     if (dev.occupancy === 'commercial') continue
     if (typeof dev.panelId !== 'string' || typeof dev.circuitNumber !== 'number' || dev.circuitNumber <= 0) continue
     const pos = toVec3(dev.position)
     if (!pos) continue
     const devLevelId = resolveNodeLevelId(nodes, dev)
-    const zone = getZoneAt(nodes, pos[0], pos[2], devLevelId, zones)
+    const devRot = typeof dev.rotation === 'number' && Number.isFinite(dev.rotation) ? dev.rotation : 0
+    const zone =
+      getZoneAt(nodes, pos[0], pos[2], devLevelId, zones) ??
+      getZoneAt(nodes, pos[0] + Math.sin(devRot) * 0.22, pos[2] + Math.cos(devRot) * 0.22, devLevelId, zones)
     const zCat = zoneDescriptorOf(zone)
     if (!zCat) continue
     const key = `${dev.panelId}:${dev.circuitNumber}`
-    const bucket = circuitZones.get(key) ?? { bath: [], kitchen: [], general: [], ckt: dev.circuitNumber }
+    const bucket = circuitZones.get(key) ?? {
+      bath: [],
+      kitchen: [],
+      dining: [],
+      general: [],
+      ckt: dev.circuitNumber,
+    }
+    const devMeta = dev.metadata as { mepHardwired?: boolean } | undefined
     const isRecept =
-      dev.deviceKind === 'duplex' ||
-      dev.deviceKind === 'gfci' ||
-      dev.deviceKind === 'afci' ||
-      dev.deviceKind === 'usb-duplex' ||
-      dev.deviceKind === 'floor-box'
+      devMeta?.mepHardwired !== true &&
+      (dev.deviceKind === 'duplex' ||
+        dev.deviceKind === 'gfci' ||
+        dev.deviceKind === 'afci' ||
+        dev.deviceKind === 'usb-duplex' ||
+        dev.deviceKind === 'weatherproof-gfci' ||
+        dev.deviceKind === 'floor-box')
     if (BATHROOM_PATTERN.test(zCat) && isRecept) bucket.bath.push(dev.id)
     else if (KITCHEN_PATTERN.test(zCat) && isRecept) bucket.kitchen.push(dev.id)
+    else if (DINING_SAB_PATTERN.test(zCat) && isRecept) bucket.dining.push(dev.id)
     else if (
       !BATHROOM_PATTERN.test(zCat) &&
       !KITCHEN_PATTERN.test(zCat) &&
+      !DINING_SAB_PATTERN.test(zCat) &&
       (BEDROOM_PATTERN.test(zCat) ||
         LIVING_COMMON_PATTERN.test(zCat) ||
         HALLWAY_PATTERN.test(zCat) ||
-        /office|study|den|bureau/i.test(zCat))
+        /office|study|\bden\b|bureau/i.test(zCat))
     ) {
       bucket.general.push(dev.id)
     }
     circuitZones.set(key, bucket)
   }
   for (const bucket of circuitZones.values()) {
-    if (bucket.bath.length > 0 && (bucket.general.length > 0 || bucket.kitchen.length > 0)) {
+    if (
+      bucket.bath.length > 0 &&
+      (bucket.general.length > 0 || bucket.kitchen.length > 0 || bucket.dining.length > 0)
+    ) {
       push({
         severity: 'error',
         codeRef: 'NEC 210.11(C)(3)',
         category: 'prohibited-location',
         title: `Circuit ${bucket.ckt} mixes Bathroom receptacle with non-bathroom outlets`,
-        message: `Bathroom receptacle circuits must be dedicated 20A circuits and cannot feed bedrooms, living rooms, or kitchen receptacles (NEC 210.11(C)(3)).`,
-        nodeIds: [...bucket.bath, ...bucket.general, ...bucket.kitchen],
+        message: `Bathroom receptacle circuits must be dedicated 20A circuits and cannot feed bedrooms, living rooms, dining rooms, or kitchen receptacles (NEC 210.11(C)(3)).`,
+        nodeIds: [...bucket.bath, ...bucket.general, ...bucket.kitchen, ...bucket.dining],
         suggestedFix: `Move bathroom receptacle(s) onto their own dedicated 20A GFCI circuit.`,
       })
     }
@@ -1457,9 +1579,7 @@ export function auditSceneElectrical(
     residentialDevicesByLevel.set(lvl, list)
   }
   for (const [lvl, lvlDevices] of residentialDevicesByLevel.entries()) {
-    const lvlZones = all.filter(
-      (n) => n.type === 'zone' && (resolveNodeLevelId(nodes, n) ?? '__root__') === lvl,
-    )
+    const lvlZones = zones.filter((n) => (resolveNodeLevelId(nodes, n) ?? '__root__') === lvl)
     const bedroomZones = lvlZones.filter((z) => {
       const txt = zoneDescriptorOf(z)
       return (
@@ -1539,6 +1659,22 @@ export function auditSceneElectrical(
         nodeIds: entry.nodeIds,
         suggestedFix: `Assign multi-pole (240V/208V/480V) loads to dedicated circuit numbers separate from 1-pole 120V branch circuits.`,
       })
+    }
+  }
+
+  // Pre-index max breaker per (panelId, circuitNumber) for O(1) OCPD lookup across conduit runs
+  const maxBreakerByPanelCkt = new Map<string, { amps: number; devId: string }>()
+  for (const dev of devices) {
+    if (
+      typeof dev.panelId === 'string' &&
+      typeof dev.circuitNumber === 'number' &&
+      typeof dev.breakerAmps === 'number'
+    ) {
+      const k = `${dev.panelId}:${dev.circuitNumber}`
+      const cur = maxBreakerByPanelCkt.get(k)
+      if (!cur || dev.breakerAmps > cur.amps) {
+        maxBreakerByPanelCkt.set(k, { amps: dev.breakerAmps, devId: dev.id })
+      }
     }
   }
 
@@ -1656,17 +1792,10 @@ export function auditSceneElectrical(
       typeof run.panelId === 'string' &&
       typeof run.circuitNumber === 'number'
     ) {
-      for (const dev of devices) {
-        if (
-          dev.panelId === run.panelId &&
-          dev.circuitNumber === run.circuitNumber &&
-          typeof dev.breakerAmps === 'number'
-        ) {
-          if (connectedBreakerAmps === undefined || dev.breakerAmps > connectedBreakerAmps) {
-            connectedBreakerAmps = dev.breakerAmps
-            connectedDevId = dev.id
-          }
-        }
+      const entry = maxBreakerByPanelCkt.get(`${run.panelId}:${run.circuitNumber}`)
+      if (entry) {
+        connectedBreakerAmps = entry.amps
+        connectedDevId = entry.devId
       }
     }
 
