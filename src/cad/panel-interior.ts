@@ -210,9 +210,11 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
   const is480V = schedule.voltageSystem === '277/480V-3P'
 
   const w = opts.width ?? (isCommercial ? 0.52 : 0.42)
-  const visibleRows = Math.max(6, Math.min(21, schedule.rows.length))
+  const visibleRows = Math.max(6, Math.min(42, schedule.rows.length))
   const defaultRowPitch = 0.0285 // ~1.12" vertical breaker pitch
-  const h = opts.height ?? Math.max(isCommercial ? 1.05 : 0.86, visibleRows * defaultRowPitch + 0.34)
+  const minHeightForRows = visibleRows * defaultRowPitch + 0.34
+  const baseH = opts.height ?? Math.max(isCommercial ? 1.05 : 0.86, minHeightForRows)
+  const h = visibleRows > 21 ? Math.max(baseH, minHeightForRows) : baseH
   const maxBankH = Math.max(0.18, h - 0.32)
   const rowPitch = Math.min(defaultRowPitch, maxBankH / visibleRows)
   const breakerBankH = visibleRows * rowPitch
@@ -308,6 +310,8 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
   const groundBarX = w * 0.415
   const barLen = Math.min(busHeight + 0.06, h * 0.62)
   const barY = busMidY + 0.02
+  const gBarLen = barLen * 0.85
+  const gBarCenterY = barY - 0.02
 
   const neutralCrossTie = new Mesh(new BoxGeometry(neutralBarX * 2, 0.016, 0.006), mats.stainlessSteel)
   neutralCrossTie.position.set(0, busTopY + 0.025, zBack + 0.02)
@@ -323,19 +327,24 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
     group.add(standoff, nBar)
 
     // Grounding bus bar bolted directly to galvanized steel backpan
-    const gBar = new Mesh(new BoxGeometry(0.015, barLen * 0.85, 0.01), mats.stainlessSteel)
-    gBar.position.set(side * groundBarX, barY - 0.02, zBack + 0.007)
+    const gBar = new Mesh(new BoxGeometry(0.015, gBarLen, 0.01), mats.stainlessSteel)
+    gBar.position.set(side * groundBarX, gBarCenterY, zBack + 0.007)
     group.add(gBar)
 
     const screwCount = Math.min(18, visibleRows + 2)
+    const gScrewMinY = gBarCenterY - gBarLen / 2 + 0.014
+    const gScrewMaxY = gBarCenterY + gBarLen / 2 - 0.014
+    const gScrewSpan = Math.max(0, gScrewMaxY - gScrewMinY)
     for (let s = 0; s < screwCount; s++) {
-      const sy = barY + barLen / 2 - 0.018 - (s / Math.max(1, screwCount - 1)) * (barLen - 0.036)
+      const t = s / Math.max(1, screwCount - 1)
+      const sy = barY + barLen / 2 - 0.018 - t * (barLen - 0.036)
       const nScrew = new Mesh(neutralScrewGeo, mats.brass)
       nScrew.rotation.x = Math.PI / 2
       nScrew.position.set(side * neutralBarX, sy, zBack + 0.028)
+      const gsy = gScrewMinY + t * gScrewSpan
       const gScrew = new Mesh(neutralScrewGeo, mats.brass)
       gScrew.rotation.x = Math.PI / 2
-      gScrew.position.set(side * groundBarX, sy * 0.88, zBack + 0.014)
+      gScrew.position.set(side * groundBarX, gsy, zBack + 0.014)
       group.add(nScrew, gScrew)
     }
   }
@@ -389,7 +398,7 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
       if (fMesh) {
         fMesh.userData = {
           kind: 'feeder',
-          description: `Service Entrance Feeder — ${ph.name}`,
+          description: 'Service Entrance Feeder',
           conductorLabel: ph.name,
         } satisfies PanelWireMetadata
         group.add(fMesh)
@@ -624,7 +633,10 @@ export function buildWiredPanelInteriorCad(opts: WiredPanelInteriorOptions): Gro
     // Route Equipment Grounding Conductor (Bare Cu residential / Green THHN commercial) to outer ground bar
     if (showGrounds) {
       const gMat = getWireMat(isCommercial ? 0x16a34a : 0xc87533, isHighlighted)
-      const gTargetY = Math.max(barY - barLen * 0.42, Math.min(barY + barLen * 0.42, yTopSlot))
+      const gTargetY = Math.max(
+        gBarCenterY - gBarLen / 2 + 0.014,
+        Math.min(gBarCenterY + gBarLen / 2 - 0.014, yTopSlot),
+      )
       const zGround = zBack + 0.011 + (lane % 2) * 0.0025
       const xGutterGnd = side * (w * 0.445)
       const gPts = [

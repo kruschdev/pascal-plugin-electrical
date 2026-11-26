@@ -65,7 +65,7 @@ bun scripts/render-cad-thumbnails.ts
 |---|---|---|---|
 | `box-1gang-pvc` | 1-Gang Blue PVC Nail-On Box (18 cu in) | `99 x 133 x 71` | NEC 314.16(A) |
 | `box-2gang-pvc` | 2-Gang Blue PVC Nail-On Box (32 cu in) | `144 x 133 x 71` | NEC 314.16(A) |
-| `box-3gang-pvc` | 3-Gang Blue PVC Nail-On Box (44 cu in) | `188 x 133 x 71` | NEC 314.16(A) |
+| `box-3gang-pvc` | 3-Gang Blue PVC Nail-On Box (48 cu in) | `188 x 133 x 71` | NEC 314.16(A) |
 | `box-4sq-steel-deep` | 4" Square x 2-1/8" Steel Box (1900) | `105 x 104 x 68` | NEC Table 314.16(A) |
 | `box-4-11-16-steel` | 4-11/16" Commercial Junction Box | `146 x 146 x 58` | NEC Table 314.16(A) |
 | `box-4oct-ceiling` | 4" Octagon Ceiling Steel Box | `96 x 102 x 73` | NEC 314.27 |
@@ -80,9 +80,9 @@ bun scripts/render-cad-thumbnails.ts
 | `device-switch-decora` | Decora Rocker Wall Switch (1P/3-Way) | `106 x 133 x 94` | NEC 404.2 |
 | `device-evse-level2` | Level 2 Wall EVSE Charger (48A) | `311 x 509 x 128` | NEC 625.41 |
 | `device-motor-3p-tefc` | Commercial 3-Phase TEFC Motor | `530 x 415 x 340` | NEC 430.24 |
-| `device-dimmer-smart` | Smart Decora Slide Dimmer Switch | `108 x 133 x 132` | NEC 404.2 |
-| `device-usb-duplex-20a` | 20A TR USB-A / USB-C Duplex Receptacle | `108 x 133 x 151` | NEC 406.12 |
-| `device-weatherproof-inuse` | Extra-Duty Weatherproof In-Use Bubble Cover | `96 x 161 x 163` | NEC 406.9(B)(1) |
+| `device-dimmer-smart` | Smart Decora Slide Dimmer Switch | `108 x 133 x 94` | NEC 404.2 |
+| `device-usb-duplex-20a` | 20A TR USB-A / USB-C Duplex Receptacle | `108 x 133 x 107` | NEC 406.12 |
+| `device-weatherproof-inuse` | Extra-Duty Weatherproof In-Use Bubble Cover | `96 x 161 x 137` | NEC 406.9(B)(1) |
 | `device-floor-box-brass` | Recessed Solid-Brass Floor Outlet Box | `148 x 129 x 146` | NEC 314.27(B) |
 | `device-smoke-co-alarm` | Hardwired 120V Interconnected Smoke/CO Alarm | `148 x 47 x 148` | IRC R314 / NEC 760 |
 

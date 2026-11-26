@@ -22,6 +22,7 @@ import {
   type RacewayType,
   SMALL_CONDUCTOR_OCPD_MAX,
   STANDARD_BOX_VOLUMES_CUIN,
+  STANDARD_OCPD_RATINGS,
   WIRE_GAUGE_ORDER,
   type WireGauge,
   clampToBranchWireGauge,
@@ -98,9 +99,11 @@ export function calculateDeratedAmpacity(input: AmpacityInput): AmpacityResult {
   const finalAllowable = round2(Math.min(derated, terminalCap))
 
   const smallCap = SMALL_CONDUCTOR_OCPD_MAX[material][safeGauge]
-  let maxBreaker = smallCap !== undefined ? Math.min(smallCap, Math.floor(finalAllowable)) : 0
+  let maxBreaker = 0
   let smallConductorCapApplied = false
-  if (smallCap !== undefined) {
+  if (finalAllowable <= 0) {
+    maxBreaker = 0
+  } else if (smallCap !== undefined) {
     smallConductorCapApplied = true
     // NEC 240.4(D) hard cap
     maxBreaker = finalAllowable >= smallCap ? smallCap : nextStandardOcpdFloor(finalAllowable)
@@ -156,9 +159,8 @@ export function calculateDeratedAmpacity(input: AmpacityInput): AmpacityResult {
 }
 
 function nextStandardOcpdFloor(amps: number): number {
-  const standards = [15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 500, 600, 800, 1000, 1200]
   let best = 0
-  for (const r of standards) {
+  for (const r of STANDARD_OCPD_RATINGS) {
     if (r <= amps) best = r
   }
   return best
@@ -169,6 +171,7 @@ function maxOcpdForAllowable(
   gauge: WireGauge,
   allowable: number,
 ): number {
+  if (allowable <= 0) return 0
   const smallCap = SMALL_CONDUCTOR_OCPD_MAX[material][gauge]
   if (smallCap !== undefined) {
     return allowable >= smallCap ? smallCap : nextStandardOcpdFloor(allowable)

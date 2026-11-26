@@ -48,6 +48,7 @@ import {
   type VoltageSystem,
   WIRE_GAUGE_ORDER,
   type WireGauge,
+  clampToBoxFillGauge,
   clampToBranchWireGauge,
   getVoltageLineToLine,
   getVoltageLineToNeutral,
@@ -102,6 +103,8 @@ export type PlannedDeviceSpec = {
   poles: 1 | 2 | 3
   loadVa: number
   continuous: boolean
+  isMotor?: boolean
+  loadCategory?: 'fixed' | 'appliance' | 'motor' | 'hvac-heating' | 'hvac-cooling' | 'heat-pump'
   boxType: BoxType
   wireGauge: WireGauge
   conductorCount: number
@@ -248,11 +251,14 @@ function polygonStats(poly: readonly [number, number][]): {
 }
 
 function normalizeCategory(zone: SceneNodeLike): string {
-  const raw =
-    (typeof zone.category === 'string' && zone.category) ||
-    (typeof zone.name === 'string' && zone.name) ||
-    'general'
-  return raw.toLowerCase()
+  const parts: string[] = []
+  if (typeof zone.category === 'string' && zone.category.trim()) {
+    parts.push(zone.category.trim())
+  }
+  if (typeof zone.name === 'string' && zone.name.trim()) {
+    parts.push(zone.name.trim())
+  }
+  return parts.length > 0 ? parts.join(' ').toLowerCase() : 'general'
 }
 
 function isOutdoorCategory(cat: string): boolean {
@@ -280,11 +286,11 @@ function isBasementOrUtility(cat: string): boolean {
 }
 
 function isHallway(cat: string): boolean {
-  return /hall|corridor|foyer|entry/.test(cat)
+  return /hall|corridor|foyer|entry/.test(cat) && !isBathroom(cat) && !/closet|wardrobe/.test(cat)
 }
 
 function isBedroom(cat: string): boolean {
-  return /bed|sleeping|master|guest|nursery/.test(cat)
+  return /bed|sleeping|master|guest|nursery/.test(cat) && !isBathroom(cat) && !/closet|wardrobe/.test(cat)
 }
 
 function isPrimaryCommonZone(cat: string): boolean {
@@ -756,7 +762,7 @@ export function planNecAutoPopulate(
         resolved.breakerAmps = 20
         resolved.wireGauge = '12'
         resolved.boxType = occupancy === 'commercial' ? '4-sq-2.125' : 'single-gang-deep'
-        if (protectionMode !== 'gfci-breakers') resolved.deviceKind = 'gfci'
+        if (protectionMode === 'gfci-receptacles') resolved.deviceKind = 'gfci'
         if (!resolved.circuitGroup.startsWith('Kitchen SAB')) {
           resolved.circuitGroup = 'Kitchen SAB-1 (20A)'
         }
@@ -766,17 +772,35 @@ export function planNecAutoPopulate(
         resolved.breakerAmps = 20
         resolved.wireGauge = '12'
         resolved.boxType = occupancy === 'commercial' ? '4-sq-2.125' : 'single-gang-deep'
-        if (protectionMode !== 'gfci-breakers') resolved.deviceKind = 'gfci'
+        if (protectionMode === 'gfci-receptacles') resolved.deviceKind = 'gfci'
         resolved.circuitGroup = 'Bathroom GFCI (20A)'
       } else if (actualZone && resolved.circuitGroup.startsWith('Kitchen SAB')) {
-        const wet =
-          isGarage(actualZone.category) ||
-          isLaundry(actualZone.category) ||
-          isBasementOrUtility(actualZone.category) ||
-          isOutdoorCategory(actualZone.category)
-        resolved.circuitGroup = 'General Receptacles'
-        resolved.requiresGfci = wet
-        if (!wet) resolved.deviceKind = 'duplex'
+        const isGar = isGarage(actualZone.category)
+        const isLaun = isLaundry(actualZone.category)
+        const isBsmt = isBasementOrUtility(actualZone.category)
+        const isOut = isOutdoorCategory(actualZone.category)
+        const wet = isGar || isLaun || isBsmt || isOut
+        if (wet) {
+          resolved.circuitGroup = isGar
+            ? 'Garage GFCI (20A)'
+            : isLaun
+              ? 'Laundry GFCI (20A)'
+              : isBsmt
+                ? 'Basement/Utility GFCI (20A)'
+                : 'Exterior GFCI (20A)'
+          resolved.requiresGfci = true
+          resolved.breakerAmps = 20
+          resolved.wireGauge = '12'
+          resolved.boxType = occupancy === 'commercial' ? '4-sq-2.125' : 'single-gang-deep'
+          if (protectionMode === 'gfci-receptacles') resolved.deviceKind = 'gfci'
+        } else {
+          resolved.circuitGroup = 'General Receptacles'
+          resolved.requiresGfci = false
+          resolved.deviceKind = 'duplex'
+          resolved.breakerAmps = occupancy === 'commercial' ? 20 : 15
+          resolved.wireGauge = occupancy === 'commercial' ? '12' : '14'
+          resolved.boxType = occupancy === 'commercial' ? '4-sq-2.125' : 'single-gang-standard'
+        }
       } else if (
         actualZone &&
         (isGarage(actualZone.category) ||
@@ -785,7 +809,22 @@ export function planNecAutoPopulate(
           isOutdoorCategory(actualZone.category))
       ) {
         resolved.requiresGfci = true
-        if (protectionMode !== 'gfci-breakers') resolved.deviceKind = 'gfci'
+        if (protectionMode === 'gfci-receptacles') resolved.deviceKind = 'gfci'
+        if (resolved.circuitGroup === 'General Receptacles') {
+          const isGar = isGarage(actualZone.category)
+          const isLaun = isLaundry(actualZone.category)
+          const isBsmt = isBasementOrUtility(actualZone.category)
+          resolved.circuitGroup = isGar
+            ? 'Garage GFCI (20A)'
+            : isLaun
+              ? 'Laundry GFCI (20A)'
+              : isBsmt
+                ? 'Basement/Utility GFCI (20A)'
+                : 'Exterior GFCI (20A)'
+          resolved.breakerAmps = 20
+          resolved.wireGauge = '12'
+          resolved.boxType = occupancy === 'commercial' ? '4-sq-2.125' : 'single-gang-deep'
+        }
       }
     }
     planned.push({
@@ -1000,6 +1039,11 @@ export function planNecAutoPopulate(
     includeLighting && pilotLightZone ? 'Smoke/CO & Lighting' : 'Smoke/CO Alarms'
   const bonesSwitchZoneIds = new Set<string>()
   const lineToLineVolts = getVoltageLineToLine(panelVoltageSystem)
+  const dedicatedGroupCounts = new Map<string, number>()
+  const peekDedicatedGroupName = (baseName: string): { name: string; count: number } => {
+    const count = (dedicatedGroupCounts.get(baseName) ?? 0) + 1
+    return { name: count === 1 ? baseName : `${baseName} #${count}`, count }
+  }
 
   // 1c. Bones Schematic Ingestion (`bones:device` and electrical `bones:service` nodes):
   //     When `@pascal-app/plugin-bones` has persisted wall receptacles, GFCIs, switches, or major
@@ -1278,6 +1322,11 @@ export function planNecAutoPopulate(
       })
       if (!resolved) continue
 
+      const baseGroupName = isHeatPump
+        ? `Heat Pump HVAC (${lineToLineVolts}V 30A)`
+        : `Water Heater (${lineToLineVolts}V 30A)`
+      const dedicated = peekDedicatedGroupName(baseGroupName)
+
       const added = addPlanned(
         isHeatPump
           ? {
@@ -1285,7 +1334,7 @@ export function planNecAutoPopulate(
               position: resolved.position,
               rotation: bSvc.yawOverride ?? resolved.rotation,
               deviceKind: 'dedicated-240v',
-              circuitGroup: `Heat Pump HVAC (${lineToLineVolts}V 30A)`,
+              circuitGroup: dedicated.name,
               necRef: 'NEC 440.32 / 210.8(F) / 220.82(C)(2) (Imported from Bones)',
               requiresGfci: true,
               requiresAfci: false,
@@ -1293,6 +1342,8 @@ export function planNecAutoPopulate(
               breakerAmps: 30,
               loadVa: 4800,
               continuous: false,
+              isMotor: true,
+              loadCategory: 'heat-pump',
               boxType: '4-sq-2.125',
               wireGauge: '10',
               isExterior: true,
@@ -1304,7 +1355,7 @@ export function planNecAutoPopulate(
               position: resolved.position,
               rotation: resolved.rotation,
               deviceKind: 'dedicated-240v',
-              circuitGroup: `Water Heater (${lineToLineVolts}V 30A)`,
+              circuitGroup: dedicated.name,
               necRef: 'NEC 422.13 / 210.8(A) / 220.53 (Imported from Bones)',
               requiresGfci: true,
               requiresAfci: false,
@@ -1312,22 +1363,60 @@ export function planNecAutoPopulate(
               breakerAmps: 30,
               loadVa: 4500,
               continuous: false,
+              loadCategory: 'fixed',
               boxType: '4-sq-2.125',
               wireGauge: '10',
               bonesSourceId: bSvc.nodeId,
               bonesServiceType: bSvc.serviceType,
             },
       )
-      if (added) bonesServicesImported += 1
+      if (added) {
+        dedicatedGroupCounts.set(baseGroupName, dedicated.count)
+        bonesServicesImported += 1
+      }
     }
+  }
+
+  const minWireGaugeForBreakerAmps = (amps: number): WireGauge => {
+    if (amps >= 100) return '1'
+    if (amps >= 70) return '4'
+    if (amps >= 50) return '6'
+    if (amps >= 40) return '8'
+    if (amps >= 30) return '10'
+    if (amps >= 20) return '12'
+    return '14'
   }
 
   // 1b. Cross-Trade MEP Power Demand Ingestion (`plumbing:equipment`, `plumbing:fixture`, `hvac:equipment`, `hvac-equipment`)
   // Automatically provisions dedicated/GFCI breakers & 3D power runs for any powered plumbing or HVAC node publishing `electricalDemand`.
+  if (bonesMode !== 'import-only') {
   const wiredMepSourceIds = new Set<string>()
   for (const existing of existingDevices) {
     const meta = existing.metadata as { mepSourceNodeId?: string } | undefined
     if (typeof meta?.mepSourceNodeId === 'string') wiredMepSourceIds.add(meta.mepSourceNodeId)
+  }
+
+  // Collect already-imported Bones water-heater / heat-pump positions so 'auto' mode skips duplicate MEP units within 1.2 m
+  const importedBonesServices: Array<{ serviceType: 'water-heater' | 'heat-pump'; position: Vec3 }> = []
+  if (bonesMode === 'auto') {
+    for (const p of planned) {
+      if (p.bonesServiceType === 'water-heater' || p.bonesServiceType === 'heat-pump') {
+        importedBonesServices.push({ serviceType: p.bonesServiceType, position: p.position })
+      }
+    }
+    for (const d of existingDevices) {
+      const meta = d.metadata as { bonesServiceType?: string } | undefined
+      if (
+        (meta?.bonesServiceType === 'water-heater' || meta?.bonesServiceType === 'heat-pump') &&
+        Array.isArray(d.position) &&
+        d.position.length >= 3
+      ) {
+        importedBonesServices.push({
+          serviceType: meta.bonesServiceType,
+          position: [Number(d.position[0]), Number(d.position[1]), Number(d.position[2])],
+        })
+      }
+    }
   }
 
   type RawMepDemand = {
@@ -1340,6 +1429,7 @@ export function planNecAutoPopulate(
     dedicatedCircuit?: boolean
     gfciRequired?: boolean
     afciRequired?: boolean
+    loadCategory?: 'fixed' | 'appliance' | 'motor' | 'hvac-heating' | 'hvac-cooling' | 'heat-pump'
     label?: string
   }
 
@@ -1365,23 +1455,23 @@ export function planNecAutoPopulate(
       }
       switch (kind) {
         case 'water-heater-tank-electric':
-          return { required: true, voltage: 240, poles: 2, breakerAmps: calc240Breaker(watts), loadVa: watts, continuous: true, dedicatedCircuit: true, label: 'Electric Water Heater' }
+          return { required: true, voltage: 240, poles: 2, breakerAmps: calc240Breaker(watts), loadVa: watts, continuous: true, dedicatedCircuit: true, loadCategory: 'fixed', label: 'Electric Water Heater' }
         case 'water-heater-hpwh':
-          return { required: true, voltage: 240, poles: 2, breakerAmps: calc240Breaker(watts), loadVa: watts, continuous: true, dedicatedCircuit: true, label: 'Heat-Pump Water Heater' }
+          return { required: true, voltage: 240, poles: 2, breakerAmps: calc240Breaker(watts), loadVa: watts, continuous: true, dedicatedCircuit: true, loadCategory: 'heat-pump', label: 'Heat-Pump Water Heater' }
         case 'water-heater-tankless-gas':
-          return { required: true, voltage: 120, poles: 1, breakerAmps: 15, loadVa: 300, continuous: false, dedicatedCircuit: false, gfciRequired: true, label: 'Tankless Gas WH Ignition' }
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 15, loadVa: 300, continuous: false, dedicatedCircuit: false, gfciRequired: true, loadCategory: 'fixed', label: 'Tankless Gas WH Ignition' }
         case 'recirc-pump':
-          return { required: true, voltage: 120, poles: 1, breakerAmps: 15, loadVa: 180, continuous: true, dedicatedCircuit: false, gfciRequired: true, label: 'DHW Recirculation Pump' }
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 15, loadVa: 180, continuous: true, dedicatedCircuit: false, gfciRequired: true, loadCategory: 'motor', label: 'DHW Recirculation Pump' }
         case 'sump-pump':
-          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1200, continuous: false, dedicatedCircuit: true, gfciRequired: true, label: 'Sump Pump' }
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1200, continuous: false, dedicatedCircuit: true, gfciRequired: true, loadCategory: 'motor', label: 'Sump Pump' }
         case 'sewage-ejector':
-          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1500, continuous: false, dedicatedCircuit: true, gfciRequired: true, label: 'Sewage Ejector Pump' }
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1500, continuous: false, dedicatedCircuit: true, gfciRequired: true, loadCategory: 'motor', label: 'Sewage Ejector Pump' }
         case 'water-softener':
-          return { required: true, voltage: 120, poles: 1, breakerAmps: 15, loadVa: 150, continuous: false, dedicatedCircuit: false, gfciRequired: true, label: 'Water Softener' }
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 15, loadVa: 150, continuous: false, dedicatedCircuit: false, gfciRequired: true, loadCategory: 'fixed', label: 'Water Softener' }
         case 'pressure-tank':
-          return { required: true, voltage: 240, poles: 2, breakerAmps: 20, loadVa: 1800, continuous: false, dedicatedCircuit: true, label: 'Well Booster Pump' }
+          return { required: true, voltage: 240, poles: 2, breakerAmps: 20, loadVa: 1800, continuous: false, dedicatedCircuit: true, loadCategory: 'motor', label: 'Well Booster Pump' }
         case 'boiler-hydronic':
-          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1200, continuous: true, dedicatedCircuit: true, label: 'Hydronic Boiler' }
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1200, continuous: true, dedicatedCircuit: true, loadCategory: 'fixed', label: 'Hydronic Boiler' }
         default:
           return null
       }
@@ -1390,28 +1480,18 @@ export function planNecAutoPopulate(
       const kind = typeof mepNode.fixtureKind === 'string' ? mepNode.fixtureKind : ''
       switch (kind) {
         case 'dishwasher':
-          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1200, continuous: false, dedicatedCircuit: true, gfciRequired: true, afciRequired: true, label: 'Dishwasher' }
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1200, continuous: false, dedicatedCircuit: true, gfciRequired: true, afciRequired: true, loadCategory: 'appliance', label: 'Dishwasher' }
         case 'garbage-disposal':
-          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1000, continuous: false, dedicatedCircuit: true, gfciRequired: true, afciRequired: true, label: 'Garbage Disposal' }
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1000, continuous: false, dedicatedCircuit: true, gfciRequired: true, afciRequired: true, loadCategory: 'appliance', label: 'Garbage Disposal' }
         case 'clothes-washer':
-          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1200, continuous: false, dedicatedCircuit: true, gfciRequired: true, afciRequired: true, label: 'Clothes Washer' }
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1200, continuous: false, dedicatedCircuit: true, gfciRequired: true, afciRequired: true, loadCategory: 'appliance', label: 'Clothes Washer' }
         case 'bidet':
-          return { required: true, voltage: 120, poles: 1, breakerAmps: 15, loadVa: 1200, continuous: false, dedicatedCircuit: true, gfciRequired: true, label: 'Heated Bidet Seat' }
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 15, loadVa: 1200, continuous: false, dedicatedCircuit: true, gfciRequired: true, loadCategory: 'appliance', label: 'Heated Bidet Seat' }
         default:
           return null
       }
     }
     return null
-  }
-
-  const minWireGaugeForBreakerAmps = (amps: number): WireGauge => {
-    if (amps >= 100) return '1'
-    if (amps >= 70) return '4'
-    if (amps >= 50) return '6'
-    if (amps >= 40) return '8'
-    if (amps >= 30) return '10'
-    if (amps >= 20) return '12'
-    return '14'
   }
 
   const auxCircuitLoadState = new Map<number, { index: number; usedVa: number }>()
@@ -1451,6 +1531,30 @@ export function planNecAutoPopulate(
       Math.max(0.38, Math.min(1.5, Number(mepNode.position[1]) || 0.9)),
       round3(Number(mepNode.position[2]) + Math.cos(mepRot) * radialOffsetM),
     ]
+    const label =
+      rawDemand.label || (typeof mepNode.name === 'string' && mepNode.name ? mepNode.name : mepNode.id)
+
+    if (importedBonesServices.length > 0) {
+      const mepDescriptor = `${String(mepNode.equipmentKind ?? '')} ${String(mepNode.name ?? '')} ${label}`.toLowerCase()
+      const isMepWaterHeater =
+        mepNode.type === 'plumbing:equipment' && /water.?heater|hpwh|\bwh\b/.test(mepDescriptor)
+      const isMepHeatPump =
+        mepNode.type === 'hvac:equipment' ||
+        mepNode.type === 'hvac-equipment' ||
+        rawDemand.loadCategory === 'heat-pump' ||
+        /heat.?pump|condenser/.test(mepDescriptor)
+      const mepXZ: [number, number] = [Number(mepNode.position[0]), Number(mepNode.position[2])]
+      const duplicateOfBones = importedBonesServices.some((bs) => {
+        const matchesKind =
+          (bs.serviceType === 'water-heater' && isMepWaterHeater) ||
+          (bs.serviceType === 'heat-pump' && isMepHeatPump)
+        if (!matchesKind) return false
+        const bXZ: [number, number] = [bs.position[0], bs.position[2]]
+        return dist2D(mepXZ, bXZ) <= 1.2 || dist2D([pos[0], pos[2]], bXZ) <= 1.2
+      })
+      if (duplicateOfBones) continue
+    }
+
     const rawPoles =
       typeof rawDemand.poles === 'number'
         ? rawDemand.poles
@@ -1470,17 +1574,19 @@ export function planNecAutoPopulate(
     const loadVa =
       typeof rawDemand.loadVa === 'number' ? rawDemand.loadVa : poles >= 2 ? 4500 : 1200
     const wireGauge: WireGauge = minWireGaugeForBreakerAmps(breakerAmps)
-    const label =
-      rawDemand.label || (typeof mepNode.name === 'string' && mepNode.name ? mepNode.name : mepNode.id)
     const isDedicated =
       rawDemand.dedicatedCircuit === true ||
       poles >= 2 ||
       loadVa > Math.floor(120 * breakerAmps * 0.5)
     let circuitGroup: string
+    let dedicatedCommit: { base: string; count: number } | null = null
     if (isDedicated) {
       const voltLabel = poles >= 2 ? `${rawDemand.voltage ?? lineToLineVolts}V` : '120V'
       const poleTag = poles === 3 ? ' 3P' : ''
-      circuitGroup = `${label} (${voltLabel}${poleTag} ${breakerAmps}A)`
+      const baseGroupName = `${label} (${voltLabel}${poleTag} ${breakerAmps}A)`
+      const dedicated = peekDedicatedGroupName(baseGroupName)
+      circuitGroup = dedicated.name
+      dedicatedCommit = { base: baseGroupName, count: dedicated.count }
     } else {
       const maxAuxVa = Math.floor(120 * breakerAmps * 0.8)
       const st = auxCircuitLoadState.get(breakerAmps) ?? { index: 1, usedVa: 0 }
@@ -1499,7 +1605,7 @@ export function planNecAutoPopulate(
     const devKind: PlannedDeviceSpec['deviceKind'] =
       poles >= 2 ? 'dedicated-240v' : rawDemand.gfciRequired ? 'gfci' : 'duplex'
 
-    addPlanned({
+    const addedMep = addPlanned({
       name: `${label} Power`,
       position: pos,
       rotation: mepRot,
@@ -1512,10 +1618,19 @@ export function planNecAutoPopulate(
       breakerAmps,
       loadVa,
       continuous: rawDemand.continuous === true,
+      isMotor:
+        rawDemand.loadCategory === 'motor' ||
+        rawDemand.loadCategory === 'heat-pump' ||
+        rawDemand.loadCategory === 'hvac-cooling',
+      loadCategory: rawDemand.loadCategory,
       boxType: poles >= 2 ? '4-sq-2.125' : 'single-gang-deep',
       wireGauge,
       mepSourceNodeId: mepNode.id,
     })
+    if (addedMep && dedicatedCommit) {
+      dedicatedGroupCounts.set(dedicatedCommit.base, dedicatedCommit.count)
+    }
+  }
   }
 
   // 2. Walk Walls: NEC 210.52(A)/(C) Wall-Perimeter & Kitchen Countertop Receptacles + Exterior Door Front/Back Rules
@@ -1552,7 +1667,7 @@ export function planNecAutoPopulate(
           name: `${doorLabel} Outdoor WR GFCI`,
           position: [round3(px + wall.nx * outsideSign * faceOff), 0.45, round3(pz + wall.nz * outsideSign * faceOff)],
           rotation: outsideSign === 1 ? wall.yaw : wall.yaw + Math.PI,
-          deviceKind: protectionMode === 'gfci-breakers' ? 'duplex' : 'gfci',
+          deviceKind: 'weatherproof-gfci',
           circuitGroup: 'Outdoor GFCI',
           necRef: 'NEC 210.52(E)(1) / 210.8(A)(3)',
           requiresGfci: true,
@@ -1733,7 +1848,7 @@ export function planNecAutoPopulate(
         name: `${z.name} Outdoor WR GFCI`,
         position: spot.position,
         rotation: spot.rotation,
-        deviceKind: protectionMode === 'gfci-breakers' ? 'duplex' : 'gfci',
+        deviceKind: 'weatherproof-gfci',
         circuitGroup: 'Outdoor GFCI',
         necRef: 'NEC 210.52(E)(3) / 210.8(A)(3)',
         requiresGfci: true,
@@ -2037,7 +2152,7 @@ export function planNecAutoPopulate(
       name: 'Front Exterior WR GFCI',
       position: [round3(mx - w0.nx * extOff), 0.45, round3(mz - w0.nz * extOff)],
       rotation: w0.yaw + Math.PI,
-      deviceKind: protectionMode === 'gfci-breakers' ? 'duplex' : 'gfci',
+      deviceKind: 'weatherproof-gfci',
       circuitGroup: 'Outdoor GFCI',
       necRef: 'NEC 210.52(E)(1) / 210.8(A)(3)',
       requiresGfci: true,
@@ -2327,9 +2442,7 @@ export function planNecAutoPopulate(
     }
 
     // Materialize finalized PlannedDeviceSpecs using final circuitWireGauge & NEC 314.16 box-fill check
-    const boxFillGauge: BoxFillGauge = (
-      ['18', '16', '14', '12', '10', '8', '6'].includes(circuitWireGauge) ? circuitWireGauge : '12'
-    ) as BoxFillGauge
+    const boxFillGauge: BoxFillGauge = clampToBoxFillGauge(circuitWireGauge)
     const circuitDevices: PlannedDeviceSpec[] = ordered.map((item, idx) => {
       const isFirstInChain = idx === 0
       const isLastInChain = idx === ordered.length - 1
@@ -2343,8 +2456,8 @@ export function planNecAutoPopulate(
       const prevIsSmoke = idx > 0 && ordered[idx - 1]!.deviceKind === 'smoke-co'
       const nextIsSmoke = !isLastInChain && ordered[idx + 1]!.deviceKind === 'smoke-co'
       // 14/3 interconnect cables between smoke alarms carry 3 insulated conductors (Hot + Neutral + Red Interconnect)
-      const incomingCond = isSmoke && prevIsSmoke ? 3 : 2
-      const outgoingCond = isLastInChain ? 0 : isSmoke && nextIsSmoke ? 3 : 2
+      const incomingCond = isSmoke && prevIsSmoke ? 3 : item.poles === 3 ? 3 : 2
+      const outgoingCond = isLastInChain ? 0 : isSmoke && nextIsSmoke ? 3 : item.poles === 3 ? 3 : 2
       const conductorCount = incomingCond + outgoingCond
       let boxType: BoxType = item.boxType
       if (
@@ -2447,8 +2560,8 @@ export function planNecAutoPopulate(
           racewayType,
           tradeSize,
           wireGauge: circuitWireGauge,
-          currentCarryingCount: 2,
-          totalConductorCount: isSmokeInterconnect ? 4 : 3,
+          currentCarryingCount: circuitPoles === 3 ? 3 : 2,
+          totalConductorCount: isSmokeInterconnect ? 4 : circuitPoles === 3 ? 4 : 3,
           loadAmps: Math.max(1, Math.round(((circuitLoadAmps * (circuitDevices.length - i - 1)) / circuitDevices.length) * 100) / 100),
           continuous: anyContinuous,
           voltage,
@@ -2522,6 +2635,29 @@ export type AutoConnectDeviceDraft = {
   conductorCount: number
 }
 
+export type PlannedDeviceConnectionRun = {
+  name: string
+  runKind: 'home-run' | 'daisy-chain'
+  panelId: string
+  fromNodeId: string
+  targetDeviceId: string
+  circuitNumber: number
+  occupancy: OccupancyType
+  racewayType: RacewayType
+  tradeSize: ConduitTradeSize
+  wireGauge: WireGauge
+  currentCarryingCount: number
+  totalConductorCount: number
+  loadAmps: number
+  continuous: boolean
+  voltage: number
+  phases: 1 | 3
+  path: Vec3[]
+  avoidedObstaclesCount: number
+  routingMode?: RoutingMode
+  necNotes?: string[]
+}
+
 export type DeviceAutoConnectionPlan = {
   mode: 'joined-existing-run' | 'new-home-run' | 'none'
   panelId: string | null
@@ -2535,26 +2671,7 @@ export type DeviceAutoConnectionPlan = {
   roomName: string | null
   connectedFromNodeId: string | null
   connectedFromName: string | null
-  run: {
-    name: string
-    runKind: 'home-run' | 'daisy-chain'
-    panelId: string
-    fromNodeId: string
-    targetDeviceId: string
-    circuitNumber: number
-    occupancy: OccupancyType
-    racewayType: RacewayType
-    tradeSize: ConduitTradeSize
-    wireGauge: WireGauge
-    currentCarryingCount: number
-    totalConductorCount: number
-    loadAmps: number
-    continuous: boolean
-    voltage: number
-    phases: 1 | 3
-    path: Vec3[]
-    avoidedObstaclesCount: number
-  } | null
+  run: PlannedDeviceConnectionRun | null
   anchorDevicePatch: {
     id: string
     patch: {
@@ -2940,6 +3057,7 @@ export function planDeviceAutoConnection(
       peerBreakerHint,
       ...cktPeers.map((p) => (typeof p.breakerAmps === 'number' ? p.breakerAmps : 15)),
     )
+    if (draft.breakerAmps > cktBreakerAmps) return false
     const cktTotalVa = cktPeers.reduce(
       (sum, p) => sum + (typeof p.loadVa === 'number' ? p.loadVa : 180),
       0,
@@ -2959,7 +3077,8 @@ export function planDeviceAutoConnection(
     }
 
     // NEC 210.11(C)(1)/(3) circuit isolation: never mix bath/kitchen circuits with other rooms
-    const cktHasBath = cktPeers.some((p) => {
+    const levelCktPeers = cktPeers.filter((p) => belongsToLevel(nodes, p, levelId))
+    const cktHasBath = levelCktPeers.some((p) => {
       if (!Array.isArray(p.position)) return false
       const pz = resolveZoneNearPoint(
         zones,
@@ -2968,7 +3087,7 @@ export function planDeviceAutoConnection(
       )
       return Boolean(pz && isBathroom(pz.category))
     })
-    const cktHasKitchen = cktPeers.some((p) => {
+    const cktHasKitchen = levelCktPeers.some((p) => {
       if (!Array.isArray(p.position)) return false
       const pz = resolveZoneNearPoint(
         zones,
@@ -2977,8 +3096,8 @@ export function planDeviceAutoConnection(
       )
       return Boolean(pz && isKitchen(pz.category))
     })
-    if (cktPeers.length > 0 && targetIsBath !== cktHasBath) return false
-    if (cktPeers.length > 0 && targetIsKitchen !== cktHasKitchen) return false
+    if (levelCktPeers.length > 0 && targetIsBath !== cktHasBath) return false
+    if (levelCktPeers.length > 0 && targetIsKitchen !== cktHasKitchen) return false
     return true
   }
 
@@ -3093,9 +3212,7 @@ export function planDeviceAutoConnection(
     })
     const wireGauge = largerGauge(baseWireGauge, vdCheck.recommendedGauge)
 
-    const boxFillGauge: BoxFillGauge = (
-      ['18', '16', '14', '12', '10', '8', '6'].includes(wireGauge) ? wireGauge : '12'
-    ) as BoxFillGauge
+    const boxFillGauge: BoxFillGauge = clampToBoxFillGauge(wireGauge)
     const isSmokeInterconnect =
       draft.deviceKind === 'smoke-co' && anchorDevice.deviceKind === 'smoke-co'
     const newConductorCount = isSmokeInterconnect ? 3 : 2 // 14/3 interconnect vs 14/2 branch end-of-line
@@ -3178,6 +3295,8 @@ export function planDeviceAutoConnection(
         phases: 1,
         path: route.path,
         avoidedObstaclesCount: route.avoidedObstacles.length,
+        routingMode: route.routingMode,
+        necNotes: route.necNotes,
       },
       anchorDevicePatch,
     }
@@ -3188,11 +3307,31 @@ export function planDeviceAutoConnection(
     draft.breakerAmps,
     targetIsBath || targetIsKitchen || occupancy === 'commercial' ? 20 : 15,
   )
-  const explicitCktSafe =
-    draft.circuitNumber !== undefined &&
-    !panelDevices.some((p) => p.circuitNumber === draft.circuitNumber)
+  const maxPanelSpaces = Math.min(
+    84,
+    Math.max(4, Math.ceil((typeof panelNode.spaces === 'number' ? panelNode.spaces : 40) / 2) * 2),
+  )
+  const occupiedSlots = new Set<number>()
+  for (const p of panelDevices) {
+    const c = typeof p.circuitNumber === 'number' && p.circuitNumber >= 1 ? Math.floor(p.circuitNumber) : 0
+    if (c <= 0) continue
+    const pPoles = p.poles === 3 ? 3 : p.poles === 2 ? 2 : 1
+    for (let k = 0; k < pPoles; k++) occupiedSlots.add(c + k * 2)
+  }
+  let explicitCktSafe = false
+  if (draft.circuitNumber !== undefined && draft.circuitNumber >= 1) {
+    const reqCkt = Math.floor(draft.circuitNumber)
+    explicitCktSafe = true
+    for (let k = 0; k < draft.poles; k++) {
+      const slot = reqCkt + k * 2
+      if (slot > maxPanelSpaces || occupiedSlots.has(slot)) {
+        explicitCktSafe = false
+        break
+      }
+    }
+  }
   const ckt = explicitCktSafe
-    ? draft.circuitNumber!
+    ? Math.floor(draft.circuitNumber!)
     : pickPhaseBalancedCircuit(panelNode, panelDevices, draft.poles, draft.loadVa)
 
   const panelPos: Vec3 = Array.isArray(panelNode.position)
@@ -3248,9 +3387,7 @@ export function planDeviceAutoConnection(
     if (!fill.compliant) tradeSize = fill.recommendedTradeSize
   }
 
-  const boxFillGauge: BoxFillGauge = (
-    ['18', '16', '14', '12', '10', '8', '6'].includes(wireGauge) ? wireGauge : '12'
-  ) as BoxFillGauge
+  const boxFillGauge: BoxFillGauge = clampToBoxFillGauge(wireGauge)
   const newConductorCount = draft.poles === 3 ? 3 : draft.poles === 2 ? 3 : 2
   let newBoxType = draft.boxType
   const newBoxCheck = calculateBoxFill({
@@ -3299,6 +3436,8 @@ export function planDeviceAutoConnection(
       phases,
       path: route.path,
       avoidedObstaclesCount: route.avoidedObstacles.length,
+      routingMode: route.routingMode,
+      necNotes: route.necNotes,
     },
     anchorDevicePatch: null,
   }

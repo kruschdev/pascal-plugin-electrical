@@ -81,7 +81,7 @@ const html = `<!doctype html>
 </head>
 <body>
   <header>
-    <h1>@kruschdev/pascal-plugin-electrical — 50 Clean-Room MIT Electrical CAD Models (.glb)</h1>
+    <h1>@kruschdev/pascal-plugin-electrical: 50 Clean-Room MIT Electrical CAD Models (.glb)</h1>
     <div class="sub">Panels · Solar &amp; ESS · ATS/Gen · Transformers · NEC 314.16 Boxes · Smart Devices · Light Fixtures · Cable Tray &amp; Grounding</div>
   </header>
   <div id="grid" class="grid"></div>
@@ -166,6 +166,7 @@ const html = `<!doctype html>
 </html>`
 
 let resolveDone: () => void = () => {}
+let doneReceived = false
 const donePromise = new Promise<void>((r) => {
   resolveDone = r
 })
@@ -204,6 +205,7 @@ const server = Bun.serve({
       return new Response('ok')
     }
     if (url.pathname === '/done') {
+      doneReceived = true
       resolveDone()
       return new Response('ok')
     }
@@ -212,8 +214,9 @@ const server = Bun.serve({
 })
 
 const outSheet = path.join(rootDir, 'assets', 'cad-material-catalog.png')
+const chromeBin = process.env.CHROME_BIN || '/usr/bin/google-chrome'
 const chromeArgs = [
-  '/usr/bin/google-chrome',
+  chromeBin,
   '--headless=new',
   '--no-sandbox',
   '--disable-gpu-sandbox',
@@ -240,7 +243,14 @@ if (exitCode !== 0 || !fs.existsSync(outSheet)) {
   process.exit(1)
 }
 
-void donePromise
+if (doneReceived) {
+  await donePromise
+}
+if (savedCount !== catalog.items.length) {
+  throw new Error(
+    `Incomplete CAD thumbnail render: saved ${savedCount}/${catalog.items.length} thumbnails (done signal ${doneReceived ? 'received' : 'not received'}).`,
+  )
+}
 console.log(
   `Rendered ${savedCount}/${catalog.items.length} individual thumbnails + contact sheet (${Math.round(fs.statSync(outSheet).size / 1024)} KB) at ${outSheet}`,
 )

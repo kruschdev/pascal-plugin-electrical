@@ -231,9 +231,11 @@ export default function ElectricalScheduleView() {
                     <th style={thStyle}>Ckt</th>
                     <th style={thStyle}>Description</th>
                     <th style={thStyle}>Bkr</th>
+                    <th style={thStyle}>Wire</th>
                     <th style={thStyle}>VA</th>
                     <th style={{ ...thStyle, textAlign: 'center' }}>Phase</th>
                     <th style={thStyle}>VA</th>
+                    <th style={thStyle}>Wire</th>
                     <th style={thStyle}>Bkr</th>
                     <th style={thStyle}>Description</th>
                     <th style={thStyle}>Ckt</th>
@@ -243,13 +245,53 @@ export default function ElectricalScheduleView() {
                   {schedule.rows.map((row) => (
                     <tr key={row.leftCircuit} style={{ borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
                       <td style={tdStyle}>{row.leftCircuit}</td>
-                      <td style={tdStyle}>{row.left ? row.left.description : <span style={{ opacity: 0.45 }}>SPARE</span>}</td>
-                      <td style={tdStyle}>{row.left ? `${row.left.poles}P-${row.left.breakerAmps}A` : '—'}</td>
+                      <td style={tdStyle}>
+                        {row.left ? (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                            <span>{row.left.description}</span>
+                            {row.left.protection.map((tag) => (
+                              <span key={tag} style={protectionTagStyle(tag)}>
+                                {tag}
+                              </span>
+                            ))}
+                          </span>
+                        ) : (
+                          <span style={{ opacity: 0.45 }}>SPARE</span>
+                        )}
+                      </td>
+                      <td style={tdStyle}>{row.left ? `${row.left.poles}P-${row.left.breakerAmps}A` : '-'}</td>
+                      <td style={tdStyle}>
+                        {row.left
+                          ? row.left.wireGauge.includes('kcmil')
+                            ? row.left.wireGauge
+                            : `#${row.left.wireGauge}`
+                          : '-'}
+                      </td>
                       <td style={tdStyle}>{row.left ? row.left.loadVa : 0}</td>
                       <td style={{ ...tdStyle, textAlign: 'center', fontWeight: 700 }}>{row.phaseLabel}</td>
                       <td style={tdStyle}>{row.right ? row.right.loadVa : 0}</td>
-                      <td style={tdStyle}>{row.right ? `${row.right.poles}P-${row.right.breakerAmps}A` : '—'}</td>
-                      <td style={tdStyle}>{row.right ? row.right.description : <span style={{ opacity: 0.45 }}>SPARE</span>}</td>
+                      <td style={tdStyle}>
+                        {row.right
+                          ? row.right.wireGauge.includes('kcmil')
+                            ? row.right.wireGauge
+                            : `#${row.right.wireGauge}`
+                          : '-'}
+                      </td>
+                      <td style={tdStyle}>{row.right ? `${row.right.poles}P-${row.right.breakerAmps}A` : '-'}</td>
+                      <td style={tdStyle}>
+                        {row.right ? (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                            <span>{row.right.description}</span>
+                            {row.right.protection.map((tag) => (
+                              <span key={tag} style={protectionTagStyle(tag)}>
+                                {tag}
+                              </span>
+                            ))}
+                          </span>
+                        ) : (
+                          <span style={{ opacity: 0.45 }}>SPARE</span>
+                        )}
+                      </td>
                       <td style={tdStyle}>{row.rightCircuit}</td>
                     </tr>
                   ))}
@@ -260,7 +302,7 @@ export default function ElectricalScheduleView() {
         </div>
       )}
 
-      {/* TAB 2: Zoomed-In 3D Panel Interior (Cover Off — Live Wires, Breakers & Busbars) */}
+      {/* TAB 2: Zoomed-In 3D Panel Interior (Cover Off: Live Wires, Breakers & Busbars) */}
       {activeTab === 'panel-interior' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {!schedule || !activePanel ? (
@@ -510,6 +552,19 @@ export default function ElectricalScheduleView() {
       )}
     </div>
   )
+}
+
+function protectionTagStyle(tag: 'AFCI' | 'GFCI'): React.CSSProperties {
+  return {
+    padding: '0 4px',
+    borderRadius: 4,
+    fontSize: 9,
+    fontWeight: 700,
+    letterSpacing: '0.02em',
+    background: tag === 'GFCI' ? 'rgba(16,185,129,0.18)' : 'rgba(56,189,248,0.18)',
+    border: `1px solid ${tag === 'GFCI' ? 'rgba(16,185,129,0.45)' : 'rgba(56,189,248,0.45)'}`,
+    color: tag === 'GFCI' ? '#34d399' : '#38bdf8',
+  }
 }
 
 const thStyle: React.CSSProperties = { padding: '5px 6px' }

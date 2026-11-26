@@ -72,6 +72,16 @@ function deterministicId(prefix: string, nodes: SceneNodes): string {
   return `${prefix}_${idx}`
 }
 
+export type ElectricalOpChanges = {
+  create?: Array<{ node: AnyNode; parentId?: string }>
+  update?: Array<{ id: string; data: Partial<AnyNode> }>
+}
+
+export type ElectricalOpOutcome<TResult extends Record<string, unknown>> = {
+  result: TResult
+  changes?: ElectricalOpChanges
+}
+
 export const electricalAgentOperations = {
   electrical_place_panel: (
     nodes: SceneNodes,
@@ -132,7 +142,7 @@ export const electricalAgentOperations = {
         busRatingAmps,
         levelId: parentId,
       },
-      changes: { create: [{ node, parentId: parentId ?? undefined }] },
+      changes: { create: [{ node, parentId: parentId ?? undefined }] } as ElectricalOpChanges,
     }
   },
 
@@ -192,7 +202,7 @@ export const electricalAgentOperations = {
         levelId: parentId,
         ...sizing,
       },
-      changes: { create: [{ node, parentId: parentId ?? undefined }] },
+      changes: { create: [{ node, parentId: parentId ?? undefined }] } as ElectricalOpChanges,
     }
   },
 
@@ -259,7 +269,19 @@ export const electricalAgentOperations = {
     const defaultAfciForKind =
       deviceKind === 'afci' || (occupancy === 'residential' && deviceKind === 'smoke-co')
     const continuous = input.continuous ?? false
-    const nominalVoltage = poles === 1 ? 120 : 240
+    const targetPanelNode = input.panelId ? record[input.panelId] : undefined
+    const targetVoltageSystem: VoltageSystem =
+      targetPanelNode?.voltageSystem === '120/208V-3P' ||
+      targetPanelNode?.voltageSystem === '277/480V-3P' ||
+      targetPanelNode?.voltageSystem === '120/240V-1P'
+        ? targetPanelNode.voltageSystem
+        : occupancy === 'commercial'
+          ? '120/208V-3P'
+          : '120/240V-1P'
+    const nominalVoltage =
+      poles === 1
+        ? getVoltageLineToNeutral(targetVoltageSystem)
+        : getVoltageLineToLine(targetVoltageSystem)
     const actualLoadAmps =
       poles === 3 ? loadVa / (nominalVoltage * Math.sqrt(3)) : loadVa / nominalVoltage
     const autoWireGauge: WireGauge = recommendWireGauge({
@@ -389,6 +411,8 @@ export const electricalAgentOperations = {
           runKind: r.runKind,
           fromNodeId: r.fromNodeId,
           avoidedObstaclesCount: r.avoidedObstaclesCount,
+          ...(r.routingMode ? { routingMode: r.routingMode } : {}),
+          ...(r.necNotes ? { necNotes: r.necNotes } : {}),
         },
         path: r.path,
         occupancy: r.occupancy,
@@ -438,7 +462,7 @@ export const electricalAgentOperations = {
       changes: {
         create: creates,
         ...(updates ? { update: updates } : {}),
-      },
+      } as ElectricalOpChanges,
     }
   },
 
@@ -622,7 +646,7 @@ export const electricalAgentOperations = {
         voltageDropPct: vd.voltageDropPct,
         voltageDropCompliant: vd.compliant,
       },
-      changes: { create: [{ node, parentId: parentId ?? undefined }] },
+      changes: { create: [{ node, parentId: parentId ?? undefined }] } as ElectricalOpChanges,
     }
   },
 
@@ -784,6 +808,7 @@ export const electricalAgentOperations = {
           ...(dev.bonesServiceType ? { bonesServiceType: dev.bonesServiceType } : {}),
           ...(dev.bonesUserMoved ? { bonesUserMoved: true } : {}),
           ...(dev.mepSourceNodeId ? { mepSourceNodeId: dev.mepSourceNodeId } : {}),
+          ...(dev.loadCategory ? { loadCategory: dev.loadCategory } : {}),
         },
         position: dev.position,
         rotation: dev.rotation,
@@ -795,7 +820,7 @@ export const electricalAgentOperations = {
         breakerAmps: dev.breakerAmps,
         loadVa: dev.loadVa,
         continuous: dev.continuous,
-        isMotor: false,
+        isMotor: dev.isMotor === true,
         gfciProtected: dev.gfciProtected,
         afciProtected: dev.afciProtected,
         boxType: dev.boxType,
@@ -857,7 +882,7 @@ export const electricalAgentOperations = {
         ...plan.summary,
         circuits: plan.circuitSummary,
       },
-      changes: creates.length > 0 ? { create: creates } : undefined,
+      changes: (creates.length > 0 ? { create: creates } : undefined) as ElectricalOpChanges | undefined,
     }
   },
 } satisfies AgentOperations

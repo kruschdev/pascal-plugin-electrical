@@ -516,7 +516,6 @@ export function buildElectricalTakeoff(
     }
   }
 
-  const seenCircuitBreakers = new Set<string>()
   // R6-BUG-05: Aggregate breaker specs across ALL devices sharing (panelId, circuitNumber)
   const circuitBreakerMap = new Map<
     string,

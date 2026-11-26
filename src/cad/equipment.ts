@@ -276,6 +276,7 @@ export type TransformerCadOptions = {
   depth?: number
   primaryVoltage?: number
   secondaryVoltage?: number
+  nemaRating?: 'NEMA-1' | 'NEMA-2' | 'NEMA-3R'
   mats?: CadMaterialPool
 }
 
@@ -348,6 +349,36 @@ export function buildTransformerCad(opts: TransformerCadOptions = {}): Group {
   const nameplate = new Mesh(new BoxGeometry(0.16, 0.09, 0.004), mats.stainlessSteel)
   nameplate.position.set(w * 0.22, padH + bodyH * 0.47, d / 2 + 0.004)
   group.add(nameplate)
+
+  // NEMA-3R outdoor sloped rain-hood top & louver weather shields (omitted on default NEMA-2 / NEMA-1)
+  if (opts.nemaRating === 'NEMA-3R') {
+    const rainHood = new Mesh(new BoxGeometry(w + 0.08, 0.032, d + 0.12), mats.nemaGray)
+    rainHood.name = 'nema3r-rain-hood'
+    rainHood.position.set(0, h + 0.012, 0.01)
+    rainHood.rotation.x = 0.07
+    rainHood.castShadow = true
+    group.add(rainHood)
+
+    const frontShieldGeo = new BoxGeometry(w * 0.84, bodyH * 0.4, 0.045)
+    for (const signZ of [1, -1]) {
+      const shield = new Mesh(frontShieldGeo, mats.nemaGray)
+      shield.name = 'nema3r-weather-shield'
+      shield.position.set(0, padH + bodyH * 0.72, signZ * (d / 2 + 0.032))
+      shield.rotation.x = signZ * 0.14
+      shield.castShadow = true
+      group.add(shield)
+    }
+
+    const sideShieldGeo = new BoxGeometry(0.036, bodyH * 0.4, d * 0.72)
+    for (const signX of [-1, 1]) {
+      const sideShield = new Mesh(sideShieldGeo, mats.nemaGray)
+      sideShield.name = 'nema3r-side-weather-shield'
+      sideShield.position.set(signX * (w / 2 + 0.022), padH + bodyH * 0.72, 0)
+      sideShield.rotation.z = -signX * 0.14
+      sideShield.castShadow = true
+      group.add(sideShield)
+    }
+  }
 
   return group
 }
@@ -655,11 +686,11 @@ export function buildDeviceCad(opts: DeviceCadOptions): Group {
     return group
   }
   if (opts.deviceKind === 'dimmer') {
-    group.add(buildSmartDimmerCad(mats))
+    group.add(buildSmartDimmerCad(mats, opts.boxType))
     return group
   }
   if (opts.deviceKind === 'usb-duplex') {
-    group.add(buildUsbDuplexReceptacleCad(mats))
+    group.add(buildUsbDuplexReceptacleCad(mats, opts.boxType))
     return group
   }
   if (opts.deviceKind === 'weatherproof-gfci') {

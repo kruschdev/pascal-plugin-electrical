@@ -38,11 +38,14 @@ type PuppeteerPageLike = {
   on: (event: string, cb: (arg: { message?: string }) => void) => void
 }
 
+type PuppeteerBrowserLike = {
+  newPage: () => Promise<PuppeteerPageLike>
+  close: () => Promise<void>
+  process?: () => { kill: (signal?: NodeJS.Signals | number) => boolean | void } | null
+}
+
 type PuppeteerLike = {
-  launch: (opts: Record<string, unknown>) => Promise<{
-    newPage: () => Promise<PuppeteerPageLike>
-    close: () => Promise<void>
-  }>
+  launch: (opts: Record<string, unknown>) => Promise<PuppeteerBrowserLike>
 }
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url))
@@ -85,6 +88,13 @@ const browser = await puppeteer.launch({
   ],
 })
 
+let ffmpeg: Bun.Subprocess<'pipe', 'ignore', 'pipe'> | null = null
+let ffmpegFinished = false
+let mp4Code = -1
+let ffmpegStderr = ''
+let totalFrames = 0
+
+try {
 const page = await browser.newPage()
 await page.setViewport({ width: VIEW_W, height: VIEW_H, deviceScaleFactor: 1 })
 page.on('pageerror', (e) => console.error('PAGEERROR:', e.message))
@@ -230,7 +240,7 @@ for (let i = 1; i <= 5; i++) {
 await page.mouse.up({ button: 'right' })
 await new Promise((r) => setTimeout(r, 900))
 
-const ffmpeg = Bun.spawn(
+const ffmpegProc = Bun.spawn(
   [
     ffmpegBin,
     '-y',
@@ -260,8 +270,8 @@ const ffmpeg = Bun.spawn(
   ],
   { stdin: 'pipe', stdout: 'ignore', stderr: 'pipe' },
 )
+ffmpeg = ffmpegProc
 
-let totalFrames = 0
 let lastKeyframe = 0
 
 async function setBanner(text: string) {
@@ -326,7 +336,7 @@ async function captureFrames(
     let lastJpeg: Uint8Array | null = null
     for (let i = 0; i < 2; i++) {
       lastJpeg = await page.screenshot({ type: 'jpeg', quality: 92 })
-      ffmpeg.stdin.write(lastJpeg)
+      ffmpegProc.stdin.write(lastJpeg)
       totalFrames += 1
       if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs))
     }
@@ -336,7 +346,7 @@ async function captureFrames(
         lastKeyframe += 1
       }
       for (let i = 2; i < count; i++) {
-        ffmpeg.stdin.write(lastJpeg)
+        ffmpegProc.stdin.write(lastJpeg)
         totalFrames += 1
       }
     }
@@ -345,7 +355,7 @@ async function captureFrames(
 
   for (let i = 0; i < count; i++) {
     const jpeg = await page.screenshot({ type: 'jpeg', quality: 92 })
-    ffmpeg.stdin.write(jpeg)
+    ffmpegProc.stdin.write(jpeg)
     totalFrames += 1
     if (saveKeyframeName && i === Math.floor(count / 2)) {
       const kfPath = path.join(keyframesDir, `${saveKeyframeName}.jpg`)
@@ -411,7 +421,7 @@ async function dragOrbit(
     await page.mouse.move(nx, ny)
     await moveCursor(nx, ny)
     const jpeg = await page.screenshot({ type: 'jpeg', quality: 92 })
-    ffmpeg.stdin.write(jpeg)
+    ffmpegProc.stdin.write(jpeg)
     totalFrames += 1
     if (kf && i === Math.floor(steps / 2)) {
       fs.writeFileSync(path.join(keyframesDir, `${kf}.jpg`), jpeg)
@@ -565,12 +575,37 @@ await smoothClickButton('NEC Audit', false, 5, 22, '08_nec_audit')
 await captureCleanShot('08-pascal-nec-audit.png')
 
 // Finish encoding
-ffmpeg.stdin.end()
-const mp4Code = await ffmpeg.exited
-await browser.close()
+ffmpegProc.stdin.end()
+mp4Code = await ffmpegProc.exited
+ffmpegFinished = true
+if (mp4Code !== 0) {
+  ffmpegStderr = await new Response(ffmpegProc.stderr).text()
+}
+} finally {
+  if (ffmpeg && !ffmpegFinished) {
+    try {
+      ffmpeg.stdin.end()
+    } catch {}
+    try {
+      ffmpeg.kill('SIGTERM')
+    } catch {}
+    try {
+      await Promise.race([ffmpeg.exited, new Promise((r) => setTimeout(r, 1500))])
+    } catch {}
+    try {
+      ffmpeg.kill('SIGKILL')
+    } catch {}
+  }
+  try {
+    await browser.close()
+  } catch {}
+  try {
+    browser.process?.()?.kill('SIGKILL')
+  } catch {}
+}
 
 if (mp4Code !== 0 || !fs.existsSync(outMp4)) {
-  console.error('FFmpeg MP4 encode failed:', await new Response(ffmpeg.stderr).text())
+  console.error('FFmpeg MP4 encode failed:', ffmpegStderr)
   process.exit(1)
 }
 console.log(

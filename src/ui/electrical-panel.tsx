@@ -22,6 +22,7 @@ import {
   routeElectricalRun,
   type Vec3,
 } from '../nec/routing'
+import type { ElectricalDeviceKind } from '../nodes/device'
 import { useElectricalUi } from './store'
 
 export const ELECTRICAL_SCHEDULE_VIEW_ID = 'krusch:electrical:schedule'
@@ -46,45 +47,57 @@ function pathsNearlyEqual(a: readonly Vec3[], b: readonly Vec3[]): boolean {
   return true
 }
 
+type CatalogCategory =
+  | 'Solar, ESS & Backup'
+  | 'Heavy & Commercial Loads'
+  | 'Receptacles & Boxes'
+  | 'Switches, Lighting & Life Safety'
+
 type CatalogQuickItem = {
-  kind:
-    | 'solar-inverter'
-    | 'battery-ess'
-    | 'transfer-switch'
-    | 'generator-inlet'
-    | 'rapid-shutdown'
-    | 'spd'
-    | 'vfd'
-    | 'dimmer'
-    | 'usb-duplex'
-    | 'weatherproof-gfci'
-    | 'floor-box'
-    | 'smoke-co'
-    | 'ceiling-fan'
-    | 'under-cabinet-led'
+  kind: ElectricalDeviceKind
+  category: CatalogCategory
   label: string
   poles: 1 | 2 | 3
   breakerAmps: number
   loadVa: number
   continuous?: boolean
   gfciProtected?: boolean
+  afciProtected?: boolean
 }
 
+const CATALOG_CATEGORIES: readonly CatalogCategory[] = [
+  'Solar, ESS & Backup',
+  'Heavy & Commercial Loads',
+  'Receptacles & Boxes',
+  'Switches, Lighting & Life Safety',
+]
+
 const CATALOG_QUICK_ITEMS: readonly CatalogQuickItem[] = [
-  { kind: 'solar-inverter', label: 'Solar PV Inverter (NEC 690, 40A)', poles: 2, breakerAmps: 40, loadVa: 7600, continuous: true },
-  { kind: 'battery-ess', label: 'Wall Battery ESS 13.5 kWh (60A)', poles: 2, breakerAmps: 60, loadVa: 11500, continuous: true },
-  { kind: 'transfer-switch', label: '200A Auto Transfer Switch (ATS)', poles: 2, breakerAmps: 200, loadVa: 0 },
-  { kind: 'generator-inlet', label: '50A Generator Inlet Box (SS2-50P)', poles: 2, breakerAmps: 50, loadVa: 12000 },
-  { kind: 'rapid-shutdown', label: 'PV Rapid Shutdown Switch (690.12)', poles: 2, breakerAmps: 40, loadVa: 0 },
-  { kind: 'spd', label: 'Type 2 Surge Protector (NEC 230.67)', poles: 2, breakerAmps: 20, loadVa: 0 },
-  { kind: 'vfd', label: 'Commercial 3Φ VFD Drive (40A)', poles: 3, breakerAmps: 40, loadVa: 12000, continuous: true },
-  { kind: 'dimmer', label: 'Smart Decora Slide Dimmer', poles: 1, breakerAmps: 15, loadVa: 150 },
-  { kind: 'usb-duplex', label: '20A USB-A / USB-C Duplex Outlet', poles: 1, breakerAmps: 20, loadVa: 180 },
-  { kind: 'weatherproof-gfci', label: 'Weatherproof In-Use Bubble GFCI', poles: 1, breakerAmps: 20, loadVa: 180, gfciProtected: true },
-  { kind: 'floor-box', label: 'Recessed Brass Floor Outlet Box', poles: 1, breakerAmps: 20, loadVa: 180 },
-  { kind: 'smoke-co', label: 'Hardwired 120V Smoke/CO Alarm', poles: 1, breakerAmps: 15, loadVa: 25 },
-  { kind: 'ceiling-fan', label: '52" Ceiling Fan w/ LED Kit', poles: 1, breakerAmps: 15, loadVa: 120 },
-  { kind: 'under-cabinet-led', label: '24" Under-Cabinet LED Task Bar', poles: 1, breakerAmps: 15, loadVa: 30 },
+  { kind: 'solar-inverter', category: 'Solar, ESS & Backup', label: 'Solar PV Inverter (NEC 690, 40A)', poles: 2, breakerAmps: 40, loadVa: 7600, continuous: true },
+  { kind: 'battery-ess', category: 'Solar, ESS & Backup', label: 'Wall Battery ESS 13.5 kWh (60A)', poles: 2, breakerAmps: 60, loadVa: 11500, continuous: true },
+  { kind: 'transfer-switch', category: 'Solar, ESS & Backup', label: '200A Auto Transfer Switch (ATS)', poles: 2, breakerAmps: 200, loadVa: 0 },
+  { kind: 'generator-inlet', category: 'Solar, ESS & Backup', label: '50A Generator Inlet Box (SS2-50P)', poles: 2, breakerAmps: 50, loadVa: 12000 },
+  { kind: 'rapid-shutdown', category: 'Solar, ESS & Backup', label: 'PV Rapid Shutdown Switch (690.12)', poles: 2, breakerAmps: 40, loadVa: 0 },
+  { kind: 'spd', category: 'Solar, ESS & Backup', label: 'Type 2 Surge Protector (NEC 230.67)', poles: 2, breakerAmps: 20, loadVa: 0 },
+  { kind: 'evse', category: 'Heavy & Commercial Loads', label: 'Level 2 EVSE Charger (50A / 240V)', poles: 2, breakerAmps: 50, loadVa: 9600, continuous: true },
+  { kind: 'dedicated-240v', category: 'Heavy & Commercial Loads', label: 'Dedicated 240V NEMA 14-50R (50A)', poles: 2, breakerAmps: 50, loadVa: 8000 },
+  { kind: 'motor-load', category: 'Heavy & Commercial Loads', label: '3Φ / 240V Motor Load (30A)', poles: 3, breakerAmps: 30, loadVa: 4800 },
+  { kind: 'vfd', category: 'Heavy & Commercial Loads', label: 'Commercial 3Φ VFD Drive (40A)', poles: 3, breakerAmps: 40, loadVa: 12000, continuous: true },
+  { kind: 'duplex', category: 'Receptacles & Boxes', label: '15A/20A Standard Duplex Receptacle', poles: 1, breakerAmps: 15, loadVa: 180 },
+  { kind: 'gfci', category: 'Receptacles & Boxes', label: '20A GFCI Receptacle (NEC 210.8)', poles: 1, breakerAmps: 20, loadVa: 180, gfciProtected: true },
+  { kind: 'afci', category: 'Receptacles & Boxes', label: '15A AFCI Receptacle (NEC 210.12)', poles: 1, breakerAmps: 15, loadVa: 180, afciProtected: true },
+  { kind: 'usb-duplex', category: 'Receptacles & Boxes', label: '20A USB-A / USB-C Duplex Outlet', poles: 1, breakerAmps: 20, loadVa: 180 },
+  { kind: 'weatherproof-gfci', category: 'Receptacles & Boxes', label: 'Weatherproof In-Use Bubble GFCI', poles: 1, breakerAmps: 20, loadVa: 180, gfciProtected: true },
+  { kind: 'floor-box', category: 'Receptacles & Boxes', label: 'Recessed Brass Floor Outlet Box', poles: 1, breakerAmps: 20, loadVa: 180 },
+  { kind: 'junction-box', category: 'Receptacles & Boxes', label: 'Pull / Junction Box (NEC 314.16)', poles: 1, breakerAmps: 20, loadVa: 0 },
+  { kind: 'switch-1p', category: 'Switches, Lighting & Life Safety', label: 'Single-Pole Decora Light Switch', poles: 1, breakerAmps: 15, loadVa: 0 },
+  { kind: 'switch-3way', category: 'Switches, Lighting & Life Safety', label: '3-Way Decora Light Switch', poles: 1, breakerAmps: 15, loadVa: 0 },
+  { kind: 'dimmer', category: 'Switches, Lighting & Life Safety', label: 'Smart Decora Slide Dimmer', poles: 1, breakerAmps: 15, loadVa: 150 },
+  { kind: 'luminaire', category: 'Switches, Lighting & Life Safety', label: 'Ceiling LED Luminaire Fixture', poles: 1, breakerAmps: 15, loadVa: 60 },
+  { kind: 'ceiling-fan', category: 'Switches, Lighting & Life Safety', label: '52" Ceiling Fan w/ LED Kit', poles: 1, breakerAmps: 15, loadVa: 120 },
+  { kind: 'under-cabinet-led', category: 'Switches, Lighting & Life Safety', label: '24" Under-Cabinet LED Task Bar', poles: 1, breakerAmps: 15, loadVa: 30 },
+  { kind: 'smoke-co', category: 'Switches, Lighting & Life Safety', label: 'Hardwired 120V Smoke/CO Alarm', poles: 1, breakerAmps: 15, loadVa: 25 },
+  { kind: 'exit-sign', category: 'Switches, Lighting & Life Safety', label: 'Emergency EXIT Sign + Twin Floods', poles: 1, breakerAmps: 20, loadVa: 20, continuous: true },
 ]
 
 export default function ElectricalRailPanel() {
@@ -139,6 +152,10 @@ export default function ElectricalRailPanel() {
     () => Object.values(record).filter((n) => n.type === 'electrical:conduit-run'),
     [record],
   )
+  const levelRuns = useMemo(
+    () => runs.filter((r) => belongsToLevel(record, r, activeLevelId)),
+    [runs, record, activeLevelId],
+  )
   const transformers = useMemo(
     () => Object.values(record).filter((n) => n.type === 'electrical:transformer'),
     [record],
@@ -150,6 +167,8 @@ export default function ElectricalRailPanel() {
       setStatusMsg('Create a building level first before placing electrical equipment.')
       return
     }
+    const preferredPanel =
+      panels.find((p) => belongsToLevel(record, p, levelId)) ?? panels[0]
     const idx = transformers.length + 1
     const outcome = electricalAgentOperations.electrical_place_transformer(
       nodes,
@@ -160,7 +179,7 @@ export default function ElectricalRailPanel() {
         kvaRating: 75,
         primaryVoltage: 480,
         secondaryVoltage: 208,
-        fedFromPanelId: panels[0]?.id,
+        fedFromPanelId: preferredPanel?.id,
       },
       { activeLevelId: levelId },
     )
@@ -198,32 +217,42 @@ export default function ElectricalRailPanel() {
     }
   }
 
-  const placeDevice = (
-    deviceKind:
-      | 'duplex'
-      | 'gfci'
-      | 'evse'
-      | 'junction-box'
-      | 'motor-load'
-      | CatalogQuickItem['kind'],
-  ) => {
+  const placeDevice = (deviceKind: ElectricalDeviceKind) => {
     const levelId = activeLevelOf(nodes, selectedLevelId)
     if (!levelId) {
       setStatusMsg('Create a building level first before placing electrical equipment.')
       return
     }
-    const primaryPanel =
-      panels.find((p) => belongsToLevel(record, p, levelId)) ?? panels[0]
+    // Strictly prefer a panel on the active level; never cross-wire level-local coordinates to another floor
+    const primaryPanel = panels.find((p) => belongsToLevel(record, p, levelId))
     const idx = devices.length + 1
     const catalogSpec = CATALOG_QUICK_ITEMS.find((item) => item.kind === deviceKind)
-    const isHeavy = deviceKind === 'evse' || deviceKind === 'motor-load'
-    const poles: 1 | 2 | 3 = catalogSpec
-      ? catalogSpec.poles
-      : deviceKind === 'motor-load' && occupancy === 'commercial'
-        ? 3
-        : isHeavy
-          ? 2
+    const poles: 1 | 2 | 3 =
+      deviceKind === 'motor-load'
+        ? occupancy === 'commercial'
+          ? 3
+          : 2
+        : catalogSpec
+          ? catalogSpec.poles
           : 1
+    const breakerAmps =
+      deviceKind === 'duplex' || deviceKind === 'luminaire' || deviceKind === 'switch-1p' || deviceKind === 'switch-3way'
+        ? occupancy === 'commercial'
+          ? 20
+          : 15
+        : catalogSpec
+          ? catalogSpec.breakerAmps
+          : occupancy === 'commercial'
+            ? 20
+            : 15
+    const loadVa =
+      deviceKind === 'luminaire'
+        ? occupancy === 'commercial'
+          ? 120
+          : 60
+        : catalogSpec
+          ? catalogSpec.loadVa
+          : 180
     const selectedZoneId =
       selectedIds.find((sid) => record[sid]?.type === 'zone') ?? null
     const placement = findNextWallPlacement(record, levelId, {
@@ -242,27 +271,12 @@ export default function ElectricalRailPanel() {
         occupancy,
         panelId: primaryPanel?.id,
         poles,
-        breakerAmps: catalogSpec
-          ? catalogSpec.breakerAmps
-          : deviceKind === 'evse'
-            ? 50
-            : deviceKind === 'motor-load'
-              ? 30
-              : deviceKind === 'gfci'
-                ? 20
-                : occupancy === 'commercial'
-                  ? 20
-                  : 15,
-        loadVa: catalogSpec
-          ? catalogSpec.loadVa
-          : deviceKind === 'evse'
-            ? 9600
-            : deviceKind === 'motor-load'
-              ? 4800
-              : 180,
+        breakerAmps,
+        loadVa,
         continuous: catalogSpec ? Boolean(catalogSpec.continuous) : deviceKind === 'evse',
         gfciProtected: catalogSpec ? Boolean(catalogSpec.gfciProtected) : deviceKind === 'gfci',
-        autoWire: true,
+        afciProtected: catalogSpec ? Boolean(catalogSpec.afciProtected) : deviceKind === 'afci',
+        autoWire: Boolean(primaryPanel),
       },
       { activeLevelId: levelId },
     )
@@ -285,6 +299,10 @@ export default function ElectricalRailPanel() {
       } else if (outcome.result.connectionMode === 'new-home-run') {
         setStatusMsg(
           `Placed ${deviceKind}${roomLabel} on new CKT-${outcome.result.circuitNumber} (created wall-following home run from ${outcome.result.connectedFromName}).`,
+        )
+      } else if (!primaryPanel && panels.length > 0) {
+        setStatusMsg(
+          `Placed ${deviceKind}${roomLabel} unassigned (no panel on this floor; place a panel on this level to auto-wire runs).`,
         )
       } else {
         setStatusMsg(`Placed ${deviceKind}${roomLabel} (place a panel to auto-wire runs).`)
@@ -342,10 +360,9 @@ export default function ElectricalRailPanel() {
       setStatusMsg('Create a building level first before routing circuits.')
       return
     }
-    const primaryPanel =
-      panels.find((p) => belongsToLevel(record, p, levelId)) ?? panels[0]
+    const primaryPanel = panels.find((p) => belongsToLevel(record, p, levelId))
     if (!primaryPanel) {
-      setStatusMsg('Place an electrical panel first before routing circuits.')
+      setStatusMsg('Place an electrical panel on the active level first before routing circuits.')
       return
     }
     let routedCount = 0
@@ -358,10 +375,10 @@ export default function ElectricalRailPanel() {
       const cavities = extractRoutingCavities(record, levelId)
       const levelHeight = resolveLevelHeightM(record, levelId)
       const defaultChaseY = Math.round(Math.min(2.55, levelHeight - 0.06) * 1000) / 1000
-      const levelRuns = runs.filter((r) => belongsToLevel(record, r, levelId))
+      const activeLevelRuns = runs.filter((r) => belongsToLevel(record, r, levelId))
       const levelDevices = devices.filter((d) => belongsToLevel(record, d, levelId))
       // 1. Reroute existing runs on this level only when they clash or improve onto walls/cavities
-      for (const run of levelRuns) {
+      for (const run of activeLevelRuns) {
         const path = Array.isArray(run.path) ? (run.path as Vec3[]) : []
         if (path.length < 2) continue
         const existingClashes = detectRunTradeClashes(path, levelObstacles)
@@ -393,11 +410,17 @@ export default function ElectricalRailPanel() {
         }
       }
 
-      // 2. Route any devices on this level attached to a panel that don't have a run yet
+      // 2. Route any devices on this level whose panel is also on this level and that don't have a run yet
       const routedDevices = new Set(runs.map((r) => r.targetDeviceId).filter(Boolean))
       for (const dev of levelDevices) {
         if (routedDevices.has(dev.id)) continue
-        const pid = (typeof dev.panelId === 'string' && dev.panelId) || primaryPanel.id
+        const assignedPanel =
+          typeof dev.panelId === 'string' && dev.panelId ? record[dev.panelId] : undefined
+        if (assignedPanel && !belongsToLevel(record, assignedPanel, levelId)) {
+          skippedCount += 1
+          continue
+        }
+        const pid = assignedPanel?.id ?? primaryPanel.id
         try {
           const liveNodes = useScene.getState().nodes
           const outcome = electricalAgentOperations.electrical_route_circuit(
@@ -424,7 +447,7 @@ export default function ElectricalRailPanel() {
       routedCount > 0
         ? `Routed ${routedCount} run(s); yielded around ${avoidedCount} plumbing/HVAC/structural obstacle(s)${skippedSuffix}.`
         : skippedCount > 0
-          ? `No circuits routed (${skippedCount} device(s) skipped due to missing panel reference).`
+          ? `No circuits routed (${skippedCount} device(s) skipped due to missing or off-level panel reference).`
           : 'All assigned devices are already routed.',
     )
   }
@@ -531,7 +554,9 @@ export default function ElectricalRailPanel() {
           <button
             type="button"
             onClick={() => {
-              if (panels[0]) setSelectedPanelId(panels[0].id)
+              const preferredPanel =
+                panels.find((p) => belongsToLevel(record, p, activeLevelId)) ?? panels[0]
+              if (preferredPanel) setSelectedPanelId(preferredPanel.id)
               setActiveTab('panel-interior')
               openEditorView(ELECTRICAL_SCHEDULE_VIEW_ID, { beside: true })
             }}
@@ -550,7 +575,7 @@ export default function ElectricalRailPanel() {
           <select
             aria-label="Catalog Equipment Model"
             value={catalogKind}
-            onChange={(e) => setCatalogKind(e.target.value as CatalogQuickItem['kind'])}
+            onChange={(e) => setCatalogKind(e.target.value as ElectricalDeviceKind)}
             style={{
               flex: 1,
               minWidth: 0,
@@ -562,10 +587,14 @@ export default function ElectricalRailPanel() {
               fontSize: 11,
             }}
           >
-            {CATALOG_QUICK_ITEMS.map((item) => (
-              <option key={item.kind} value={item.kind}>
-                {item.label}
-              </option>
+            {CATALOG_CATEGORIES.map((category) => (
+              <optgroup key={category} label={category}>
+                {CATALOG_QUICK_ITEMS.filter((item) => item.category === category).map((item) => (
+                  <option key={item.kind} value={item.kind}>
+                    {item.label}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
           <button
@@ -682,7 +711,7 @@ export default function ElectricalRailPanel() {
             }}
           >
             {bonesCtx.present
-              ? `Bones ${bonesCtx.defaultSpacingIn}" OC`
+              ? `${bonesCtx.source === 'structural' ? 'Structural' : 'Bones'} ${bonesCtx.defaultSpacingIn}" OC`
               : `${bonesCtx.defaultSpacingIn}" OC Stud-Snap`}
           </span>
         </div>
@@ -771,11 +800,11 @@ export default function ElectricalRailPanel() {
             X-Ray Wiring
           </button>
         </div>
-        {runs.length > 0 && (
+        {levelRuns.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 2 }}>
             {Array.from(
               new Set(
-                runs
+                levelRuns
                   .map((r) => Number((r as Record<string, unknown>).circuitNumber ?? 1))
                   .filter((n) => Number.isFinite(n) && n > 0),
               ),
@@ -783,7 +812,7 @@ export default function ElectricalRailPanel() {
               .sort((a, b) => a - b)
               .map((ckt) => {
                 const c = circuitRunColor(ckt)
-                const isSmokeCkt = devices.some(
+                const isSmokeCkt = levelElectricalDevices.some(
                   (d) =>
                     Number((d as Record<string, unknown>).circuitNumber) === ckt &&
                     (d as Record<string, unknown>).deviceKind === 'smoke-co',

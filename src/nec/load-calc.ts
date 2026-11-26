@@ -82,10 +82,12 @@ function classifyAppliance(app: ResidentialApplianceLoad): NonNullable<Residenti
   if (/evse|ev.?charger|tesla|chargepoint/i.test(app.name)) return 'evse'
   if (/range|oven|cooktop/i.test(app.name)) return 'range'
   if (/dryer/i.test(app.name)) return 'dryer'
+  // Water heaters (including Heat Pump Water Heaters / tankless) are fixed appliances, NOT non-coincident HVAC
+  if (/water.?heat|hpwh|tankless/i.test(app.name)) return 'fixed'
   // Check heat pump BEFORE generic /heat/ so "Heat Pump" is never misclassified as 65% strip heat
   if (/heat.?pump/i.test(app.name)) return 'heat-pump'
   if (/heat|furnace|boiler|baseboard/i.test(app.name)) return 'hvac-heating'
-  if (/a\/?c|air.?cond|cooling|condenser|compressor/i.test(app.name)) return 'hvac-cooling'
+  if (/\ba\/?c\b|air.?cond|cooling|condenser|compressor/i.test(app.name)) return 'hvac-cooling'
   return 'fixed'
 }
 
@@ -144,9 +146,21 @@ export function calculateResidentialLoad(input: ResidentialLoadInput): Residenti
   let totalDemandVa = 0
 
   if (method === 'standard') {
+    // NEC Table 220.42: 100% first 3,000 VA, 35% from 3,001 to 120,000 VA, 25% above 120,000 VA
     const firstTier = Math.min(generalSubtotalVa, NEC_220_RESIDENTIAL.standardFirstTierVa)
-    const remainder = Math.max(0, generalSubtotalVa - NEC_220_RESIDENTIAL.standardFirstTierVa)
-    demandedGeneralVa = firstTier + Math.round(remainder * NEC_220_RESIDENTIAL.standardRemainderFactor)
+    const secondTier = Math.min(
+      Math.max(0, generalSubtotalVa - NEC_220_RESIDENTIAL.standardFirstTierVa),
+      120000 - NEC_220_RESIDENTIAL.standardFirstTierVa,
+    )
+    const thirdTier = Math.max(0, generalSubtotalVa - 120000)
+    demandedGeneralVa =
+      firstTier +
+      Math.round(secondTier * NEC_220_RESIDENTIAL.standardRemainderFactor) +
+      Math.round(thirdTier * 0.25)
+
+    // NEC 220.53: 75% demand factor when 4 or more fixed-in-place appliances are fastened in place
+    const fixedApplianceCount = appliances.filter((a) => classifyAppliance(a) === 'fixed').length
+    const applyFixed75Pct = fixedApplianceCount >= 4
 
     for (const app of appliances) {
       const cat = classifyAppliance(app)
@@ -172,11 +186,18 @@ export function calculateResidentialLoad(input: ResidentialLoadInput): Residenti
           note: '125% continuous EVSE load per NEC 625.41 / 220.57',
         })
         continue
+      } else if (cat === 'fixed' && applyFixed75Pct) {
+        demanded = Math.round(demanded * 0.75)
+        note = `NEC 220.53: 75% demand factor (${fixedApplianceCount} fixed-in-place appliances)`
       }
 
       if (cat === 'hvac-heating') heatingTotalVa += demanded
       if (cat === 'hvac-cooling' || cat === 'heat-pump') coolingTotalVa += demanded
-      if ((app.isMotor || cat === 'heat-pump') && demanded > largestMotorVa) largestMotorVa = demanded
+      // NEC 220.50 / 430.24: +25% of largest motor nameplate rating
+      const motorNameplate = Math.max(0, app.watts)
+      if ((app.isMotor || cat === 'heat-pump') && motorNameplate > largestMotorVa) {
+        largestMotorVa = motorNameplate
+      }
 
       applianceTotalVa += demanded
       applianceDetails.push({ name: app.name, ratedVa: app.watts, demandedVa: demanded, note })
@@ -191,16 +212,30 @@ export function calculateResidentialLoad(input: ResidentialLoadInput): Residenti
     // NEC 220.82 Optional Calculation for Dwelling Units
     let generalAndAppliances = generalSubtotalVa
     let heatPumpTotalVa = 0
+    const separateSpaceHeaters = appliances.filter(
+      (a) => classifyAppliance(a) === 'hvac-heating' && !/furnace|central|boiler/i.test(a.name),
+    )
+    const separateHeatFactor = separateSpaceHeaters.length >= 4 ? 0.4 : 0.65
+    let heatingDemand = 0
+
     for (const app of appliances) {
       const cat = classifyAppliance(app)
       const watts = Math.max(0, app.watts)
       if (cat === 'hvac-heating') {
         heatingTotalVa += watts
+        const isCentral = /furnace|central|boiler/i.test(app.name)
+        const factor = isCentral ? 0.65 : separateHeatFactor
+        const demanded = Math.round(watts * factor)
+        heatingDemand += demanded
         applianceDetails.push({
           name: app.name,
           ratedVa: watts,
-          demandedVa: Math.round(watts * 0.65),
-          note: 'NEC 220.82(C)(4) central electric space heating (< 4 units @ 65%)',
+          demandedVa: demanded,
+          note: isCentral
+            ? 'NEC 220.82(C)(6) central electric space heating (65%)'
+            : separateSpaceHeaters.length >= 4
+              ? `NEC 220.82(C)(5) ${separateSpaceHeaters.length} separately controlled electric space heaters (40%)`
+              : 'NEC 220.82(C)(4) < 4 separately controlled electric space heaters (65%)',
         })
       } else if (cat === 'heat-pump') {
         heatPumpTotalVa += watts
@@ -238,7 +273,6 @@ export function calculateResidentialLoad(input: ResidentialLoadInput): Residenti
     const over10k = Math.max(0, generalAndAppliances - NEC_220_RESIDENTIAL.optionalFirstTierVa)
     demandedGeneralVa = first10k + Math.round(over10k * NEC_220_RESIDENTIAL.optionalRemainderFactor)
 
-    const heatingDemand = Math.round(heatingTotalVa * 0.65)
     const coolingOrHpDemand = Math.max(coolingTotalVa, heatPumpTotalVa)
     const hvacDemand = Math.max(coolingOrHpDemand, heatingDemand)
     hvacOmitVa =
@@ -554,18 +588,31 @@ export function calculateSceneLoad(
   for (const d of devices) {
     const kind = typeof d.deviceKind === 'string' ? d.deviceKind : ''
     const loadVa = typeof d.loadVa === 'number' ? d.loadVa : 0
+    const meta = d.metadata as { loadCategory?: string; mepSourceNodeId?: string } | undefined
     if (kind === 'solar-inverter') {
       const bAmps = typeof d.breakerAmps === 'number' && d.breakerAmps > 0 ? d.breakerAmps : 40
       inferredSolarBackfeedAmps += bAmps
       continue
     }
+    const hasMepLoad = typeof meta?.mepSourceNodeId === 'string' && loadVa > 0
     if (
       kind === 'dedicated-240v' ||
       kind === 'evse' ||
       kind === 'motor-load' ||
       kind === 'vfd' ||
-      kind === 'battery-ess'
+      kind === 'battery-ess' ||
+      d.isMotor === true ||
+      hasMepLoad
     ) {
+      const metaCat = meta?.loadCategory
+      const explicitCategory: ResidentialApplianceLoad['category'] | undefined =
+        kind === 'evse'
+          ? 'evse'
+          : metaCat === 'hvac-heating' || metaCat === 'hvac-cooling' || metaCat === 'heat-pump'
+            ? metaCat
+            : metaCat === 'fixed' || metaCat === 'appliance' || metaCat === 'motor'
+              ? 'fixed'
+              : undefined
       appliances.push({
         name: (typeof d.name === 'string' && d.name) || kind,
         watts:
@@ -578,8 +625,14 @@ export function calculateSceneLoad(
                 : kind === 'vfd'
                   ? 12000
                   : 5000,
-        isMotor: d.isMotor === true || kind === 'motor-load' || kind === 'vfd',
-        category: kind === 'evse' ? 'evse' : undefined,
+        isMotor:
+          d.isMotor === true ||
+          kind === 'motor-load' ||
+          kind === 'vfd' ||
+          metaCat === 'motor' ||
+          metaCat === 'heat-pump' ||
+          metaCat === 'hvac-cooling',
+        category: explicitCategory,
       })
     }
   }

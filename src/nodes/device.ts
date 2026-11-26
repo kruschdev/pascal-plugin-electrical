@@ -7,6 +7,7 @@
 import {
   BaseNode,
   type FloorplanGeometry,
+  type FloorplanPoint,
   type GeometryContext,
   type NodeDefinition,
   type NodePort,
@@ -120,7 +121,7 @@ const DEVICE_COLORS: Record<ElectricalDeviceKind, { hex: string; num: number }> 
   'usb-duplex': { hex: '#38bdf8', num: 0x38bdf8 },
   'weatherproof-gfci': { hex: '#10b981', num: 0x10b981 },
   'floor-box': { hex: '#d4a63a', num: 0xd4a63a },
-  'smoke-co': { hex: '#f8fafc', num: 0xf8fafc },
+  'smoke-co': { hex: '#0f172a', num: 0x0f172a },
   'ceiling-fan': { hex: '#facc15', num: 0xfacc15 },
   'under-cabinet-led': { hex: '#fde047', num: 0xfde047 },
 }
@@ -157,6 +158,31 @@ export function buildElectricalDeviceFloorplan(
   ctx: GeometryContext,
 ): FloorplanGeometry {
   const [x, , zPos] = node.position
+  const cos = Math.cos(node.rotation)
+  const sin = Math.sin(node.rotation)
+  const pt = (lx: number, lz: number): FloorplanPoint => [
+    x + lx * cos + lz * sin,
+    zPos - lx * sin + lz * cos,
+  ]
+  const rectPts = (hw: number, hd: number): FloorplanPoint[] => [
+    pt(-hw, -hd),
+    pt(hw, -hd),
+    pt(hw, hd),
+    pt(-hw, hd),
+  ]
+  const rotLine = (
+    lx1: number,
+    lz1: number,
+    lx2: number,
+    lz2: number,
+    lineStroke: string,
+    strokeWidth: number,
+  ): FloorplanGeometry => {
+    const [x1, y1] = pt(lx1, lz1)
+    const [x2, y2] = pt(lx2, lz2)
+    return { kind: 'line', x1, y1, x2, y2, stroke: lineStroke, strokeWidth }
+  }
+
   const view = ctx.viewState
   const selected = (view?.selected || view?.highlighted) ?? false
   const baseColor = DEVICE_COLORS[node.deviceKind]?.hex ?? '#f59e0b'
@@ -165,15 +191,9 @@ export function buildElectricalDeviceFloorplan(
   const children: FloorplanGeometry[] = []
 
   if (node.deviceKind === 'junction-box') {
-    const h = 0.09
     children.push({
       kind: 'polygon',
-      points: [
-        [x - h, zPos - h],
-        [x + h, zPos - h],
-        [x + h, zPos + h],
-        [x - h, zPos + h],
-      ],
+      points: rectPts(0.09, 0.09),
       fill: '#e2e8f0',
       stroke,
       strokeWidth: 0.02,
@@ -187,36 +207,90 @@ export function buildElectricalDeviceFloorplan(
     node.deviceKind === 'spd' ||
     node.deviceKind === 'vfd'
   ) {
-    const hw = node.deviceKind === 'battery-ess' ? 0.36 : node.deviceKind === 'solar-inverter' || node.deviceKind === 'transfer-switch' ? 0.21 : 0.12
+    const hw =
+      node.deviceKind === 'battery-ess'
+        ? 0.36
+        : node.deviceKind === 'solar-inverter' || node.deviceKind === 'transfer-switch'
+          ? 0.21
+          : 0.12
     const hd = 0.09
     children.push(
       {
         kind: 'polygon',
-        points: [
-          [x - hw, zPos - hd],
-          [x + hw, zPos - hd],
-          [x + hw, zPos + hd],
-          [x - hw, zPos + hd],
-        ],
+        points: rectPts(hw, hd),
         fill: '#1e293b',
         stroke,
         strokeWidth: 0.02,
       },
-      { kind: 'line', x1: x - hw, y1: zPos - hd, x2: x + hw, y2: zPos + hd, stroke, strokeWidth: 0.014 },
+      rotLine(-hw, -hd, hw, hd, stroke, 0.014),
+    )
+  } else if (node.deviceKind === 'evse') {
+    // Wall-mounted Level 2 EVSE charger box + lightning bolt & side holster indicator
+    const hw = 0.12
+    const hd = 0.065
+    children.push(
+      {
+        kind: 'polygon',
+        points: rectPts(hw, hd),
+        fill: '#ecfeff',
+        stroke,
+        strokeWidth: 0.02,
+      },
+      {
+        kind: 'polyline',
+        points: [pt(0.02, -0.045), pt(-0.025, 0.005), pt(0.015, 0.005), pt(-0.02, 0.045)],
+        fill: 'none',
+        stroke,
+        strokeWidth: 0.016,
+      },
+      rotLine(hw, 0, hw + 0.04, 0, stroke, 0.02),
+    )
+  } else if (node.deviceKind === 'exit-sign') {
+    // Slim EXIT sign rectangle with red fill, directional arrow, and twin emergency flood heads
+    const hw = 0.16
+    const hd = 0.035
+    const [hlx, hlz] = pt(-hw - 0.025, 0.015)
+    const [hrx, hrz] = pt(hw + 0.025, 0.015)
+    children.push(
+      {
+        kind: 'polygon',
+        points: rectPts(hw, hd),
+        fill: '#dc2626',
+        fillOpacity: 0.85,
+        stroke,
+        strokeWidth: 0.018,
+      },
+      rotLine(-0.09, 0, 0.09, 0, '#ffffff', 0.014),
+      rotLine(0.04, -0.02, 0.09, 0, '#ffffff', 0.014),
+      rotLine(0.04, 0.02, 0.09, 0, '#ffffff', 0.014),
+      { kind: 'circle', cx: hlx, cy: hlz, r: 0.022, fill: '#ffffff', stroke, strokeWidth: 0.012 },
+      { kind: 'circle', cx: hrx, cy: hrz, r: 0.022, fill: '#ffffff', stroke, strokeWidth: 0.012 },
+    )
+  } else if (node.deviceKind === 'motor-load') {
+    // IEEE motor load symbol: circle with geometric 'M' & shaft/rotor terminal lines
+    children.push(
+      { kind: 'circle', cx: x, cy: zPos, r: 0.16, fill: '#fff7ed', stroke, strokeWidth: 0.022 },
+      rotLine(-0.16, 0, -0.22, 0, stroke, 0.018),
+      rotLine(0.16, 0, 0.22, 0, stroke, 0.018),
+      {
+        kind: 'polyline',
+        points: [
+          pt(-0.075, 0.065),
+          pt(-0.075, -0.065),
+          pt(0, 0.015),
+          pt(0.075, -0.065),
+          pt(0.075, 0.065),
+        ],
+        fill: 'none',
+        stroke,
+        strokeWidth: 0.018,
+      },
     )
   } else if (node.deviceKind === 'ceiling-fan') {
     children.push({ kind: 'circle', cx: x, cy: zPos, r: 0.16, fill: '#fef9c3', stroke, strokeWidth: 0.02 })
     for (let i = 0; i < 5; i++) {
       const a = (i * Math.PI * 2) / 5
-      children.push({
-        kind: 'line',
-        x1: x,
-        y1: zPos,
-        x2: x + Math.cos(a) * 0.45,
-        y2: zPos + Math.sin(a) * 0.45,
-        stroke,
-        strokeWidth: 0.018,
-      })
+      children.push(rotLine(0, 0, Math.cos(a) * 0.45, Math.sin(a) * 0.45, stroke, 0.018))
     }
   } else if (node.deviceKind === 'smoke-co') {
     children.push(
@@ -226,27 +300,16 @@ export function buildElectricalDeviceFloorplan(
   } else if (node.deviceKind === 'under-cabinet-led') {
     children.push({
       kind: 'polygon',
-      points: [
-        [x - 0.3, zPos - 0.045],
-        [x + 0.3, zPos - 0.045],
-        [x + 0.3, zPos + 0.045],
-        [x - 0.3, zPos + 0.045],
-      ],
+      points: rectPts(0.3, 0.045),
       fill: '#fef08a',
       stroke,
       strokeWidth: 0.016,
     })
   } else if (node.deviceKind === 'floor-box') {
-    const h = 0.085
     children.push(
       {
         kind: 'polygon',
-        points: [
-          [x - h, zPos - h],
-          [x + h, zPos - h],
-          [x + h, zPos + h],
-          [x - h, zPos + h],
-        ],
+        points: rectPts(0.085, 0.085),
         fill: '#fef3c7',
         stroke,
         strokeWidth: 0.02,
@@ -256,28 +319,20 @@ export function buildElectricalDeviceFloorplan(
   } else if (node.deviceKind === 'luminaire') {
     children.push(
       { kind: 'circle', cx: x, cy: zPos, r: 0.14, fill: '#fef9c3', stroke, strokeWidth: 0.02 },
-      { kind: 'line', x1: x - 0.14, y1: zPos, x2: x + 0.14, y2: zPos, stroke, strokeWidth: 0.015 },
-      { kind: 'line', x1: x, y1: zPos - 0.14, x2: x, y2: zPos + 0.14, stroke, strokeWidth: 0.015 },
+      rotLine(-0.14, 0, 0.14, 0, stroke, 0.015),
+      rotLine(0, -0.14, 0, 0.14, stroke, 0.015),
     )
   } else if (node.deviceKind === 'switch-1p' || node.deviceKind === 'switch-3way' || node.deviceKind === 'dimmer') {
     children.push(
       { kind: 'circle', cx: x, cy: zPos, r: 0.08, fill: '#f3e8ff', stroke, strokeWidth: 0.02 },
-      {
-        kind: 'line',
-        x1: x,
-        y1: zPos,
-        x2: x + 0.14,
-        y2: zPos - 0.14,
-        stroke,
-        strokeWidth: 0.02,
-      },
+      rotLine(0, 0, 0.14, -0.14, stroke, 0.02),
     )
   } else {
-    // Standard NEC duplex / GFCI / AFCI / dedicated receptacle symbol (circle + twin bars)
+    // Standard NEC duplex / GFCI / AFCI / dedicated receptacle symbol (circle + rotated twin bars)
     children.push(
       { kind: 'circle', cx: x, cy: zPos, r: 0.09, fill: '#ffffff', stroke, strokeWidth: 0.02 },
-      { kind: 'line', x1: x - 0.04, y1: zPos - 0.12, x2: x - 0.04, y2: zPos + 0.12, stroke, strokeWidth: 0.015 },
-      { kind: 'line', x1: x + 0.04, y1: zPos - 0.12, x2: x + 0.04, y2: zPos + 0.12, stroke, strokeWidth: 0.015 },
+      rotLine(-0.04, -0.12, -0.04, 0.12, stroke, 0.015),
+      rotLine(0.04, -0.12, 0.04, 0.12, stroke, 0.015),
     )
   }
 

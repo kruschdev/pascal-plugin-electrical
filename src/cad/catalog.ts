@@ -69,7 +69,7 @@ export type ElectricalCadEntry = {
 }
 
 export const ELECTRICAL_CAD_CATALOG: readonly ElectricalCadEntry[] = [
-  // ─── Panels, Breakers & Distribution Gear (7) ────────────────────────────
+  // ─── Panels, Breakers & Distribution Gear (12) ───────────────────────────
   {
     slug: 'panel-res-200a-closed',
     name: '200A Residential Load Center (Closed)',
@@ -89,7 +89,7 @@ export const ELECTRICAL_CAD_CATALOG: readonly ElectricalCadEntry[] = [
   },
   {
     slug: 'panel-res-200a-open',
-    name: '200A Load Center (Cover Off — Wired)',
+    name: '200A Load Center (Cover Off, Wired)',
     category: 'panels-gear',
     necRef: 'NEC 408.36 / 312.6',
     description: 'Cover-off residential 200A panelboard showing copper busbars, neutral/ground bars, service feeders, 1P/2P breakers, and every individual branch wire landed on its lug.',
@@ -392,7 +392,7 @@ export const ELECTRICAL_CAD_CATALOG: readonly ElectricalCadEntry[] = [
     build: () => buildWeatherproofBellBoxCad(),
   },
 
-  // ─── Wiring Devices & Heavy Loads (6) ────────────────────────────────────
+  // ─── Wiring Devices & Heavy Loads (11) ───────────────────────────────────
   {
     slug: 'device-duplex-20a',
     name: '20A Duplex Receptacle (NEMA 5-20R)',
@@ -507,7 +507,7 @@ export const ELECTRICAL_CAD_CATALOG: readonly ElectricalCadEntry[] = [
     build: () => buildSmokeCoAlarmCad(),
   },
 
-  // ─── Residential & Commercial Light Fixtures (7) ─────────────────────────
+  // ─── Residential & Commercial Light Fixtures (9) ─────────────────────────
   {
     slug: 'fixture-can-6in-recessed',
     name: '6" IC Recessed Can Downlight',

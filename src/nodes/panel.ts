@@ -269,7 +269,9 @@ export const electricalPanelRenderDefinition: NodeDefinition<typeof ElectricalPa
   geometry: buildElectricalPanelGeometry,
   geometryKey: (n) =>
     JSON.stringify([
+      n.occupancy,
       n.voltageSystem,
+      n.mainType,
       n.nemaRating,
       n.spaces,
       n.width,

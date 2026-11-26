@@ -24,7 +24,7 @@ Ready-to-share video, high-resolution screenshots, 3D CAD contact sheet, OpenGra
 - **Host Compatibility**: Pascal Editor Plugin API v1 (`E-014`, `E-016`, `E-017`), zero upstream core changes required
 - **3D CAD Library**: 50 exported binary `.glb` models + 50 studio thumbnails across 6 categories (Panels & Gear, Solar PV / Battery ESS / Backup, NEC 314.16 Boxes, Smart Devices & Motors, Light Fixtures, Conduit / Cable Tray / Grounding)
 - **Live Editor Equipment**: 25 placeable `electrical:device` kinds with automatic wall/ceiling/floor snapping, room-aware auto-wiring, 2D floorplan symbols, NEC compliance audit, and 2026 supply-house BOM pricing
-- **Verification**: 69/69 deterministic NEC, Bones schematic ingestion (`bones:framing` / `bones:device` / `bones:service`), hybrid attic/crawl-space routing, Smoke/CO life-safety, multi-level audit, CAD, and boundary tests (`1,350` assertions), `tsc --noEmit` clean, 5/5 entrypoint boundary gates, compiled Node 22 ESM + Bun `dist/` build
+- **Verification**: 82/82 deterministic NEC, Bones schematic ingestion (`bones:framing` / `bones:device` / `bones:service`), cross-trade `plumbing:*` / `hvac:*` / `structural:*` coordination, hybrid attic/crawl-space routing, Smoke/CO life-safety, multi-level audit, CAD, and boundary tests (`1,455` assertions), `tsc --noEmit` clean, 5/5 entrypoint boundary gates, compiled Node 22 ESM + Bun `dist/` build
 
 ## Ready-to-Post Copy
 
@@ -47,7 +47,7 @@ I built a standalone, MIT-licensed **Residential and Commercial NEC Electrical**
 **What it ships**
 
 - **One-click NEC auto-populate and smart incremental auto-wiring**: Scans walls, T-junctions, doors, bathtub/shower exclusion zones, and rooms to place outlets, GFCIs, switches, luminaires, hardwired 120V `14/3` interconnected Smoke/CO alarms on a shared hallway/living-area pilot lighting circuit (`IRC R314/R315`, `NFPA 72`), and a balanced panel. Adding a new outlet later extends that room's run, auto-upsizes spliced anchor boxes per `NEC 314.16`, and checks `NEC 210.19(A)` voltage drop.
-- **Trade-priority 3D routing (Structural -> Plumbing -> HVAC -> Electrical)**: Keeps concealed cables strictly on wall centerlines (hybrid wall-Manhattan plus attic/crawl-space Euclidean pulls enforcing `NEC 334.23`, `334.15(C)`, and `334.12(B)(4)`), yields around higher-priority plumbing and HVAC obstacles, tracks cumulative bends against the `NEC 358.26` 360-degree pull-point limit, and flags `NEC 110.26(E)` dedicated electrical space violations above panels or transformers.
+- **Trade-priority 3D routing (Structural -> Plumbing -> HVAC -> Electrical)**: Keeps concealed cables strictly on wall centerlines (hybrid wall-Manhattan plus attic/crawl-space Euclidean pulls emitting `NEC 334.23` and `334.15(C)` advisory drafting notes while enforcing the `NEC 334.12(B)(4)` wet crawl-space ban in both routing and audit), yields around higher-priority plumbing and HVAC obstacles, tracks cumulative bends against the `NEC 358.26` 360-degree pull-point limit, and flags `NEC 110.26(E)` dedicated electrical space violations above panels or transformers.
 - **Live 3D panel interior (`Cover Off`, `Panel Cover On`, `Cover Closed`) and schedules**: Renders copper busbars, AFCI/GFCI breakers, neutral/ground bars, and 90-degree-bent phase conductors inside Pascal's split-pane view, paired with Odd/Even `L1/L2` and `A/B/C` 3-phase panelboard schedules, NEC Article 220 Standard / Optional (`220.82`) / Commercial 3-phase load calcs, and a priced BOM calculator (labor, markup, tax, CSV).
 - **25 live placeable equipment kinds and 50 clean-room MIT `.glb` CAD models**: Covers residential load centers, 400A 277/480V 3-phase panelboards, transformers, VFDs, Type 2 SPDs, solar PV inverters (`NEC 690`), 13.5 kWh wall battery ESS (`NEC 706`), 200A ATS (`NEC 702`), smart dimmers, ceiling fans, cable tray, and grounding hardware.
 - **Strict boundary entrypoints and 8 pure Zod agent tools**: `.` (full editor integration), `./render` (editor-free viewer manifest), `./cad` (Three.js-only builders), `./nec` (framework-free TypeScript), `./agent-tools`, and `./agent-operations`.
@@ -74,7 +74,7 @@ registerEditorHostPanel(electricalHostPanel)
 registerEditorHostView(electricalScheduleView)
 ```
 
-Or clone and run the full deterministic check suite locally (`69/69` tests, `1,350` assertions, typecheck, render-boundary gate, and compiled `dist/` build):
+Or clone and run the full deterministic check suite locally (`82/82` tests, `1,455` assertions, typecheck, render-boundary gate, and compiled `dist/` build):
 
 ```bash
 git clone https://github.com/kruschdev/pascal-plugin-electrical.git
@@ -115,7 +115,7 @@ I recently built and published `@kruschdev/pascal-plugin-electrical`, a standalo
 A few technical details that may be useful to OpenBIM / AECO builders here:
 
 - **Zero-dependency engineering core (`./nec`)**: Pure TypeScript implementations of NEC Article 220 load calculations (Residential Standard, Optional `220.82`, and Commercial 3-phase), NEC 310.16 ampacity, NEC 314.16 box fill with automatic spliced anchor upsizing, Chapter 9 conduit fill, NEC 210.19 voltage drop, NEC 358.26 cumulative 360-degree bend counting, and `NEC 110.26(E)` dedicated electrical space auditing.
-- **Trade-priority 3D MEP routing**: Yields automatically around Structural, Plumbing, and HVAC elements, using wall-centerline Manhattan routing inside framed walls and straight Euclidean pulls across accessible attics and dry crawl spaces (`NEC 334.23`, `334.15(C)`, `334.12(B)(4)`).
+- **Trade-priority 3D MEP routing**: Yields automatically around Structural, Plumbing, and HVAC elements, using wall-centerline Manhattan routing inside framed walls and straight Euclidean pulls across accessible attics and dry crawl spaces (emitting `NEC 334.23` and `334.15(C)` advisory drafting notes while enforcing the `NEC 334.12(B)(4)` wet crawl-space ban in routing and audit).
 - **50 clean-room MIT `.glb` electrical CAD models (`./cad`)**: Generated purely in Three.js with no third-party meshes, covering 200A load centers (closed, cover-off wired interior, cover-on), 400A 277/480V 3-phase panelboards, transformers, VFDs, Type 2 SPDs, solar PV inverters, 13.5 kWh wall battery ESS, 200A ATS, boxes, smart wiring devices, luminaires, cable tray, and grounding hardware.
 - **8 pure Zod agent tools (`./agent-tools`)**: Designed so MCP servers or headless workflows can place equipment, route circuits, audit NEC violations, and export priced BOMs without pulling in React or Three.js.
 

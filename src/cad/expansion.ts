@@ -14,6 +14,7 @@ import {
   Mesh,
   TorusGeometry,
 } from 'three'
+import type { BoxType } from '../nec/tables'
 import { buildElectricalBoxCad, buildWeatherproofBellBoxCad } from './boxes'
 import { type CadMaterialPool, createCadMaterialPool } from './materials'
 
@@ -144,38 +145,42 @@ export function buildCommercialVfdCad(matsInput?: CadMaterialPool): Group {
  * 3. Smart Decora Slide Dimmer Switch (NEC 404.2) —
  * 1-gang PVC rough-in box + Decora wallplate + flat rocker paddle + side dimming slider & 5 LED level dots.
  */
-export function buildSmartDimmerCad(matsInput?: CadMaterialPool): Group {
+export function buildSmartDimmerCad(
+  matsInput?: CadMaterialPool,
+  boxType: BoxType = 'single-gang-standard',
+): Group {
   const mats = matsInput ?? createCadMaterialPool()
   const group = new Group()
   group.name = 'cad-device-dimmer-smart'
 
-  const box = buildElectricalBoxCad('single-gang-standard', { mats })
-  box.position.set(0, 0, -0.038)
+  const isSteelBox = boxType.startsWith('4-')
+  const box = buildElectricalBoxCad(boxType, { includeMudRing: isSteelBox, mats })
   group.add(box)
+  const zFace = isSteelBox ? 0.013 : 0
 
-  // Beveled white Decora wallplate
+  // Beveled white Decora wallplate (seated flush against box/mud-ring face at zFace)
   const plate = new Mesh(new BoxGeometry(0.074, 0.118, 0.007), mats.whiteNylon)
-  plate.position.set(0, 0, 0.004)
+  plate.position.set(0, 0, zFace + 0.0035)
   plate.castShadow = true
   // Decora rectangular aperture bezel
   const frame = new Mesh(new BoxGeometry(0.036, 0.068, 0.008), mats.whiteNylon)
-  frame.position.set(0, 0, 0.009)
+  frame.position.set(0, 0, zFace + 0.009)
   // Wide flat dimmer rocker paddle (left 75% of Decora opening)
   const paddle = new Mesh(new BoxGeometry(0.022, 0.06, 0.009), mats.whiteNylon)
-  paddle.position.set(-0.004, 0, 0.015)
+  paddle.position.set(-0.004, 0, zFace + 0.015)
   paddle.rotation.x = 0.06
   // Vertical side dimming slider track + thumb slider bar
   const track = new Mesh(new BoxGeometry(0.005, 0.054, 0.006), mats.darkSteel)
-  track.position.set(0.012, 0, 0.013)
+  track.position.set(0.012, 0, zFace + 0.013)
   const sliderTab = new Mesh(new BoxGeometry(0.009, 0.01, 0.012), mats.stainlessSteel)
-  sliderTab.position.set(0.012, 0.012, 0.018)
+  sliderTab.position.set(0.012, 0.012, zFace + 0.018)
   group.add(plate, frame, paddle, track, sliderTab)
 
   // 5 vertical cyan LED brightness-level indicators on left edge of paddle
   const dotGeo = new BoxGeometry(0.003, 0.003, 0.003)
   for (let i = 0; i < 5; i++) {
     const dot = new Mesh(dotGeo, i < 4 ? mats.accentCyan : mats.darkSteel)
-    dot.position.set(-0.017, -0.02 + i * 0.01, 0.015)
+    dot.position.set(-0.017, -0.02 + i * 0.01, zFace + 0.015)
     group.add(dot)
   }
 
@@ -186,47 +191,51 @@ export function buildSmartDimmerCad(matsInput?: CadMaterialPool): Group {
  * 4. 20A Tamper-Resistant USB-A / USB-C Duplex Receptacle (NEC 406.12) —
  * 1-gang box + Decora wallplate + dual 20A T-slot outlets + center metallic USB-A & USB-C ports.
  */
-export function buildUsbDuplexReceptacleCad(matsInput?: CadMaterialPool): Group {
+export function buildUsbDuplexReceptacleCad(
+  matsInput?: CadMaterialPool,
+  boxType: BoxType = 'single-gang-deep',
+): Group {
   const mats = matsInput ?? createCadMaterialPool()
   const group = new Group()
   group.name = 'cad-device-usb-duplex-20a'
 
-  const box = buildElectricalBoxCad('single-gang-deep', { mats })
-  box.position.set(0, 0, -0.044)
+  const isSteelBox = boxType.startsWith('4-')
+  const box = buildElectricalBoxCad(boxType, { includeMudRing: isSteelBox, mats })
   group.add(box)
+  const zFace = isSteelBox ? 0.013 : 0
 
   const plate = new Mesh(new BoxGeometry(0.074, 0.118, 0.007), mats.whiteNylon)
-  plate.position.set(0, 0, 0.004)
+  plate.position.set(0, 0, zFace + 0.0035)
   const face = new Mesh(new BoxGeometry(0.036, 0.072, 0.009), mats.whiteNylon)
-  face.position.set(0, 0, 0.01)
+  face.position.set(0, 0, zFace + 0.01)
   group.add(plate, face)
 
   // Top & Bottom 20A T-slot outlets
   for (const oy of [0.022, -0.022]) {
     const hot = new Mesh(new BoxGeometry(0.0024, 0.008, 0.003), mats.blackPolymer)
-    hot.position.set(0.008, oy + 0.002, 0.015)
+    hot.position.set(0.008, oy + 0.002, zFace + 0.015)
     const neutV = new Mesh(new BoxGeometry(0.0024, 0.0095, 0.003), mats.blackPolymer)
-    neutV.position.set(-0.008, oy + 0.002, 0.015)
+    neutV.position.set(-0.008, oy + 0.002, zFace + 0.015)
     const neutH = new Mesh(new BoxGeometry(0.0055, 0.0022, 0.003), mats.blackPolymer)
-    neutH.position.set(-0.006, oy + 0.002, 0.015)
+    neutH.position.set(-0.006, oy + 0.002, zFace + 0.015)
     const gnd = new Mesh(new CylinderGeometry(0.0026, 0.0026, 0.003, 10), mats.blackPolymer)
     gnd.rotation.x = Math.PI / 2
-    gnd.position.set(0, oy - 0.006, 0.015)
+    gnd.position.set(0, oy - 0.006, zFace + 0.015)
     group.add(hot, neutV, neutH, gnd)
   }
 
   // Center USB-A (rectangular metallic port) & USB-C (slim oval metallic port) + charging LED
   const usbAShell = new Mesh(new BoxGeometry(0.013, 0.006, 0.004), mats.stainlessSteel)
-  usbAShell.position.set(-0.006, 0.002, 0.015)
+  usbAShell.position.set(-0.006, 0.002, zFace + 0.015)
   const usbATongue = new Mesh(new BoxGeometry(0.01, 0.0022, 0.0045), mats.accentBlue)
-  usbATongue.position.set(-0.006, 0.0025, 0.0155)
+  usbATongue.position.set(-0.006, 0.0025, zFace + 0.0155)
   const usbCShell = new Mesh(new BoxGeometry(0.0095, 0.004, 0.004), mats.stainlessSteel)
-  usbCShell.position.set(0.008, 0.002, 0.015)
+  usbCShell.position.set(0.008, 0.002, zFace + 0.015)
   const usbCInner = new Mesh(new BoxGeometry(0.007, 0.0018, 0.0045), mats.blackPolymer)
-  usbCInner.position.set(0.008, 0.002, 0.0155)
+  usbCInner.position.set(0.008, 0.002, zFace + 0.0155)
   const chgLed = new Mesh(new CylinderGeometry(0.0018, 0.0018, 0.003, 8), mats.ledGreen)
   chgLed.rotation.x = Math.PI / 2
-  chgLed.position.set(0, -0.0045, 0.015)
+  chgLed.position.set(0, -0.0045, zFace + 0.015)
   group.add(usbAShell, usbATongue, usbCShell, usbCInner, chgLed)
 
   return group
@@ -241,8 +250,9 @@ export function buildWeatherproofInUseCoverCad(matsInput?: CadMaterialPool): Gro
   const group = new Group()
   group.name = 'cad-device-weatherproof-inuse'
 
+  // Seat bell box gasket (front at local z = +0.003) flush against collar back face (z = +0.001)
   const bellBox = buildWeatherproofBellBoxCad(mats)
-  bellBox.position.set(0, 0, -0.028)
+  bellBox.position.set(0, 0, -0.002)
   group.add(bellBox)
 
   // Neoprene gasket + gray mounting collar

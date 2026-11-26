@@ -45,37 +45,37 @@ export const electricalInspectorExtensions: InspectorExtension[] = [
   },
 ]
 
-export const electricalPanelDefinition = {
+export const electricalPanelDefinition: AnyNodeDefinition = {
   ...electricalPanelRenderDefinition,
   snapProfile: 'item' as const,
   parametrics: electricalPanelParametrics,
-}
+} as unknown as AnyNodeDefinition
 
-export const electricalDeviceDefinition = {
+export const electricalDeviceDefinition: AnyNodeDefinition = {
   ...electricalDeviceRenderDefinition,
   snapProfile: 'item' as const,
   parametrics: electricalDeviceParametrics,
-}
+} as unknown as AnyNodeDefinition
 
-export const electricalConduitRunDefinition = {
+export const electricalConduitRunDefinition: AnyNodeDefinition = {
   ...electricalConduitRunRenderDefinition,
   snapProfile: 'structural' as const,
   parametrics: electricalConduitRunParametrics,
-}
+} as unknown as AnyNodeDefinition
 
-export const electricalTransformerDefinition = {
+export const electricalTransformerDefinition: AnyNodeDefinition = {
   ...electricalTransformerRenderDefinition,
   snapProfile: 'item' as const,
   parametrics: electricalTransformerParametrics,
-}
+} as unknown as AnyNodeDefinition
 
 export const electricalPlugin: Plugin = {
   ...electricalRenderPlugin,
   nodes: [
-    electricalPanelDefinition as unknown as AnyNodeDefinition,
-    electricalDeviceDefinition as unknown as AnyNodeDefinition,
-    electricalConduitRunDefinition as unknown as AnyNodeDefinition,
-    electricalTransformerDefinition as unknown as AnyNodeDefinition,
+    electricalPanelDefinition,
+    electricalDeviceDefinition,
+    electricalConduitRunDefinition,
+    electricalTransformerDefinition,
   ],
   inspectorExtensions: electricalInspectorExtensions,
 }

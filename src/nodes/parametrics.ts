@@ -36,8 +36,8 @@ export const electricalPanelParametrics: ParametricDescriptor<ElectricalPanelNod
     {
       label: 'Ratings',
       fields: [
-        { key: 'busRatingAmps', kind: 'number', unit: 'A', min: 60, max: 4000, step: 25 },
-        { key: 'mainBreakerAmps', kind: 'number', unit: 'A', min: 60, max: 4000, step: 25 },
+        { key: 'busRatingAmps', kind: 'number', unit: 'A', min: 50, max: 4000, step: 5 },
+        { key: 'mainBreakerAmps', kind: 'number', unit: 'A', min: 50, max: 4000, step: 5 },
         { key: 'spaces', kind: 'number', min: 4, max: 84, step: 2 },
         { key: 'solarBackfeedAmps', kind: 'number', unit: 'A', min: 0, max: 400, step: 5 },
       ],
@@ -47,6 +47,7 @@ export const electricalPanelParametrics: ParametricDescriptor<ElectricalPanelNod
       fields: [
         { key: 'coverRemoved', kind: 'boolean', label: 'Expose Interior Busbars' },
         { key: 'showClearanceZone', kind: 'boolean' },
+        { key: 'condition110_26', kind: 'number', label: 'NEC 110.26 Condition', min: 1, max: 3, step: 1 },
         { key: 'nemaRating', kind: 'enum', options: ['NEMA-1', 'NEMA-3R', 'NEMA-4X'] },
       ],
     },
@@ -70,9 +71,11 @@ export const electricalDeviceParametrics: ParametricDescriptor<ElectricalDeviceN
           display: 'segmented',
         },
         { key: 'circuitNumber', kind: 'number', min: 1, max: 84, step: 1 },
+        { key: 'poles', kind: 'number', min: 1, max: 3, step: 1 },
         { key: 'breakerAmps', kind: 'number', unit: 'A', min: 15, max: 400, step: 5 },
         { key: 'loadVa', kind: 'number', unit: 'VA', min: 0, max: 200000, step: 60 },
         { key: 'continuous', kind: 'boolean' },
+        { key: 'isMotor', kind: 'boolean', label: 'Motor Load (NEC 430)' },
         { key: 'gfciProtected', kind: 'boolean' },
         { key: 'afciProtected', kind: 'boolean' },
       ],
@@ -137,6 +140,12 @@ export const electricalConduitRunParametrics: ParametricDescriptor<ElectricalCon
           display: 'segmented',
         },
         {
+          key: 'insulationRating',
+          kind: 'enum',
+          options: ['60C', '75C', '90C'],
+          display: 'segmented',
+        },
+        {
           key: 'wireGauge',
           kind: 'enum',
           options: [...ElectricalConduitRunNode.shape.wireGauge.unwrap().options],
@@ -151,6 +160,7 @@ export const electricalConduitRunParametrics: ParametricDescriptor<ElectricalCon
         { key: 'circuitNumber', kind: 'number', min: 1, max: 84, step: 1 },
         { key: 'loadAmps', kind: 'number', unit: 'A', min: 0, max: 2000, step: 1 },
         { key: 'voltage', kind: 'number', unit: 'V', min: 12, max: 600, step: 1 },
+        { key: 'phases', kind: 'number', min: 1, max: 3, step: 2 },
         { key: 'ambientTempC', kind: 'number', unit: '°C', min: -20, max: 80, step: 5 },
         { key: 'rooftopExposed', kind: 'boolean' },
         { key: 'inPlenum', kind: 'boolean' },

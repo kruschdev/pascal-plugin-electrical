@@ -42,6 +42,7 @@ import {
   type BoxType,
   type ConduitTradeSize,
   type ConductorMaterial,
+  INCHES_TO_METERS,
   type InsulationRating,
   METERS_TO_FEET,
   NEC_220_RESIDENTIAL,
@@ -271,17 +272,84 @@ function extractObstructionBox(node: SceneNodeLike): Aabb3 | null {
   const pos = toVec3(node.position)
   if (!pos) return null
   const [x, y, z] = pos
+
+  if (node.type === 'structural:column') {
+    const w = (typeof node.widthIn === 'number' ? node.widthIn : 5.5) * INCHES_TO_METERS
+    const d = (typeof node.depthIn === 'number' ? node.depthIn : 5.5) * INCHES_TO_METERS
+    const h = typeof node.heightM === 'number' ? node.heightM : 2.8
+    return {
+      min: [x - w / 2, y, z - d / 2],
+      max: [x + w / 2, y + h, z + d / 2],
+    }
+  }
+
   const asset =
     node.asset && typeof node.asset === 'object'
       ? (node.asset as Record<string, unknown>)
       : null
-  const dims: Vec3 = toVec3(node.dimensions) ??
-    toVec3(asset?.dimensions) ??
-    toVec3(node.size) ?? [
-      typeof node.width === 'number' ? node.width : 0.6,
-      typeof node.height === 'number' ? node.height : 0.9,
-      typeof node.depth === 'number' ? node.depth : 0.6,
-    ]
+  const explicitDims = toVec3(node.dimensions) ?? toVec3(asset?.dimensions) ?? toVec3(node.size)
+
+  if (node.type === 'plumbing:equipment' && !explicitDims) {
+    const eqKind = typeof node.equipmentKind === 'string' ? node.equipmentKind : ''
+    let halfW = typeof node.width === 'number' ? node.width / 2 : 0.3
+    let halfD = typeof node.depth === 'number' ? node.depth / 2 : halfW
+    let minY = y
+    let maxY = y + (typeof node.height === 'number' ? node.height : 1.55)
+    if (typeof node.width !== 'number' && typeof node.height !== 'number' && typeof node.depth !== 'number') {
+      if (eqKind === 'expansion-tank') {
+        halfW = 0.12
+        halfD = 0.12
+        minY = y - 0.15
+        maxY = y + 0.25
+      } else if (eqKind === 'water-heater-tankless-gas') {
+        halfW = 0.22
+        halfD = 0.22
+        minY = y + 0.9
+        maxY = y + 1.95
+      } else if (
+        eqKind === 'recirc-pump' ||
+        eqKind === 'main-shutoff-prv' ||
+        eqKind === 'backwater-valve' ||
+        eqKind === 'gas-meter'
+      ) {
+        halfW = 0.16
+        halfD = 0.16
+        minY = y
+        maxY = y + 0.45
+      } else if (eqKind === 'sump-pump' || eqKind === 'sewage-ejector') {
+        halfW = 0.24
+        halfD = 0.24
+        minY = y
+        maxY = y + 0.55
+      } else if (eqKind === 'water-softener' || eqKind === 'pressure-tank') {
+        halfW = 0.24
+        halfD = 0.24
+        minY = y
+        maxY = y + 1.35
+      }
+    }
+    return {
+      min: [x - halfW, minY, z - halfD],
+      max: [x + halfW, maxY, z + halfD],
+    }
+  }
+
+  if ((node.type === 'hvac:equipment' || node.type === 'hvac-equipment') && !explicitDims) {
+    const w = typeof node.width === 'number' ? node.width : 0.6
+    const d = typeof node.depth === 'number' ? node.depth : 0.7
+    const h = typeof node.height === 'number' ? node.height : 1.1
+    const halfSpan = Math.max(w, d) / 2
+    return {
+      min: [x - halfSpan, y, z - halfSpan],
+      max: [x + halfSpan, y + h, z + halfSpan],
+    }
+  }
+
+  const dims: Vec3 = explicitDims ?? [
+    typeof node.width === 'number' ? node.width : 0.6,
+    typeof node.height === 'number' ? node.height : 0.9,
+    typeof node.depth === 'number' ? node.depth : 0.6,
+  ]
   const hw = dims[0]! / 2
   const hd = dims[2]! / 2
   return {
@@ -294,10 +362,18 @@ const WET_ROOM_CATEGORIES = new Set([
   'kitchen',
   'bathroom',
   'bath',
+  'powder',
+  'washroom',
   'laundry',
+  'mudroom',
   'garage',
   'outdoor',
   'patio',
+  'deck',
+  'porch',
+  'balcony',
+  'exterior',
+  'yard',
   'basement',
   'restroom',
   'rooftop',
@@ -326,6 +402,18 @@ const OUTDOOR_PATTERN = /outdoor|patio|deck|porch|balcony|rooftop|exterior|yard/
 const TUB_SHOWER_FIXTURE_PATTERN = /bath.?tub|\btub\b|shower/i
 const STOVE_FIXTURE_PATTERN = /\bstove\b|\brange\b|cooktop|oven/i
 const SINK_FIXTURE_PATTERN = /\bsink\b|lavatory|basin/i
+
+function zoneDescriptorOf(zone: SceneNodeLike | null | undefined): string {
+  if (!zone) return ''
+  const parts: string[] = []
+  if (typeof zone.category === 'string' && zone.category.trim()) {
+    parts.push(zone.category.trim())
+  }
+  if (typeof zone.name === 'string' && zone.name.trim()) {
+    parts.push(zone.name.trim())
+  }
+  return parts.join(' ').toLowerCase()
+}
 
 function fixtureTextOf(node: SceneNodeLike): string {
   const asset =
@@ -445,9 +533,13 @@ export function auditSceneElectrical(
       if (!belongsToLevel(nodes, other, equipLevelId)) continue
       if (
         other.type !== 'item' &&
+        other.type !== 'procedural-item' &&
         other.type !== 'cabinet' &&
         other.type !== 'hvac-equipment' &&
+        other.type !== 'hvac:equipment' &&
+        other.type !== 'plumbing:equipment' &&
         other.type !== 'column' &&
+        other.type !== 'structural:column' &&
         other.type !== 'electrical:transformer'
       ) {
         continue
@@ -508,12 +600,7 @@ export function auditSceneElectrical(
 
       const panelLevelId = resolveNodeLevelId(nodes, panel)
       const pZone = getZoneAt(nodes, pPos[0], pPos[2], panelLevelId)
-      const pZoneCat =
-        typeof pZone?.category === 'string'
-          ? pZone.category.toLowerCase()
-          : typeof pZone?.name === 'string'
-            ? pZone.name.toLowerCase()
-            : ''
+      const pZoneCat = zoneDescriptorOf(pZone)
       if (pZoneCat && BATHROOM_PATTERN.test(pZoneCat)) {
         push({
           severity: 'error',
@@ -623,7 +710,21 @@ export function auditSceneElectrical(
       })
     }
 
-    const solarBackfeed = typeof panel.solarBackfeedAmps === 'number' ? panel.solarBackfeedAmps : 0
+    const explicitSolarBackfeed =
+      typeof panel.solarBackfeedAmps === 'number' && panel.solarBackfeedAmps > 0
+        ? panel.solarBackfeedAmps
+        : 0
+    const inferredSolarBackfeed =
+      explicitSolarBackfeed > 0
+        ? 0
+        : devices
+            .filter((d) => d.panelId === panel.id && d.deviceKind === 'solar-inverter')
+            .reduce(
+              (sum, d) =>
+                sum + (typeof d.breakerAmps === 'number' && d.breakerAmps > 0 ? d.breakerAmps : 40),
+              0,
+            )
+    const solarBackfeed = explicitSolarBackfeed > 0 ? explicitSolarBackfeed : inferredSolarBackfeed
     if (solarBackfeed > 0) {
       const maxBackfeed = round2(
         schedule.busRatingAmps * NEC_220_RESIDENTIAL.solarBusbarRuleFactor - schedule.mainBreakerAmps,
@@ -649,14 +750,9 @@ export function auditSceneElectrical(
     if (txPos) {
       const txLevelId = resolveNodeLevelId(nodes, tx)
       const txZone = getZoneAt(nodes, txPos[0], txPos[2], txLevelId)
-      const txZoneCat =
-        typeof txZone?.category === 'string'
-          ? txZone.category.toLowerCase()
-          : typeof txZone?.name === 'string'
-            ? txZone.name.toLowerCase()
-            : ''
+      const txZoneCat = zoneDescriptorOf(txZone)
       const txNema = typeof tx.nemaRating === 'string' ? tx.nemaRating : 'NEMA-2'
-      if (txZoneCat && OUTDOOR_PATTERN.test(txZoneCat) && txNema !== 'NEMA-3R') {
+      if (txZoneCat && OUTDOOR_PATTERN.test(txZoneCat) && !['NEMA-3R', 'NEMA-4', 'NEMA-4X'].includes(txNema)) {
         push({
           severity: 'error',
           codeRef: 'NEC 312.2 / 450.22',
@@ -718,12 +814,7 @@ export function auditSceneElectrical(
     if (devPos) {
       const [x, , z] = devPos
       const zone = getZoneAt(nodes, x, z, devLevelId)
-      const zoneCat =
-        typeof zone?.category === 'string'
-          ? zone.category.toLowerCase()
-          : typeof zone?.name === 'string'
-            ? zone.name.toLowerCase()
-            : ''
+      const zoneCat = zoneDescriptorOf(zone)
       const isReceptacle =
         devKind === 'duplex' ||
         devKind === 'gfci' ||
@@ -844,7 +935,9 @@ export function auditSceneElectrical(
         }
 
         if (occupancy === 'residential') {
-          const isHabitable = Array.from(HABITABLE_AFCI_CATEGORIES).some((h) => zoneCat.includes(h))
+          const isHabitable =
+            !BATHROOM_PATTERN.test(zoneCat) &&
+            Array.from(HABITABLE_AFCI_CATEGORIES).some((h) => zoneCat.includes(h))
           const devPoles = typeof dev.poles === 'number' ? dev.poles : 1
           const devAmps = typeof dev.breakerAmps === 'number' ? dev.breakerAmps : 15
           // NEC 210.12(A): Dwelling AFCI applies only to 120V, single-phase, 15A and 20A branch circuits
@@ -880,20 +973,25 @@ export function auditSceneElectrical(
     if (!pos) continue
     const devLevelId = resolveNodeLevelId(nodes, dev)
     const zone = getZoneAt(nodes, pos[0], pos[2], devLevelId)
-    const zCat =
-      typeof zone?.category === 'string'
-        ? zone.category.toLowerCase()
-        : typeof zone?.name === 'string'
-          ? zone.name.toLowerCase()
-          : ''
+    const zCat = zoneDescriptorOf(zone)
     if (!zCat) continue
     const key = `${dev.panelId}:${dev.circuitNumber}`
     const bucket = circuitZones.get(key) ?? { bath: [], kitchen: [], general: [], ckt: dev.circuitNumber }
     const isRecept =
-      dev.deviceKind === 'duplex' || dev.deviceKind === 'gfci' || dev.deviceKind === 'afci'
+      dev.deviceKind === 'duplex' ||
+      dev.deviceKind === 'gfci' ||
+      dev.deviceKind === 'afci' ||
+      dev.deviceKind === 'usb-duplex' ||
+      dev.deviceKind === 'floor-box'
     if (BATHROOM_PATTERN.test(zCat) && isRecept) bucket.bath.push(dev.id)
     else if (zCat.includes('kitchen') && isRecept) bucket.kitchen.push(dev.id)
-    else if (/bed|living|hall|office|study|den|family/.test(zCat)) bucket.general.push(dev.id)
+    else if (
+      !BATHROOM_PATTERN.test(zCat) &&
+      !zCat.includes('kitchen') &&
+      /bed|living|hall|office|study|den|family/.test(zCat)
+    ) {
+      bucket.general.push(dev.id)
+    }
     circuitZones.set(key, bucket)
   }
   for (const bucket of circuitZones.values()) {
@@ -1131,7 +1229,10 @@ export function auditSceneElectrical(
 
     // 3b. NEC 358.26 / 344.26 / 352.26 max 360° bends between pull points (raceways)
     const { totalBendDegrees } = countPathBendDegrees(path)
-    if (racewayType !== 'nm-b' && totalBendDegrees > 360) {
+    if (
+      (racewayType === 'emt' || racewayType === 'pvc-40' || racewayType === 'rmc') &&
+      totalBendDegrees > 360
+    ) {
       push({
         severity: 'error',
         codeRef: 'NEC 358.26',

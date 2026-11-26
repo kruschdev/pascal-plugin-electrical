@@ -180,6 +180,14 @@ export default function PanelInteriorView({
       renderFrame()
     }
 
+    const onPointerCancel = (e: PointerEvent) => {
+      orbitRef.current.dragging = false
+      orbitRef.current.moved = false
+      if (renderer.domElement.hasPointerCapture(e.pointerId)) {
+        renderer.domElement.releasePointerCapture(e.pointerId)
+      }
+    }
+
     const onPointerUp = (e: PointerEvent) => {
       const wasClick = !orbitRef.current.moved
       orbitRef.current.dragging = false
@@ -189,14 +197,20 @@ export default function PanelInteriorView({
       if (!wasClick) return
 
       const rect = renderer.domElement.getBoundingClientRect()
+      if (rect.width <= 0 || rect.height <= 0) return
       pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
       pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
       raycaster.setFromCamera(pointer, camera)
       const hits = raycaster.intersectObjects(holder.children, true)
-      const hitWithMeta = hits.find((h) => h.object.userData && (h.object.userData as PanelWireMetadata).kind)
-      if (hitWithMeta) {
-        const meta = hitWithMeta.object.userData as PanelWireMetadata
-        setPickedMeta(meta)
+      const firstOpaqueHit = hits.find((h) => {
+        const mat = (h.object as { material?: Material | Material[] }).material
+        if (!mat) return true
+        const mats = Array.isArray(mat) ? mat : [mat]
+        return mats.some((m) => !m.transparent || m.opacity >= 0.95)
+      })
+      const meta = firstOpaqueHit?.object.userData as Partial<PanelWireMetadata> | undefined
+      if (meta?.kind) {
+        setPickedMeta(meta as PanelWireMetadata)
         setSelectedCircuit(typeof meta.circuitNumber === 'number' ? meta.circuitNumber : null)
       } else {
         setPickedMeta(null)
@@ -225,6 +239,7 @@ export default function PanelInteriorView({
     el.addEventListener('pointerdown', onPointerDown)
     el.addEventListener('pointermove', onPointerMove)
     el.addEventListener('pointerup', onPointerUp)
+    el.addEventListener('pointercancel', onPointerCancel)
     el.addEventListener('wheel', onWheel, { passive: false })
 
     let ro: ResizeObserver | null = null
@@ -239,6 +254,7 @@ export default function PanelInteriorView({
       el.removeEventListener('pointerdown', onPointerDown)
       el.removeEventListener('pointermove', onPointerMove)
       el.removeEventListener('pointerup', onPointerUp)
+      el.removeEventListener('pointercancel', onPointerCancel)
       el.removeEventListener('wheel', onWheel)
       window.removeEventListener('resize', syncSize)
       ro?.disconnect()

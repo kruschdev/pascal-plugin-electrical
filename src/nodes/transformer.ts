@@ -34,8 +34,8 @@ export const ElectricalTransformerNode = BaseNode.extend({
   position: Vec3Schema.default([0, 0, 0]),
   rotation: z.number().default(0),
   kvaRating: z.number().min(15).max(1000).default(75),
-  primaryVoltage: z.number().default(480),
-  secondaryVoltage: z.number().default(208),
+  primaryVoltage: z.number().min(120).max(600).default(480),
+  secondaryVoltage: z.number().min(120).max(600).default(208),
   fedFromPanelId: z.string().optional(),
   impedancePct: z.number().min(1).max(10).default(4.5),
   nemaRating: z.enum(['NEMA-1', 'NEMA-2', 'NEMA-3R']).default('NEMA-2'),
@@ -89,6 +89,7 @@ export function buildElectricalTransformerGeometry(
       depth: d,
       primaryVoltage: node.primaryVoltage,
       secondaryVoltage: node.secondaryVoltage,
+      nemaRating: node.nemaRating,
     }),
   )
 
@@ -160,6 +161,30 @@ export function buildElectricalTransformerFloorplan(
     { kind: 'circle', cx: c1x, cy: c1z, r: Math.min(hw, hd) * 0.42, stroke, strokeWidth: 0.015 },
     { kind: 'circle', cx: c2x, cy: c2z, r: Math.min(hw, hd) * 0.42, stroke, strokeWidth: 0.015 },
   ]
+
+  if (node.showClearanceZone) {
+    const isHighVoltage = node.primaryVoltage > 250 || node.secondaryVoltage > 250
+    const clearanceSystem = isHighVoltage ? '277/480V-3P' : '120/240V-1P'
+    const clear = getWorkingClearance110_26(clearanceSystem, 2)
+    const cw = Math.max(clear.widthM, node.width) / 2
+    const clearPts: FloorplanPoint[] = [
+      corner(-cw, hd),
+      corner(cw, hd),
+      corner(cw, hd + clear.depthM),
+      corner(-cw, hd + clear.depthM),
+    ]
+    children.push({
+      kind: 'polygon',
+      points: clearPts,
+      fill: defaultStroke,
+      fillOpacity: 0.1,
+      stroke: defaultStroke,
+      strokeWidth: 0.015,
+      strokeDasharray: '0.08 0.06',
+      pointerEvents: 'none',
+    })
+  }
+
   if (selected) children.push({ kind: 'move-handle', point: [cx, cz] })
   return { kind: 'group', children }
 }
@@ -214,6 +239,7 @@ export const electricalTransformerRenderDefinition: NodeDefinition<typeof Electr
       n.kvaRating,
       n.primaryVoltage,
       n.secondaryVoltage,
+      n.nemaRating,
       n.showClearanceZone,
     ]),
   ports: getElectricalTransformerPorts,

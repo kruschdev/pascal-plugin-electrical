@@ -20,7 +20,7 @@
     },
     {
       "slug": "panel-res-200a-open",
-      "name": "200A Load Center (Cover Off — Wired)",
+      "name": "200A Load Center (Cover Off, Wired)",
       "category": "panels-gear",
       "necRef": "NEC 408.36 / 312.6",
       "description": "Cover-off residential 200A panelboard showing copper busbars, neutral/ground bars, service feeders, 1P/2P breakers, and every individual branch wire landed on its lug.",
@@ -29,7 +29,7 @@
         901,
         149
       ],
-      "glbBytes": 802164,
+      "glbBytes": 802184,
       "modelPath": "./panel-res-200a-open/model.glb",
       "thumbnailPath": "./panel-res-200a-open/thumbnail.png"
     },
@@ -44,7 +44,7 @@
         1091,
         149
       ],
-      "glbBytes": 568864,
+      "glbBytes": 568784,
       "modelPath": "./panel-comm-400a-3p/model.glb",
       "thumbnailPath": "./panel-comm-400a-3p/thumbnail.png"
     },
@@ -134,7 +134,7 @@
         907,
         152
       ],
-      "glbBytes": 657872,
+      "glbBytes": 657888,
       "modelPath": "./panel-res-200a-cover-on/model.glb",
       "thumbnailPath": "./panel-res-200a-cover-on/thumbnail.png"
     },
@@ -149,7 +149,7 @@
         661,
         149
       ],
-      "glbBytes": 420212,
+      "glbBytes": 420192,
       "modelPath": "./subpanel-100a-mlo/model.glb",
       "thumbnailPath": "./subpanel-100a-mlo/thumbnail.png"
     },
@@ -290,7 +290,7 @@
     },
     {
       "slug": "box-3gang-pvc",
-      "name": "3-Gang Blue PVC Nail-On Box (44 cu in)",
+      "name": "3-Gang Blue PVC Nail-On Box (48 cu in)",
       "category": "outlet-boxes",
       "necRef": "NEC 314.16(A)",
       "description": "Triple-gang PVC wall switch box for multi-circuit lighting banks.",
@@ -462,9 +462,9 @@
       "dimensionsMm": [
         108,
         133,
-        132
+        94
       ],
-      "glbBytes": 37256,
+      "glbBytes": 37212,
       "modelPath": "./device-dimmer-smart/model.glb",
       "thumbnailPath": "./device-dimmer-smart/thumbnail.png"
     },
@@ -477,9 +477,9 @@
       "dimensionsMm": [
         108,
         133,
-        151
+        107
       ],
-      "glbBytes": 57420,
+      "glbBytes": 57376,
       "modelPath": "./device-usb-duplex-20a/model.glb",
       "thumbnailPath": "./device-usb-duplex-20a/thumbnail.png"
     },
@@ -492,9 +492,9 @@
       "dimensionsMm": [
         96,
         161,
-        163
+        137
       ],
-      "glbBytes": 41684,
+      "glbBytes": 41680,
       "modelPath": "./device-weatherproof-inuse/model.glb",
       "thumbnailPath": "./device-weatherproof-inuse/thumbnail.png"
     },
