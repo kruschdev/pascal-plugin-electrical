@@ -52,15 +52,23 @@ if (!result.success) {
   process.exit(1)
 }
 
-// Guard against regressions back into development JSX runtime (`jsxDEV` throws in production React).
+// Guard against regressions back into development JSX runtime (`jsxDEV` throws in production React)
+// and hoist any mid-file `"use client";` directives emitted by Bun.build code-splitting to line 1
+// so Next.js 16 Turbopack never rejects split chunks.
 for (const output of result.outputs) {
   if (!output.path.endsWith('.js')) continue
-  const contents = await Bun.file(output.path).text()
+  let contents = await Bun.file(output.path).text()
   if (contents.includes('react/jsx-dev-runtime') || /\bjsxDEV\b/.test(contents)) {
     console.error(
       `Production JSX guard failed: ${path.relative(rootDir, output.path)} references react/jsx-dev-runtime or jsxDEV.`,
     )
     process.exit(1)
+  }
+  const directiveRe = /^[ \t]*['"]use client['"];?[ \t]*\r?\n?/gm
+  if (directiveRe.test(contents)) {
+    const stripped = contents.replace(directiveRe, '')
+    contents = `"use client";\n${stripped}`
+    fs.writeFileSync(output.path, contents, 'utf8')
   }
 }
 
