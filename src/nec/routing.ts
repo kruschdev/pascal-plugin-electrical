@@ -473,18 +473,45 @@ export function extractTradeObstacles(
           (typeof node.widthIn === 'number' ? node.widthIn : 3.5) * INCHES_TO_METERS
         const h =
           (typeof node.depthIn === 'number' ? node.depthIn : 11.875) * INCHES_TO_METERS
-        const p0: Vec3 = [Number(s[0]), y, Number(s[1])]
-        const p1: Vec3 = [Number(e[0]), y, Number(e[1])]
-        obstacles.push({
-          id: node.id,
-          nodeId: node.id,
-          nodeType: t,
-          trade: 'structural',
-          priorityRank: 1,
-          box: segmentAabb(p0, p1, w / 2, h / 2),
-          requiredClearanceM: 0.03,
-          label: `structural beam ${String(node.designation ?? node.beamType ?? '')} (${node.id})`.trim(),
-        })
+        const sx = Number(s[0])
+        const sz = Number(s[1])
+        const ex = Number(e[0])
+        const ez = Number(e[1])
+        const label = `structural beam ${String(node.designation ?? node.beamType ?? '')} (${node.id})`.trim()
+        const isDiagonal = Math.abs(ex - sx) > 0.2 && Math.abs(ez - sz) > 0.2
+        if (isDiagonal) {
+          const len = Math.hypot(ex - sx, ez - sz)
+          const steps = Math.max(2, Math.min(24, Math.ceil(len / 0.6)))
+          for (let i = 0; i < steps; i++) {
+            const t0 = i / steps
+            const t1 = (i + 1) / steps
+            const p0: Vec3 = [sx + (ex - sx) * t0, y, sz + (ez - sz) * t0]
+            const p1: Vec3 = [sx + (ex - sx) * t1, y, sz + (ez - sz) * t1]
+            obstacles.push({
+              id: `${node.id}:seg${i}`,
+              nodeId: node.id,
+              nodeType: t,
+              trade: 'structural',
+              priorityRank: 1,
+              box: segmentAabb(p0, p1, w / 2, h / 2),
+              requiredClearanceM: 0.03,
+              label,
+            })
+          }
+        } else {
+          const p0: Vec3 = [sx, y, sz]
+          const p1: Vec3 = [ex, y, ez]
+          obstacles.push({
+            id: node.id,
+            nodeId: node.id,
+            nodeType: t,
+            trade: 'structural',
+            priorityRank: 1,
+            box: segmentAabb(p0, p1, w / 2, h / 2),
+            requiredClearanceM: 0.03,
+            label,
+          })
+        }
       }
       continue
     }

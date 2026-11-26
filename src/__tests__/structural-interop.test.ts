@@ -55,4 +55,34 @@ describe('Priority #1 @kruschdev/pascal-plugin-structural Interop (Electrical)',
     expect(obs.some((o) => o.nodeId === 'bm1' && o.priorityRank === 1 && o.trade === 'structural')).toBe(true)
     expect(obs.some((o) => o.nodeId === 'col1' && o.priorityRank === 1 && o.trade === 'structural')).toBe(true)
   })
+
+  test('R1-BUG-07: subdivides diagonal structural:beam into tight sub-AABBs instead of room-sized box', () => {
+    const nodes = {
+      lvl1: { id: 'lvl1', type: 'level' },
+      bm_diag: {
+        id: 'bm_diag',
+        type: 'structural:beam',
+        parentId: 'lvl1',
+        start: [0, 0],
+        end: [6, 6],
+        elevationY: 2.5,
+        widthIn: 3.5,
+        depthIn: 11.875,
+        designation: 'Diagonal Hip Beam',
+      },
+    }
+    const obs = extractTradeObstacles(nodes, 'lvl1').filter((o) => o.nodeId === 'bm_diag')
+    expect(obs.length).toBeGreaterThanOrEqual(4)
+    // Far off-diagonal corner (0, 2.5, 6) should not be blocked by the diagonal beam
+    const blocksCorner = obs.some(
+      (o) =>
+        0 >= o.box.min[0] &&
+        0 <= o.box.max[0] &&
+        2.5 >= o.box.min[1] &&
+        2.5 <= o.box.max[1] &&
+        6 >= o.box.min[2] &&
+        6 <= o.box.max[2],
+    )
+    expect(blocksCorner).toBe(false)
+  })
 })
