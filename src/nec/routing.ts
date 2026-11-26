@@ -312,15 +312,45 @@ export function extractTradeObstacles(
     if (t === 'plumbing:equipment' || t === 'plumbing:manifold') {
       if (isVec3(node.position)) {
         const [x, y, z] = node.position
-        const halfW = t === 'plumbing:manifold' ? 0.24 : 0.34
-        const h = t === 'plumbing:manifold' ? 0.7 : 1.55
+        const eqKind = typeof node.equipmentKind === 'string' ? node.equipmentKind : ''
+        let halfW = t === 'plumbing:manifold' ? 0.24 : 0.30
+        let minY = y
+        let maxY = y + (t === 'plumbing:manifold' ? 0.70 : 1.55)
+        if (t === 'plumbing:equipment') {
+          if (eqKind === 'expansion-tank') {
+            halfW = 0.12
+            minY = y - 0.15
+            maxY = y + 0.25
+          } else if (eqKind === 'water-heater-tankless-gas') {
+            halfW = 0.22
+            minY = y + 0.90
+            maxY = y + 1.95
+          } else if (
+            eqKind === 'recirc-pump' ||
+            eqKind === 'main-shutoff-prv' ||
+            eqKind === 'backwater-valve' ||
+            eqKind === 'gas-meter'
+          ) {
+            halfW = 0.16
+            minY = y
+            maxY = y + 0.45
+          } else if (eqKind === 'sump-pump' || eqKind === 'sewage-ejector') {
+            halfW = 0.24
+            minY = y
+            maxY = y + 0.55
+          } else if (eqKind === 'water-softener' || eqKind === 'pressure-tank') {
+            halfW = 0.24
+            minY = y
+            maxY = y + 1.35
+          }
+        }
         obstacles.push({
           id: node.id,
           nodeId: node.id,
           nodeType: t,
           trade: 'plumbing',
           priorityRank: 2,
-          box: { min: [x - halfW, y, z - halfW], max: [x + halfW, y + h, z + halfW] },
+          box: { min: [x - halfW, minY, z - halfW], max: [x + halfW, maxY, z + halfW] },
           requiredClearanceM: DEFAULT_CLEARANCE_M,
           label: `${t === 'plumbing:manifold' ? 'plumbing manifold' : 'plumbing equipment'} (${node.name ?? node.id})`,
         })
@@ -433,7 +463,54 @@ export function extractTradeObstacles(
       continue
     }
 
-    // 1. Structural (beams, columns — inviolable)
+    // 1. Structural (beams, columns, and `@kruschdev/pascal-plugin-structural` nodes — inviolable)
+    if (t === 'structural:beam') {
+      const s = node.start
+      const e = node.end
+      if (Array.isArray(s) && s.length >= 2 && Array.isArray(e) && e.length >= 2) {
+        const y = typeof node.elevationY === 'number' ? node.elevationY : 2.4
+        const w =
+          (typeof node.widthIn === 'number' ? node.widthIn : 3.5) * INCHES_TO_METERS
+        const h =
+          (typeof node.depthIn === 'number' ? node.depthIn : 11.875) * INCHES_TO_METERS
+        const p0: Vec3 = [Number(s[0]), y, Number(s[1])]
+        const p1: Vec3 = [Number(e[0]), y, Number(e[1])]
+        obstacles.push({
+          id: node.id,
+          nodeId: node.id,
+          nodeType: t,
+          trade: 'structural',
+          priorityRank: 1,
+          box: segmentAabb(p0, p1, w / 2, h / 2),
+          requiredClearanceM: 0.03,
+          label: `structural beam ${String(node.designation ?? node.beamType ?? '')} (${node.id})`.trim(),
+        })
+      }
+      continue
+    }
+
+    if (t === 'structural:column') {
+      if (isVec3(node.position)) {
+        const [x, y, z] = node.position
+        const w =
+          (typeof node.widthIn === 'number' ? node.widthIn : 5.5) * INCHES_TO_METERS
+        const d =
+          (typeof node.depthIn === 'number' ? node.depthIn : 5.5) * INCHES_TO_METERS
+        const h = typeof node.heightM === 'number' ? node.heightM : 2.8
+        obstacles.push({
+          id: node.id,
+          nodeId: node.id,
+          nodeType: t,
+          trade: 'structural',
+          priorityRank: 1,
+          box: { min: [x - w / 2, y, z - d / 2], max: [x + w / 2, y + h, z + d / 2] },
+          requiredClearanceM: 0.03,
+          label: `structural column ${String(node.designation ?? node.columnType ?? '')} (${node.id})`.trim(),
+        })
+      }
+      continue
+    }
+
     if (t === 'beam') {
       const start = node.start
       const end = node.end

@@ -1105,7 +1105,18 @@ export function auditSceneElectrical(
 
     // 3a. Trade-priority clashes (electrical must yield to same-level plumbing, HVAC, structural)
     const runLevelId = resolveNodeLevelId(nodes, run)
-    const clashes = detectRunTradeClashes(path, getObstaclesForLevel(runLevelId))
+    const selfMepIds = new Set<string>()
+    for (const endId of [run.fromNodeId, run.targetDeviceId, run.toNodeId]) {
+      if (typeof endId === 'string') {
+        const endNode = nodes[endId]
+        const meta = endNode?.metadata as { mepSourceNodeId?: string } | undefined
+        if (typeof meta?.mepSourceNodeId === 'string') selfMepIds.add(meta.mepSourceNodeId)
+      }
+    }
+    const levelObs = getObstaclesForLevel(runLevelId)
+    const filteredObs =
+      selfMepIds.size > 0 ? levelObs.filter((o) => !selfMepIds.has(o.nodeId)) : levelObs
+    const clashes = detectRunTradeClashes(path, filteredObs)
     for (const clash of clashes) {
       push({
         severity: 'error',

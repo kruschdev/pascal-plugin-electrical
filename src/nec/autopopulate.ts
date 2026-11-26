@@ -99,7 +99,7 @@ export type PlannedDeviceSpec = {
   requiresGfci: boolean
   requiresAfci: boolean
   breakerAmps: number
-  poles: 1 | 2
+  poles: 1 | 2 | 3
   loadVa: number
   continuous: boolean
   boxType: BoxType
@@ -547,6 +547,35 @@ export function planNecAutoPopulate(
     let panelRot = 0
     let bestPanelScore = -Infinity
 
+    const plumbingPipeObs = obstacles.filter(
+      (o) =>
+        o.trade === 'plumbing' &&
+        (o.nodeType === 'plumbing:pipe-run' || o.nodeType === 'pipe-segment' || o.nodeType === 'liquid-line'),
+    )
+    const hasPlumbingPipeInPanelColumn = (
+      cx: number,
+      cz: number,
+      wallDx: number,
+      wallDz: number,
+      wallNx: number,
+      wallNz: number,
+    ): boolean => {
+      // NEC 110.26(E)(1)(a): Dedicated electrical space equals panel width (~0.42 m) x depth (~0.18 m)
+      // from floor (0) to structural ceiling / 6 ft above panel.
+      const halfAlong = 0.24
+      const halfPerp = 0.14
+      const halfX = Math.abs(wallDx) * halfAlong + Math.abs(wallNx) * halfPerp
+      const halfZ = Math.abs(wallDz) * halfAlong + Math.abs(wallNz) * halfPerp
+      for (const obs of plumbingPipeObs) {
+        const b = obs.box
+        if (b.max[1] < 0 || b.min[1] > Math.max(levelHeight, 3.35)) continue
+        if (b.max[0] < cx - halfX || b.min[0] > cx + halfX) continue
+        if (b.max[2] < cz - halfZ || b.min[2] > cz + halfZ) continue
+        return true
+      }
+      return false
+    }
+
     // 1a. Honor an explicit `bones:service` (`serviceType: 'panel'`), or back-to-back `electric-meter` / `power-entry`
     const panelAnchor =
       bonesCtx.servicePanel ??
@@ -576,14 +605,16 @@ export function planNecAutoPopulate(
           if (isBathroom(zProbe.category) || /closet|wardrobe/.test(zProbe.category) || isOutdoorCategory(zProbe.category)) {
             continue
           }
-          bestPanelScore = 500
-          panelPos = [
-            round3(px + nx * (hostWall.thickness / 2 + 0.072)),
-            round3(sp.heightAff ?? 1.52),
-            round3(pz + nz * (hostWall.thickness / 2 + 0.072)),
-          ]
-          panelRot = side === 1 ? hostWall.yaw : hostWall.yaw + Math.PI
-          break
+          const candX = round3(px + nx * (hostWall.thickness / 2 + 0.072))
+          const candZ = round3(pz + nz * (hostWall.thickness / 2 + 0.072))
+          const pipeConflict = hasPlumbingPipeInPanelColumn(candX, candZ, hostWall.dx, hostWall.dz, nx, nz)
+          const candScore = pipeConflict ? 50 : 500
+          if (candScore > bestPanelScore) {
+            bestPanelScore = candScore
+            panelPos = [candX, round3(sp.heightAff ?? 1.52), candZ]
+            panelRot = side === 1 ? hostWall.yaw : hostWall.yaw + Math.PI
+          }
+          if (!pipeConflict) break
         }
       } else if (sp.position && bonesCtx.servicePanel) {
         bestPanelScore = 500
@@ -615,7 +646,10 @@ export function planNecAutoPopulate(
             if (!zProbe) continue
             const cat = zProbe.category
             if (isBathroom(cat) || /closet|wardrobe/.test(cat) || isOutdoorCategory(cat)) continue
-            const score =
+            const candX = round3(px + nx * (w.thickness / 2 + 0.072))
+            const candZ = round3(pz + nz * (w.thickness / 2 + 0.072))
+            const pipeConflict = hasPlumbingPipeInPanelColumn(candX, candZ, w.dx, w.dz, nx, nz)
+            const baseScore =
               isGarage(cat) || isBasementOrUtility(cat)
                 ? 100
                 : isHallway(cat)
@@ -623,13 +657,10 @@ export function planNecAutoPopulate(
                   : /living|family|dining|bed|office|study|den/.test(cat)
                     ? 65
                     : 40
+            const score = pipeConflict ? baseScore - 200 : baseScore
             if (score > bestPanelScore) {
               bestPanelScore = score
-              panelPos = [
-                round3(px + nx * (w.thickness / 2 + 0.072)),
-                1.52,
-                round3(pz + nz * (w.thickness / 2 + 0.072)),
-              ]
+              panelPos = [candX, 1.52, candZ]
               panelRot = side === 1 ? w.yaw : w.yaw + Math.PI
             }
           }
@@ -702,7 +733,7 @@ export function planNecAutoPopulate(
       | 'occupancy'
       | 'poles'
       | 'continuous'
-    > & { poles?: 1 | 2; continuous?: boolean },
+    > & { poles?: 1 | 2 | 3; continuous?: boolean },
   ): boolean => {
     if (
       isNearExisting(
@@ -718,7 +749,7 @@ export function planNecAutoPopulate(
       resolved.deviceKind === 'duplex' ||
       resolved.deviceKind === 'gfci' ||
       resolved.deviceKind === 'afci'
-    if (isRecept && !resolved.isExterior && !resolved.bonesSourceId) {
+    if (isRecept && !resolved.isExterior && !resolved.bonesSourceId && !resolved.mepSourceNodeId) {
       const actualZone = zoneAtPoint(zones, resolved.position[0], resolved.position[2])
       if (actualZone && isKitchen(actualZone.category)) {
         resolved.requiresGfci = true
@@ -1298,6 +1329,93 @@ export function planNecAutoPopulate(
     const meta = existing.metadata as { mepSourceNodeId?: string } | undefined
     if (typeof meta?.mepSourceNodeId === 'string') wiredMepSourceIds.add(meta.mepSourceNodeId)
   }
+
+  type RawMepDemand = {
+    required?: boolean
+    voltage?: number
+    poles?: number
+    breakerAmps?: number
+    loadVa?: number
+    continuous?: boolean
+    dedicatedCircuit?: boolean
+    gfciRequired?: boolean
+    afciRequired?: boolean
+    label?: string
+  }
+
+  const PASSIVE_PLUMBING_EQUIPMENT_KINDS = new Set([
+    'water-heater-tank-gas',
+    'expansion-tank',
+    'gas-meter',
+    'main-shutoff-prv',
+    'backwater-valve',
+  ])
+
+  const fallbackMepDemandForNode = (mepNode: SceneNodeLike): RawMepDemand | null => {
+    if (mepNode.type === 'plumbing:equipment') {
+      const kind = typeof mepNode.equipmentKind === 'string' ? mepNode.equipmentKind : ''
+      if (PASSIVE_PLUMBING_EQUIPMENT_KINDS.has(kind)) return null
+      const watts = typeof mepNode.watts === 'number' && mepNode.watts > 0 ? mepNode.watts : 4500
+      const calc240Breaker = (w: number): number => {
+        const minAmps = Math.max(30, (w / 240) * 1.25)
+        for (const std of [15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 125, 150, 175, 200]) {
+          if (std >= minAmps) return std
+        }
+        return 200
+      }
+      switch (kind) {
+        case 'water-heater-tank-electric':
+          return { required: true, voltage: 240, poles: 2, breakerAmps: calc240Breaker(watts), loadVa: watts, continuous: true, dedicatedCircuit: true, label: 'Electric Water Heater' }
+        case 'water-heater-hpwh':
+          return { required: true, voltage: 240, poles: 2, breakerAmps: calc240Breaker(watts), loadVa: watts, continuous: true, dedicatedCircuit: true, label: 'Heat-Pump Water Heater' }
+        case 'water-heater-tankless-gas':
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 15, loadVa: 300, continuous: false, dedicatedCircuit: false, gfciRequired: true, label: 'Tankless Gas WH Ignition' }
+        case 'recirc-pump':
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 15, loadVa: 180, continuous: true, dedicatedCircuit: false, gfciRequired: true, label: 'DHW Recirculation Pump' }
+        case 'sump-pump':
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1200, continuous: false, dedicatedCircuit: true, gfciRequired: true, label: 'Sump Pump' }
+        case 'sewage-ejector':
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1500, continuous: false, dedicatedCircuit: true, gfciRequired: true, label: 'Sewage Ejector Pump' }
+        case 'water-softener':
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 15, loadVa: 150, continuous: false, dedicatedCircuit: false, gfciRequired: true, label: 'Water Softener' }
+        case 'pressure-tank':
+          return { required: true, voltage: 240, poles: 2, breakerAmps: 20, loadVa: 1800, continuous: false, dedicatedCircuit: true, label: 'Well Booster Pump' }
+        case 'boiler-hydronic':
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1200, continuous: true, dedicatedCircuit: true, label: 'Hydronic Boiler' }
+        default:
+          return null
+      }
+    }
+    if (mepNode.type === 'plumbing:fixture') {
+      const kind = typeof mepNode.fixtureKind === 'string' ? mepNode.fixtureKind : ''
+      switch (kind) {
+        case 'dishwasher':
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1200, continuous: false, dedicatedCircuit: true, gfciRequired: true, afciRequired: true, label: 'Dishwasher' }
+        case 'garbage-disposal':
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1000, continuous: false, dedicatedCircuit: true, gfciRequired: true, afciRequired: true, label: 'Garbage Disposal' }
+        case 'clothes-washer':
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 20, loadVa: 1200, continuous: false, dedicatedCircuit: true, gfciRequired: true, afciRequired: true, label: 'Clothes Washer' }
+        case 'bidet':
+          return { required: true, voltage: 120, poles: 1, breakerAmps: 15, loadVa: 1200, continuous: false, dedicatedCircuit: true, gfciRequired: true, label: 'Heated Bidet Seat' }
+        default:
+          return null
+      }
+    }
+    return null
+  }
+
+  const minWireGaugeForBreakerAmps = (amps: number): WireGauge => {
+    if (amps >= 100) return '1'
+    if (amps >= 70) return '4'
+    if (amps >= 50) return '6'
+    if (amps >= 40) return '8'
+    if (amps >= 30) return '10'
+    if (amps >= 20) return '12'
+    return '14'
+  }
+
+  const auxCircuitLoadState = new Map<number, { index: number; usedVa: number }>()
+
   for (const mepNode of Object.values(nodes)) {
     if (!belongsToLevel(nodes, mepNode, levelId)) continue
     if (
@@ -1309,53 +1427,82 @@ export function planNecAutoPopulate(
       continue
     }
     if (wiredMepSourceIds.has(mepNode.id)) continue
-    const rawDemand = mepNode.electricalDemand as
-      | {
-          required?: boolean
-          voltage?: number
-          poles?: number
-          breakerAmps?: number
-          loadVa?: number
-          continuous?: boolean
-          dedicatedCircuit?: boolean
-          gfciRequired?: boolean
-          afciRequired?: boolean
-          label?: string
-        }
-      | null
-      | undefined
+    if (
+      mepNode.type === 'plumbing:equipment' &&
+      typeof mepNode.equipmentKind === 'string' &&
+      PASSIVE_PLUMBING_EQUIPMENT_KINDS.has(mepNode.equipmentKind)
+    ) {
+      continue
+    }
+    const explicitDemand = mepNode.electricalDemand as RawMepDemand | null | undefined
+    const rawDemand: RawMepDemand | null =
+      explicitDemand === undefined ? fallbackMepDemandForNode(mepNode) : explicitDemand
     if (!rawDemand || rawDemand.required !== true) continue
     if (!Array.isArray(mepNode.position) || mepNode.position.length < 3) continue
 
+    const mepRot = typeof mepNode.rotation === 'number' ? mepNode.rotation : 0
+    // Offset power receptacle/disconnect slightly outside equipment footprint so wires terminate cleanly without self-clash
+    const radialOffsetM =
+      mepNode.type === 'plumbing:equipment' || mepNode.type === 'hvac:equipment' || mepNode.type === 'hvac-equipment'
+        ? 0.36
+        : 0
     const pos: Vec3 = [
-      Number(mepNode.position[0]),
+      round3(Number(mepNode.position[0]) + Math.sin(mepRot) * radialOffsetM),
       Math.max(0.38, Math.min(1.5, Number(mepNode.position[1]) || 0.9)),
-      Number(mepNode.position[2]),
+      round3(Number(mepNode.position[2]) + Math.cos(mepRot) * radialOffsetM),
     ]
-    const poles: 1 | 2 = rawDemand.poles === 2 || (rawDemand.voltage ?? 120) >= 208 ? 2 : 1
-    const breakerAmps = typeof rawDemand.breakerAmps === 'number' ? rawDemand.breakerAmps : poles === 2 ? 30 : 20
-    const loadVa = typeof rawDemand.loadVa === 'number' ? rawDemand.loadVa : poles === 2 ? 4500 : 1200
-    const wireGauge: WireGauge =
-      breakerAmps >= 60
-        ? '6'
-        : breakerAmps >= 40
-          ? '8'
-          : breakerAmps >= 30
-            ? '10'
-            : breakerAmps >= 20
-              ? '12'
-              : '14'
-    const label = rawDemand.label || (typeof mepNode.name === 'string' && mepNode.name ? mepNode.name : mepNode.id)
-    const circuitGroup = rawDemand.dedicatedCircuit
-      ? `${label} (${poles === 2 ? `${lineToLineVolts}V` : '120V'} ${breakerAmps}A)`
-      : `MEP Aux Loads (120V ${breakerAmps}A)`
+    const rawPoles =
+      typeof rawDemand.poles === 'number'
+        ? rawDemand.poles
+        : (rawDemand.voltage ?? 120) >= 208
+          ? 2
+          : 1
+    const poles: 1 | 2 | 3 =
+      rawPoles >= 3
+        ? isThreePhaseSystem(panelVoltageSystem)
+          ? 3
+          : 2
+        : rawPoles >= 2 || (rawDemand.voltage ?? 120) >= 208
+          ? 2
+          : 1
+    const breakerAmps =
+      typeof rawDemand.breakerAmps === 'number' ? rawDemand.breakerAmps : poles >= 2 ? 30 : 20
+    const loadVa =
+      typeof rawDemand.loadVa === 'number' ? rawDemand.loadVa : poles >= 2 ? 4500 : 1200
+    const wireGauge: WireGauge = minWireGaugeForBreakerAmps(breakerAmps)
+    const label =
+      rawDemand.label || (typeof mepNode.name === 'string' && mepNode.name ? mepNode.name : mepNode.id)
+    const isDedicated =
+      rawDemand.dedicatedCircuit === true ||
+      poles >= 2 ||
+      loadVa > Math.floor(120 * breakerAmps * 0.5)
+    let circuitGroup: string
+    if (isDedicated) {
+      const voltLabel = poles >= 2 ? `${rawDemand.voltage ?? lineToLineVolts}V` : '120V'
+      const poleTag = poles === 3 ? ' 3P' : ''
+      circuitGroup = `${label} (${voltLabel}${poleTag} ${breakerAmps}A)`
+    } else {
+      const maxAuxVa = Math.floor(120 * breakerAmps * 0.8)
+      const st = auxCircuitLoadState.get(breakerAmps) ?? { index: 1, usedVa: 0 }
+      if (st.usedVa > 0 && st.usedVa + loadVa > maxAuxVa) {
+        st.index += 1
+        st.usedVa = loadVa
+      } else {
+        st.usedVa += loadVa
+      }
+      auxCircuitLoadState.set(breakerAmps, st)
+      circuitGroup =
+        st.index === 1
+          ? `MEP Aux Loads (120V ${breakerAmps}A)`
+          : `MEP Aux Loads (120V ${breakerAmps}A) #${st.index}`
+    }
     const devKind: PlannedDeviceSpec['deviceKind'] =
-      poles === 2 ? 'dedicated-240v' : rawDemand.gfciRequired ? 'gfci' : 'duplex'
+      poles >= 2 ? 'dedicated-240v' : rawDemand.gfciRequired ? 'gfci' : 'duplex'
 
     addPlanned({
       name: `${label} Power`,
       position: pos,
-      rotation: typeof mepNode.rotation === 'number' ? mepNode.rotation : 0,
+      rotation: mepRot,
       deviceKind: devKind,
       circuitGroup,
       necRef: `Cross-Trade MEP Power (${mepNode.type} ${mepNode.id})`,
@@ -1365,7 +1512,7 @@ export function planNecAutoPopulate(
       breakerAmps,
       loadVa,
       continuous: rawDemand.continuous === true,
-      boxType: poles === 2 ? '4-sq-2.125' : 'single-gang-deep',
+      boxType: poles >= 2 ? '4-sq-2.125' : 'single-gang-deep',
       wireGauge,
       mepSourceNodeId: mepNode.id,
     })
@@ -1953,7 +2100,7 @@ export function planNecAutoPopulate(
     }
   }
 
-  const pickBalancedFreeCircuit = (loadVa: number, poles: 1 | 2 = 1): number => {
+  const pickBalancedFreeCircuit = (loadVa: number, poles: 1 | 2 | 3 = 1): number => {
     const occupied = new Set<number>()
     for (const d of virtualDeviceList) {
       if (d.panelId !== panelNode!.id) continue
@@ -1961,6 +2108,23 @@ export function planNecAutoPopulate(
       if (c <= 0) continue
       const dPoles = d.poles === 3 ? 3 : d.poles === 2 ? 2 : 1
       for (let p = 0; p < dPoles; p++) occupied.add(c + p * 2)
+    }
+
+    if (poles === 3) {
+      for (let slot = 1; slot + 4 <= maxPanelSpaces; slot++) {
+        if (occupied.has(slot) || occupied.has(slot + 2) || occupied.has(slot + 4)) continue
+        for (let p = 0; p < 3; p++) {
+          const ph = (Math.floor((slot - 1) / 2) + p) % phaseCount
+          phaseLoadVa[ph] = (phaseLoadVa[ph] ?? 0) + loadVa / 3
+        }
+        return slot
+      }
+      const fallback = findNextFreePanelCircuit(panelNode, virtualDeviceList, 3)
+      for (let p = 0; p < 3; p++) {
+        const ph = (Math.floor((fallback - 1) / 2) + p) % phaseCount
+        phaseLoadVa[ph] = (phaseLoadVa[ph] ?? 0) + loadVa / 3
+      }
+      return fallback
     }
 
     if (poles === 2) {
@@ -2023,13 +2187,20 @@ export function planNecAutoPopulate(
   for (const bucket of circuitBuckets) {
     if (bucket.items.length === 0) continue
 
-    const circuitPoles: 1 | 2 = bucket.items.some((d) => d.poles === 2) ? 2 : 1
+    const circuitPoles: 1 | 2 | 3 = bucket.items.some((d) => d.poles === 3)
+      ? 3
+      : bucket.items.some((d) => d.poles === 2)
+        ? 2
+        : 1
     const breakerAmps = Math.max(...bucket.items.map((d) => d.breakerAmps))
     const anyGfci = bucket.items.some((d) => d.requiresGfci)
     const anyAfci = bucket.items.some((d) => d.requiresAfci)
     const totalLoadVa = bucket.items.reduce((s, d) => s + d.loadVa, 0)
-    const voltage = circuitPoles === 2 ? getVoltageLineToLine(panelVoltageSystem) : vLN
-    const circuitLoadAmps = Math.max(1, Math.round((totalLoadVa / voltage) * 100) / 100)
+    const voltage = circuitPoles >= 2 ? getVoltageLineToLine(panelVoltageSystem) : vLN
+    const circuitLoadAmps = Math.max(
+      1,
+      Math.round((totalLoadVa / (circuitPoles === 3 ? voltage * Math.sqrt(3) : voltage)) * 100) / 100,
+    )
     const ckt = pickBalancedFreeCircuit(totalLoadVa, circuitPoles)
 
     // Order chain: start with device closest to panel, then greedy nearest-neighbor outlet-to-outlet!
@@ -2069,30 +2240,31 @@ export function planNecAutoPopulate(
 
     // Pre-route Home Run & Daisy-Chain Hops so final voltage-drop / ampacity wireGauge propagates to EVERY device box!
     const anyContinuous = ordered.some((d) => d.continuous)
-    const phases: 1 | 3 = 1
-    let circuitWireGauge: WireGauge =
-      breakerAmps >= 50
-        ? '6'
-        : breakerAmps >= 40
-          ? '8'
-          : breakerAmps >= 30
-            ? '10'
-            : breakerAmps >= 20
-              ? '12'
-              : '14'
+    const phases: 1 | 3 = circuitPoles === 3 ? 3 : 1
+    let circuitWireGauge: WireGauge = minWireGaugeForBreakerAmps(breakerAmps)
     let tradeSize: ConduitTradeSize = '3/4"'
+
+    const obstaclesForTarget = (ignoreIds: readonly (string | undefined)[]) => {
+      const skip = new Set(ignoreIds.filter((v): v is string => typeof v === 'string' && v.length > 0))
+      return skip.size > 0 ? obstacles.filter((o) => !skip.has(o.nodeId)) : obstacles
+    }
 
     const hrRoute =
       includeWiring && ordered.length > 0
-        ? routeElectricalRun(panelTopPt, ordered[0]!.position, obstacles, {
-            preferredChaseY: effectiveChaseY,
-            clearanceM: 0.05,
-            walls: routingWalls,
-            racewayType,
-            wireGauge: circuitWireGauge,
-            cavities,
-            routingStrategy,
-          })
+        ? routeElectricalRun(
+            panelTopPt,
+            ordered[0]!.position,
+            obstaclesForTarget([ordered[0]!.mepSourceNodeId]),
+            {
+              preferredChaseY: effectiveChaseY,
+              clearanceM: 0.05,
+              walls: routingWalls,
+              racewayType,
+              wireGauge: circuitWireGauge,
+              cavities,
+              routingStrategy,
+            },
+          )
         : null
     const hopRoutes: Array<ReturnType<typeof routeElectricalRun>> = []
     if (includeWiring && ordered.length > 1) {
@@ -2100,15 +2272,20 @@ export function planNecAutoPopulate(
         const fromDev = ordered[i]!
         const toDev = ordered[i + 1]!
         hopRoutes.push(
-          routeElectricalRun(fromDev.position, toDev.position, obstacles, {
-            preferredChaseY: effectiveChaseY,
-            clearanceM: 0.05,
-            walls: routingWalls,
-            racewayType,
-            wireGauge: circuitWireGauge,
-            cavities,
-            routingStrategy,
-          }),
+          routeElectricalRun(
+            fromDev.position,
+            toDev.position,
+            obstaclesForTarget([fromDev.mepSourceNodeId, toDev.mepSourceNodeId]),
+            {
+              preferredChaseY: effectiveChaseY,
+              clearanceM: 0.05,
+              walls: routingWalls,
+              racewayType,
+              wireGauge: circuitWireGauge,
+              cavities,
+              routingStrategy,
+            },
+          ),
         )
       }
     }
@@ -2122,7 +2299,7 @@ export function planNecAutoPopulate(
         insulationRating: '90C',
         racewayType,
         ambientTempC: 30,
-        currentCarryingCount: 2,
+        currentCarryingCount: circuitPoles === 3 ? 3 : 2,
         loadAmps: circuitLoadAmps,
         continuousLoad: anyContinuous,
         breakerAmps,
@@ -2136,13 +2313,13 @@ export function planNecAutoPopulate(
         phases,
         maxDropPct: 3.0,
       })
-      circuitWireGauge = largerGauge(ampGauge, vdCheck.recommendedGauge)
+      circuitWireGauge = largerGauge(largerGauge(circuitWireGauge, ampGauge), vdCheck.recommendedGauge)
 
       if (racewayType === 'emt' || racewayType === 'pvc-40' || racewayType === 'rmc') {
         const fill = calculateConduitFill({
           conduitType: racewayType,
           tradeSize: '3/4"',
-          conductors: [{ gauge: circuitWireGauge, count: 3 }],
+          conductors: [{ gauge: circuitWireGauge, count: circuitPoles === 3 ? 4 : 3 }],
           lengthInches: hrRoute.routedLengthM * METERS_TO_FEET * 12,
         })
         if (!fill.compliant) tradeSize = fill.recommendedTradeSize
@@ -2234,8 +2411,8 @@ export function planNecAutoPopulate(
         racewayType,
         tradeSize,
         wireGauge: circuitWireGauge,
-        currentCarryingCount: 2,
-        totalConductorCount: 3,
+        currentCarryingCount: circuitPoles === 3 ? 3 : 2,
+        totalConductorCount: circuitPoles === 3 ? 4 : 3,
         loadAmps: circuitLoadAmps,
         continuous: anyContinuous,
         voltage,
@@ -2287,7 +2464,7 @@ export function planNecAutoPopulate(
 
     const protLabel = [
       anyAfci ? 'AFCI' : '',
-      anyGfci && (protectionMode === 'gfci-breakers' || circuitPoles === 2) ? 'GFCI' : '',
+      anyGfci && (protectionMode === 'gfci-breakers' || circuitPoles >= 2) ? 'GFCI' : '',
     ]
       .filter(Boolean)
       .join('/')

@@ -16,8 +16,9 @@ export type BonesWallConstruction = 'framed' | 'lgs' | 'cmu' | 'skip'
 
 export type BonesWallRule = {
   construction: BonesWallConstruction
-  spacingIn: 16 | 24
+  spacingIn: 12 | 16 | 24
   studThicknessM: number
+  isShearWall?: boolean
 }
 
 export type BonesServicePanelAnchor = {
@@ -84,13 +85,15 @@ export type BonesSchematicSnapshot = {
 }
 
 export type BonesFramingContext = {
-  /** True when a `bones:framing` node exists on the active level. */
+  /** True when a `structural:assembly` or `bones:framing` node exists on the active level. */
   present: boolean
-  /** Default on-center stud spacing in inches (16 or 24). */
-  defaultSpacingIn: 16 | 24
+  /** Authoritative source of framing rules (`structural` takes Priority #1 over `bones`). */
+  source?: 'structural' | 'bones' | 'default'
+  /** Default on-center stud spacing in inches (12, 16, or 24). */
+  defaultSpacingIn: 12 | 16 | 24
   /** Framing system ('lumber' or 'lgs'). */
   framingSystem: 'lumber' | 'lgs'
-  /** Per-wall framing overrides from `bones:framing.wallOverrides`. */
+  /** Per-wall framing overrides from `structural:assembly.wallOverrides` or `bones:framing.wallOverrides`. */
   wallRules: ReadonlyMap<string, BonesWallRule>
   /** Optional authoritative `bones:service` (serviceType: 'panel') anchor on this level. */
   servicePanel: BonesServicePanelAnchor | null
@@ -111,11 +114,26 @@ export function extractBonesFramingContext(
   levelId: string | null = null,
 ): BonesFramingContext {
   const all = Object.values(nodes)
-  const framingNode = all.find(
+  // Priority #1: Dedicated `@kruschdev/pascal-plugin-structural` (`structural:assembly`) takes precedence over `bones:framing`.
+  const structuralNode = all.find(
+    (n) => n.type === 'structural:assembly' && belongsToLevel(nodes, n, levelId),
+  )
+  const bonesNode = all.find(
     (n) => n.type === 'bones:framing' && belongsToLevel(nodes, n, levelId),
   )
+  const framingNode = structuralNode ?? bonesNode
+  const source: 'structural' | 'bones' | 'default' = structuralNode
+    ? 'structural'
+    : bonesNode
+      ? 'bones'
+      : 'default'
 
-  const defaultSpacingIn: 16 | 24 = framingNode?.studSpacingIn === 24 ? 24 : 16
+  const defaultSpacingIn: 12 | 16 | 24 =
+    framingNode?.studSpacingIn === 12
+      ? 12
+      : framingNode?.studSpacingIn === 24
+        ? 24
+        : 16
   const framingSystem: 'lumber' | 'lgs' = framingNode?.framingSystem === 'lgs' ? 'lgs' : 'lumber'
   const wallRules = new Map<string, BonesWallRule>()
 
@@ -129,6 +147,13 @@ export function extractBonesFramingContext(
             spacingIn: defaultSpacingIn,
             studThicknessM: DRESSED_STUD_THICKNESS_M,
           })
+        } else if (raw === 'wood-framed' || raw === 'shear-wall') {
+          wallRules.set(wallId, {
+            construction: 'framed',
+            spacingIn: defaultSpacingIn,
+            studThicknessM: DRESSED_STUD_THICKNESS_M,
+            isShearWall: raw === 'shear-wall',
+          })
         }
       } else if (raw && typeof raw === 'object') {
         const rec = raw as Record<string, unknown>
@@ -136,14 +161,19 @@ export function extractBonesFramingContext(
         const construction: BonesWallConstruction =
           cRaw === 'framed' || cRaw === 'lgs' || cRaw === 'cmu' || cRaw === 'skip'
             ? cRaw
-            : framingSystem === 'lgs'
-              ? 'lgs'
-              : 'framed'
-        const spacingIn: 16 | 24 = rec.spacingIn === 24 ? 24 : rec.spacingIn === 16 ? 16 : defaultSpacingIn
+            : cRaw === 'wood-framed' || cRaw === 'shear-wall'
+              ? 'framed'
+              : framingSystem === 'lgs'
+                ? 'lgs'
+                : 'framed'
+        const rawSpacing = rec.studSpacingIn ?? rec.spacingIn
+        const spacingIn: 12 | 16 | 24 =
+          rawSpacing === 12 ? 12 : rawSpacing === 24 ? 24 : rawSpacing === 16 ? 16 : defaultSpacingIn
         wallRules.set(wallId, {
           construction,
           spacingIn,
           studThicknessM: DRESSED_STUD_THICKNESS_M,
+          isShearWall: Boolean(rec.isShearWall || cRaw === 'shear-wall'),
         })
       }
     }
@@ -175,6 +205,7 @@ export function extractBonesFramingContext(
 
   return {
     present: Boolean(framingNode),
+    source,
     defaultSpacingIn,
     framingSystem,
     wallRules,
@@ -422,7 +453,7 @@ export function resolveWallFramingRule(
  */
 export function computeWallStudPositions(
   wallLengthM: number,
-  spacingIn: 16 | 24 = 16,
+  spacingIn: 12 | 16 | 24 = 16,
   studThicknessM = DRESSED_STUD_THICKNESS_M,
 ): number[] {
   const halfT = studThicknessM / 2
