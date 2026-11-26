@@ -554,8 +554,23 @@ export function calculateSceneLoad(
           d.deviceKind === 'weatherproof-gfci' ||
           d.deviceKind === 'floor-box'),
     )
+    const hvacCategoryOf = (d: SceneNodeLike): 'hvac-heating' | 'hvac-cooling' | null => {
+      const meta = d.metadata as { loadCategory?: string } | undefined
+      if (meta?.loadCategory === 'hvac-heating') return 'hvac-heating'
+      if (meta?.loadCategory === 'hvac-cooling' || meta?.loadCategory === 'heat-pump') return 'hvac-cooling'
+      return null
+    }
+    let hvacHeatingVa = 0
+    let hvacCoolingVa = 0
+    for (const d of devices) {
+      const cat = hvacCategoryOf(d)
+      if (!cat) continue
+      const va = typeof d.loadVa === 'number' ? Math.max(0, d.loadVa) : 0
+      if (cat === 'hvac-heating') hvacHeatingVa += va
+      else hvacCoolingVa += va
+    }
     const motors = devices
-      .filter((d) => d.deviceKind === 'motor-load' || d.deviceKind === 'vfd' || d.isMotor === true)
+      .filter((d) => !hvacCategoryOf(d) && (d.deviceKind === 'motor-load' || d.deviceKind === 'vfd' || d.isMotor === true))
       .map((d) => ({
         name: (typeof d.name === 'string' && d.name) || d.id,
         va: typeof d.loadVa === 'number' ? d.loadVa : d.deviceKind === 'vfd' ? 12000 : 1500,
@@ -563,6 +578,7 @@ export function calculateSceneLoad(
     const dedicatedLoads = devices
       .filter(
         (d) =>
+          !hvacCategoryOf(d) &&
           d.isMotor !== true &&
           (d.deviceKind === 'dedicated-240v' ||
             d.deviceKind === 'evse' ||
@@ -585,6 +601,8 @@ export function calculateSceneLoad(
       buildingType: options.commercialBuildingType ?? 'office',
       voltageSystem,
       receptacleCount: receptacles.length,
+      hvacHeatingVa,
+      hvacCoolingVa,
       motors,
       dedicatedLoads,
       conductorMaterial: options.conductorMaterial,

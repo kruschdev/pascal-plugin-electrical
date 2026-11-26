@@ -1,3 +1,5 @@
+'use client'
+
 /**
  * Full-pane EditorHostView (`krusch:electrical:schedule`) that opens beside the 3D/2D scene:
  * Tabs: Panel Schedule | NEC 220 Load Calc | NEC & Trade Audit | Material Takeoff.

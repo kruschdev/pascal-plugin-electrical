@@ -26,8 +26,7 @@ import {
   electricalTransformerParametrics,
 } from './nodes/parametrics'
 import { electricalTransformerRenderDefinition } from './nodes/transformer'
-import { ELECTRICAL_PLUGIN_ID, electricalRenderPlugin } from './render'
-import { ELECTRICAL_SCHEDULE_VIEW_ID } from './ui/electrical-panel'
+import { ELECTRICAL_PLUGIN_ID, ELECTRICAL_SCHEDULE_VIEW_ID, electricalRenderPlugin } from './render'
 
 export const electricalInspectorExtensions: InspectorExtension[] = [
   {
@@ -140,6 +139,7 @@ export const electricalChatExtension: PluginChatExtension = {
 
 export {
   ELECTRICAL_PLUGIN_ID,
+  ELECTRICAL_SCHEDULE_VIEW_ID,
   electricalRenderPlugin,
   ElectricalPanelNode,
   ElectricalDeviceNode,
@@ -147,5 +147,4 @@ export {
   ElectricalConduitRunNode,
   ElectricalTransformerNode,
 } from './render'
-export { ELECTRICAL_SCHEDULE_VIEW_ID } from './ui/electrical-panel'
 export * from './nec'

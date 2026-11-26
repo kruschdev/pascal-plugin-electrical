@@ -1,3 +1,5 @@
+'use client'
+
 /**
  * InspectorExtension card for `electrical:*` nodes:
  * Shows live NEC 314.16 Box Fill, NEC 310.16/310.15 Ampacity, Ch. 9 Conduit Fill,
@@ -9,7 +11,7 @@ import { openEditorView, useScene } from '@pascal-app/editor'
 import { useMemo } from 'react'
 import { auditSceneElectrical, type NecAuditFinding } from '../nec/audit'
 import type { SceneNodeLike } from '../nec/load-calc'
-import { ELECTRICAL_SCHEDULE_VIEW_ID } from './electrical-panel'
+import { ELECTRICAL_SCHEDULE_VIEW_ID } from '../render'
 import { useElectricalUi } from './store'
 import { buildPanelSchedule } from '../nec/panel-schedule'
 import {
@@ -142,6 +144,28 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
     const racewayType = (typeof raw.racewayType === 'string' ? raw.racewayType : 'emt') as RacewayType
     const wireGauge = (typeof raw.wireGauge === 'string' ? raw.wireGauge : '12') as WireGauge
     const material = (raw.conductorMaterial === 'al' ? 'al' : 'cu') as ConductorMaterial
+    const targetNode =
+      typeof raw.targetDeviceId === 'string'
+        ? nodes[raw.targetDeviceId]
+        : undefined
+    const resolvedBreakerAmps =
+      typeof raw.breakerAmps === 'number'
+        ? raw.breakerAmps
+        : typeof targetNode?.breakerAmps === 'number'
+          ? targetNode.breakerAmps
+          : typeof raw.panelId === 'string' && typeof raw.circuitNumber === 'number'
+            ? Object.values(nodes).reduce<number | undefined>((maxA, n) => {
+                if (
+                  n.type === 'electrical:device' &&
+                  n.panelId === raw.panelId &&
+                  n.circuitNumber === raw.circuitNumber &&
+                  typeof n.breakerAmps === 'number'
+                ) {
+                  return maxA === undefined ? n.breakerAmps : Math.max(maxA, n.breakerAmps)
+                }
+                return maxA
+              }, undefined)
+            : undefined
     const amp = calculateDeratedAmpacity({
       wireGauge,
       material,
@@ -152,6 +176,7 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
       currentCarryingCount: typeof raw.currentCarryingCount === 'number' ? raw.currentCarryingCount : 2,
       loadAmps: typeof raw.loadAmps === 'number' ? raw.loadAmps : 16,
       continuousLoad: raw.continuous === true,
+      breakerAmps: resolvedBreakerAmps,
     })
     const vd = calculateVoltageDrop({
       wireGauge,
@@ -188,7 +213,15 @@ export default function ElectricalInspectorCard({ node }: { node?: AnyNode }) {
         {routingLabel && <Row label="Routing Mode" value={routingLabel} />}
         <Row label="Routed Length" value={`${lenFt} ft`} />
         <Row label="Total Bends (358.26)" value={`${totalBendDegrees}° / 360°`} warn={totalBendDegrees > 360} />
-        <Row label="Derated Ampacity" value={`${amp.finalAllowableAmpacity} A`} warn={!amp.compliant} />
+        <Row
+          label="Derated Ampacity"
+          value={
+            resolvedBreakerAmps
+              ? `${amp.finalAllowableAmpacity} A (${resolvedBreakerAmps}A OCPD)`
+              : `${amp.finalAllowableAmpacity} A`
+          }
+          warn={!amp.compliant || !amp.breakerCompliant}
+        />
         <Row label="Voltage Drop" value={`${vd.voltageDropPct}% (${vd.voltageDropVolts}V)`} warn={!vd.compliant} />
         {fill && <Row label="Ch. 9 Conduit Fill" value={`${fill.actualFillPct}% / ${fill.maxAllowedFillPct}%`} warn={!fill.compliant} />}
         <Row label="Trade Clashes" value={clashCount === 0 ? 'Clear' : `${clashCount} clash(es)`} warn={clashCount > 0} />

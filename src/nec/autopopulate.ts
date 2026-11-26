@@ -32,6 +32,7 @@ import {
   extractRoutingCavities,
   extractRoutingWalls,
   extractTradeObstacles,
+  getHvacEquipmentBox,
   getPlumbingFixtureBox,
   polylineLengthM,
   resolveLevelHeightM,
@@ -56,6 +57,7 @@ import {
   getVoltageLineToNeutral,
   getWorkingClearance110_26,
   isThreePhaseSystem,
+  isZeroYokeDeviceKind,
 } from './tables'
 
 export type ProtectionMode = 'hybrid' | 'gfci-breakers' | 'gfci-receptacles'
@@ -145,6 +147,8 @@ export type PlannedRunSpec = {
   avoidedObstaclesCount: number
   routingMode?: RoutingMode
   necNotes?: string[]
+  preferredChaseY?: number
+  laneOffsetLateralM?: number
 }
 
 export type AutoPopulatePlan = {
@@ -2085,16 +2089,25 @@ export function planNecAutoPopulate(
           mepRawY >= 2.2))
 
     // Offset power receptacle/disconnect cleanly outside equipment footprint + clearance so wires never self-clash.
+    // Derive radial offset dynamically from the actual equipment AABB half-extents + clearance (so wide units like
+    // rooftop-package-unit 1.55m x 1.05m or heat-pump-condenser 0.85m never bury their disconnect inside the cabinet).
     // For HVAC/Plumbing equipment, pick a face (+/-X, +/-Z, or rotated local faces) whose terminal point AND
     // vertical riser do NOT land inside an adjacent side-return duct (`hvac:duct-run`) or plenum (`hvac:plenum`).
     // For plumbing fixtures (dishwasher/disposal/washer), place the outlet laterally in the adjacent under-sink bay.
-    const radialOffsetM = isCeilingHardwiredExhaust
-      ? 0.22
-      : isHvacEquip
-        ? 0.56
-        : mepNode.type === 'plumbing:equipment'
-          ? 0.42
-          : 0
+    const selfMepObs = obstacles.find((o) => o.nodeId === mepNode.id)
+    const selfEqBox = selfMepObs?.box ?? (isHvacEquip ? getHvacEquipmentBox(mepNode) : null)
+    const selfEqHalfX = selfEqBox ? (selfEqBox.max[0] - selfEqBox.min[0]) / 2 : 0
+    const selfEqHalfZ = selfEqBox ? (selfEqBox.max[2] - selfEqBox.min[2]) / 2 : 0
+    const selfEqClearance = selfMepObs?.requiredClearanceM ?? (isHvacEquip ? 0.15 : 0.05)
+    const radialOffsetForDir = (ux: number, uz: number): number => {
+      if (isCeilingHardwiredExhaust) return 0.22
+      const baseFloor = isHvacEquip ? 0.56 : mepNode.type === 'plumbing:equipment' ? 0.42 : 0
+      if (baseFloor === 0) return 0
+      if (!selfEqBox) return baseFloor
+      const dirHalfExtent = Math.abs(ux) * selfEqHalfX + Math.abs(uz) * selfEqHalfZ
+      return round3(Math.max(baseFloor, dirHalfExtent + selfEqClearance + 0.12))
+    }
+    const radialOffsetM = radialOffsetForDir(Math.sin(mepRot), Math.cos(mepRot))
     const lateralOffsetM = mepNode.type === 'plumbing:fixture' ? 0.36 : 0
     const targetY = isCeilingHardwiredExhaust
       ? round3(Math.max(2.44, Math.min(levelHeight - 0.03, mepRawY >= 2.2 ? mepRawY : ceilingLightY)))
@@ -2146,9 +2159,11 @@ export function planNecAutoPopulate(
           [0, -1],
         ]
         let bestFace: { p: Vec3; score: number } | null = null
-        for (const distOff of [radialOffsetM, round3(radialOffsetM + 0.22)]) {
+        for (const extraOff of [0, 0.22]) {
           for (let di = 0; di < dirCandidates.length; di++) {
             const [ux, uz] = dirCandidates[di]!
+            const baseFaceOff = radialOffsetForDir(ux, uz)
+            const distOff = round3(baseFaceOff + extraOff)
             const cx = round3(mepOriginX + ux * distOff)
             const cz = round3(mepOriginZ + uz * distOff)
             const hitsPoint = pointOnlyHitsObstacle(cx, targetY, cz)
@@ -2159,7 +2174,7 @@ export function planNecAutoPopulate(
               (hitsPoint ? -500 : 0) +
               (hitsRiser ? -200 : 0) +
               (sameRoom ? 40 : 0) -
-              (distOff - radialOffsetM) * 25 -
+              extraOff * 25 -
               di * 0.5
             if (!bestFace || score > bestFace.score) {
               bestFace = { p: [cx, targetY, cz], score }
@@ -3418,6 +3433,8 @@ export function planNecAutoPopulate(
         avoidedObstaclesCount: hrRoute.avoidedObstacles.length,
         routingMode: hrRoute.routingMode,
         necNotes: hrRoute.necNotes,
+        preferredChaseY: circuitChaseY,
+        laneOffsetLateralM: circuitLaneLateralM,
       })
       homeRunCount = 1
 
@@ -3454,6 +3471,8 @@ export function planNecAutoPopulate(
           avoidedObstaclesCount: hopRoute.avoidedObstacles.length,
           routingMode: hopRoute.routingMode,
           necNotes: hopRoute.necNotes,
+          preferredChaseY: circuitChaseY,
+          laneOffsetLateralM: circuitLaneLateralM,
         })
         daisyChainCount += 1
       }
@@ -3540,6 +3559,8 @@ export type PlannedDeviceConnectionRun = {
   avoidedObstaclesCount: number
   routingMode?: RoutingMode
   necNotes?: string[]
+  preferredChaseY?: number
+  laneOffsetLateralM?: number
 }
 
 export type DeviceAutoConnectionPlan = {
@@ -3590,23 +3611,6 @@ function deviceFamilyOf(kind: string): 'receptacle' | 'lighting' | 'junction' | 
   }
   if (kind === 'junction-box') return 'junction'
   return 'dedicated'
-}
-
-function isZeroYokeDeviceKind(kind: unknown): boolean {
-  return (
-    kind === 'junction-box' ||
-    kind === 'luminaire' ||
-    kind === 'ceiling-fan' ||
-    kind === 'smoke-co' ||
-    kind === 'under-cabinet-led' ||
-    kind === 'solar-inverter' ||
-    kind === 'battery-ess' ||
-    kind === 'transfer-switch' ||
-    kind === 'generator-inlet' ||
-    kind === 'rapid-shutdown' ||
-    kind === 'spd' ||
-    kind === 'vfd'
-  )
 }
 
 function resolveZoneNearPoint(

@@ -1,3 +1,5 @@
+'use client'
+
 /**
  * Left-rail EditorHostPanel for `krusch:electrical`.
  * Uses Pascal host CSS variables and scoped inline layout so zero global CSS leaks.
@@ -23,9 +25,10 @@ import {
   type Vec3,
 } from '../nec/routing'
 import type { ElectricalDeviceKind } from '../nodes/device'
+import { ELECTRICAL_SCHEDULE_VIEW_ID } from '../render'
 import { useElectricalUi } from './store'
 
-export const ELECTRICAL_SCHEDULE_VIEW_ID = 'krusch:electrical:schedule'
+export { ELECTRICAL_SCHEDULE_VIEW_ID }
 
 function activeLevelOf(nodes: Readonly<Record<string, AnyNode>>, selectedLevelId: string | null): string | null {
   if (selectedLevelId && nodes[selectedLevelId]) return selectedLevelId
@@ -381,9 +384,42 @@ export default function ElectricalRailPanel() {
       for (const run of activeLevelRuns) {
         const path = Array.isArray(run.path) ? (run.path as Vec3[]) : []
         if (path.length < 2) continue
-        const existingClashes = detectRunTradeClashes(path, levelObstacles)
-        const res = routeElectricalRun(path[0]!, path[path.length - 1]!, levelObstacles, {
-          preferredChaseY: defaultChaseY,
+        const prevMeta =
+          run.metadata && typeof run.metadata === 'object'
+            ? (run.metadata as Record<string, unknown>)
+            : {}
+        // Exclude MEP source equipment owned by this run's endpoint devices (matching autopopulate & audit)
+        const selfMepIds = new Set<string>()
+        for (const endId of [
+          typeof run.targetDeviceId === 'string' ? run.targetDeviceId : null,
+          typeof prevMeta.fromNodeId === 'string' ? prevMeta.fromNodeId : null,
+        ]) {
+          if (!endId) continue
+          const endDev = record[endId]
+          const endMeta =
+            endDev?.metadata && typeof endDev.metadata === 'object'
+              ? (endDev.metadata as Record<string, unknown>)
+              : null
+          if (typeof endMeta?.mepSourceNodeId === 'string' && endMeta.mepSourceNodeId.length > 0) {
+            selfMepIds.add(endMeta.mepSourceNodeId)
+          }
+        }
+        const runObstacles =
+          selfMepIds.size > 0
+            ? levelObstacles.filter((o) => !selfMepIds.has(o.nodeId))
+            : levelObstacles
+        const runChaseY =
+          typeof prevMeta.preferredChaseY === 'number' && Number.isFinite(prevMeta.preferredChaseY)
+            ? prevMeta.preferredChaseY
+            : defaultChaseY
+        const runLateralM =
+          typeof prevMeta.laneOffsetLateralM === 'number' && Number.isFinite(prevMeta.laneOffsetLateralM)
+            ? prevMeta.laneOffsetLateralM
+            : undefined
+        const existingClashes = detectRunTradeClashes(path, runObstacles)
+        const res = routeElectricalRun(path[0]!, path[path.length - 1]!, runObstacles, {
+          preferredChaseY: runChaseY,
+          laneOffsetLateralM: runLateralM,
           walls,
           racewayType: (typeof run.racewayType === 'string' ? run.racewayType : 'nm-b') as 'nm-b' | 'mc' | 'emt' | 'pvc-40' | 'rmc',
           wireGauge: typeof run.wireGauge === 'string' ? (run.wireGauge as '14' | '12' | '10') : undefined,
@@ -391,11 +427,7 @@ export default function ElectricalRailPanel() {
         })
         const pathChanged = !pathsNearlyEqual(path, res.path)
         const improvesClashes = existingClashes.length > 0 && res.remainingClashes.length < existingClashes.length
-        if ((improvesClashes || (pathChanged && res.remainingClashes.length <= existingClashes.length))) {
-          const prevMeta =
-            run.metadata && typeof run.metadata === 'object'
-              ? (run.metadata as Record<string, unknown>)
-              : {}
+        if (improvesClashes || (pathChanged && res.remainingClashes.length <= existingClashes.length)) {
           updateNode(run.id as never, {
             path: res.path,
             metadata: {

@@ -274,6 +274,17 @@ function rotatedHalfExtentsXZ(width: number, depth: number, rotY: number): [numb
 export function getHvacEquipmentBox(node: SceneNodeLike): Aabb3 | null {
   if (!isVec3(node.position)) return null
   const [x, y, z] = node.position
+  const asset =
+    node.asset && typeof node.asset === 'object'
+      ? (node.asset as Record<string, unknown>)
+      : null
+  const explicitDims = isVec3(node.dimensions)
+    ? node.dimensions
+    : isVec3(asset?.dimensions)
+      ? asset.dimensions
+      : isVec3(node.size)
+        ? node.size
+        : null
   const eqKind = typeof node.equipmentKind === 'string' ? node.equipmentKind : ''
   const defaultDims: [number, number, number] =
     eqKind === 'rooftop-package-unit'
@@ -295,9 +306,10 @@ export function getHvacEquipmentBox(node: SceneNodeLike): Aabb3 | null {
                     : eqKind === 'dehumidifier-whole-house'
                       ? [0.52, 0.38, 0.4]
                       : [0.6, 0.7, 1.1]
-  const w = typeof node.width === 'number' ? node.width : defaultDims[0]
-  const d = typeof node.depth === 'number' ? node.depth : defaultDims[1]
-  const h = typeof node.height === 'number' ? node.height : defaultDims[2]
+  // explicitDims follows Three.js Y-up [width, height, depth] convention (matching audit.ts)
+  const w = explicitDims ? explicitDims[0] : typeof node.width === 'number' ? node.width : defaultDims[0]
+  const h = explicitDims ? explicitDims[1] : typeof node.height === 'number' ? node.height : defaultDims[2]
+  const d = explicitDims ? explicitDims[2] : typeof node.depth === 'number' ? node.depth : defaultDims[1]
   const rot = typeof node.rotation === 'number' && Number.isFinite(node.rotation) ? node.rotation : 0
   const [halfX, halfZ] = rotatedHalfExtentsXZ(w, d, rot)
   return {
@@ -1957,12 +1969,12 @@ function applyLateralLaneOffset(path: readonly Vec3[], offsetM: number): Vec3[] 
     }
   }
 
-  // Propagate X/Z shift along strictly vertical terminal risers so risers remain 100% plumb (0 extra bend deg)
+  // Propagate X/Z shift along strictly vertical steps/risers (closing the 0.02..0.05m deadband so risers stay plumb)
   for (let pass = 0; pass < 2; pass++) {
     for (let i = 0; i < path.length - 1; i++) {
       const a = path[i]!
       const b = path[i + 1]!
-      if (Math.abs(b[0] - a[0]) < 0.02 && Math.abs(b[2] - a[2]) < 0.02 && Math.abs(b[1] - a[1]) > 0.05) {
+      if (Math.abs(b[0] - a[0]) < 0.02 && Math.abs(b[2] - a[2]) < 0.02 && Math.abs(b[1] - a[1]) >= 0.015) {
         if (shiftX[i] || shiftX[i + 1]) {
           shiftX[i] = true
           shiftX[i + 1] = true
@@ -2414,7 +2426,7 @@ export function routeElectricalRun(
       const shifted = simplifyOrthogonalPath(applyLateralLaneOffset(bestPath, candidateOff))
       if (
         detectRunTradeClashes(shifted, obstacles, clearanceM, conduitRadiusM).length === 0 &&
-        countPathBendDegrees(shifted).totalBendDegrees <= Math.max(maxBendDegrees, baseBends)
+        countPathBendDegrees(shifted).totalBendDegrees <= baseBends + 2
       ) {
         bestPath = shifted
         break

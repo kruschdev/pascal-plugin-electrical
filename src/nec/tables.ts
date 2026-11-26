@@ -484,6 +484,29 @@ export function usesSeparateRoughInBox(deviceKind: string): boolean {
   return !INTEGRAL_ENCLOSURE_KINDS.has(deviceKind)
 }
 
+/**
+ * Device kinds that carry zero NEC 314.16(B)(4) strap/yoke allowance (junction boxes, luminaires,
+ * ceiling fans, hardwired smoke/CO alarms, under-cabinet LEDs, and integral-enclosure equipment).
+ */
+const ZERO_YOKE_DEVICE_KINDS = new Set<string>([
+  'junction-box',
+  'luminaire',
+  'ceiling-fan',
+  'smoke-co',
+  'under-cabinet-led',
+  'solar-inverter',
+  'battery-ess',
+  'transfer-switch',
+  'generator-inlet',
+  'rapid-shutdown',
+  'spd',
+  'vfd',
+])
+
+export function isZeroYokeDeviceKind(deviceKind: unknown): boolean {
+  return typeof deviceKind === 'string' && ZERO_YOKE_DEVICE_KINDS.has(deviceKind)
+}
+
 const BOX_FILL_GAUGE_SET = new Set<string>(['18', '16', '14', '12', '10', '8', '6'])
 const BRANCH_WIRE_GAUGE_SET = new Set<string>(WIRE_GAUGE_ORDER)
 

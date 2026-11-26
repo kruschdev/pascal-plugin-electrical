@@ -27,6 +27,7 @@ import {
   extractRoutingWalls,
   extractTradeObstacles,
   resolveLevelHeightM,
+  resolveNodeLevelId,
   routeElectricalRun,
   type Vec3,
 } from './nec/routing'
@@ -48,6 +49,7 @@ import {
   getVoltageLineToLine,
   getVoltageLineToNeutral,
   isThreePhaseSystem,
+  isZeroYokeDeviceKind,
 } from './nec/tables'
 
 function largerWireGauge(a: WireGauge, b: WireGauge): WireGauge {
@@ -296,19 +298,7 @@ export const electricalAgentOperations = {
       continuousLoad: continuous,
       breakerAmps: initialBreakerAmps,
     })
-    const isZeroYoke =
-      deviceKind === 'junction-box' ||
-      deviceKind === 'luminaire' ||
-      deviceKind === 'ceiling-fan' ||
-      deviceKind === 'smoke-co' ||
-      deviceKind === 'under-cabinet-led' ||
-      deviceKind === 'solar-inverter' ||
-      deviceKind === 'battery-ess' ||
-      deviceKind === 'transfer-switch' ||
-      deviceKind === 'generator-inlet' ||
-      deviceKind === 'rapid-shutdown' ||
-      deviceKind === 'spd' ||
-      deviceKind === 'vfd'
+    const isZeroYoke = isZeroYokeDeviceKind(deviceKind)
     const autoBoxType = (
       deviceKind === 'junction-box'
         ? '4-sq-2.125'
@@ -506,7 +496,15 @@ export const electricalAgentOperations = {
       input.occupancy ?? (panel.occupancy === 'commercial' ? 'commercial' : 'residential')
     const racewayType: RacewayType =
       input.racewayType ?? (occupancy === 'commercial' ? 'emt' : 'nm-b')
-    const obstacles = extractTradeObstacles(record, parentId)
+    const allObstacles = extractTradeObstacles(record, parentId)
+    const targetMepId =
+      device.metadata && typeof device.metadata === 'object'
+        ? (device.metadata as Record<string, unknown>).mepSourceNodeId
+        : undefined
+    const obstacles =
+      typeof targetMepId === 'string' && targetMepId.length > 0
+        ? allObstacles.filter((o) => o.nodeId !== targetMepId)
+        : allObstacles
     const walls = extractRoutingWalls(record, parentId)
     const cavities = extractRoutingCavities(record, parentId)
     const levelHeight = resolveLevelHeightM(record, parentId)
@@ -746,11 +744,29 @@ export const electricalAgentOperations = {
       'electrical:busway',
     ])
     if (input.clearExisting === true) {
-      for (const [id, n] of Object.entries(origRecord)) {
-        if (CLEARABLE_ELECTRICAL_TYPES.has(n.type) && belongsToLevel(origRecord, n, parentId)) {
-          deleteIds.push(id)
-          delete workingNodes[id]
+      // Preserve panels that are still referenced by devices on other levels
+      const crossLevelPanelIds = new Set<string>()
+      if (parentId !== null) {
+        for (const n of Object.values(origRecord)) {
+          if (n.type !== 'electrical:device' && n.type !== 'electrical:conduit-run') continue
+          const nLevel = resolveNodeLevelId(origRecord, n)
+          if (nLevel !== parentId && typeof n.panelId === 'string' && n.panelId.length > 0) {
+            crossLevelPanelIds.add(n.panelId)
+          }
         }
+      }
+      for (const [id, n] of Object.entries(origRecord)) {
+        if (!CLEARABLE_ELECTRICAL_TYPES.has(n.type)) continue
+        // When clearing a specific level, require an explicit level match so root/unparented
+        // site-level transformers or main service panels (parentId == null) are never wiped.
+        const onTargetLevel =
+          parentId === null
+            ? belongsToLevel(origRecord, n, parentId)
+            : resolveNodeLevelId(origRecord, n) === parentId
+        if (!onTargetLevel) continue
+        if (n.type === 'electrical:panel' && crossLevelPanelIds.has(id)) continue
+        deleteIds.push(id)
+        delete workingNodes[id]
       }
     }
 
@@ -850,7 +866,7 @@ export const electricalAgentOperations = {
         wireGauge: dev.wireGauge,
         conductorCount: dev.conductorCount,
         clampCount: 1,
-        yokeCount: dev.deviceKind === 'luminaire' || dev.deviceKind === 'smoke-co' ? 0 : 1,
+        yokeCount: isZeroYokeDeviceKind(dev.deviceKind) ? 0 : 1,
       } as unknown as AnyNode
       creates.push({ node: dNode, parentId: parentId ?? undefined })
     }
@@ -873,6 +889,8 @@ export const electricalAgentOperations = {
           avoidedObstaclesCount: run.avoidedObstaclesCount,
           routingMode: run.routingMode,
           necNotes: run.necNotes,
+          ...(typeof run.preferredChaseY === 'number' ? { preferredChaseY: run.preferredChaseY } : {}),
+          ...(typeof run.laneOffsetLateralM === 'number' ? { laneOffsetLateralM: run.laneOffsetLateralM } : {}),
         },
         path: run.path,
         occupancy: run.occupancy,

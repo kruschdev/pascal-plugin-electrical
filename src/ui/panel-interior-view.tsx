@@ -1,3 +1,5 @@
+'use client'
+
 /**
  * Interactive Zoomed-In 3D Panel Interior Viewer (`PanelInteriorView`).
  * Lets users inspect the cover-off electrical panelboard, exposed copper busbars,
@@ -95,6 +97,7 @@ export default function PanelInteriorView({
   const [showFeeders, setShowFeeders] = useState(true)
   const [selectedCircuit, setSelectedCircuit] = useState<number | null>(null)
   const [pickedMeta, setPickedMeta] = useState<PanelWireMetadata | null>(null)
+  const [webglError, setWebglError] = useState<string | null>(null)
 
   const orbitRef = useRef({
     theta: PRESET_VIEWS.breakers.theta,
@@ -137,7 +140,18 @@ export default function PanelInteriorView({
     scene.add(holder)
 
     const camera = new PerspectiveCamera(38, width / height, 0.01, 20)
-    const renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
+    let renderer: WebGLRenderer
+    try {
+      renderer = new WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
+      setWebglError(null)
+    } catch (err) {
+      setWebglError(
+        err instanceof Error
+          ? `3D Panel Interior preview unavailable (WebGL context error: ${err.message}).`
+          : '3D Panel Interior preview unavailable (WebGL context could not be initialized).',
+      )
+      return
+    }
     renderer.setSize(width, height)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
     container.innerHTML = ''
@@ -436,17 +450,38 @@ export default function PanelInteriorView({
       </div>
 
       {/* Interactive 3D WebGL Viewport */}
-      <div
-        ref={containerRef}
-        style={{
-          width: '100%',
-          height: 490,
-          borderRadius: 10,
-          overflow: 'hidden',
-          border: '1px solid rgba(148,163,184,0.24)',
-          background: '#0b1220',
-        }}
-      />
+      {webglError ? (
+        <div
+          style={{
+            width: '100%',
+            minHeight: 160,
+            padding: 20,
+            borderRadius: 10,
+            border: '1px solid rgba(248,113,113,0.45)',
+            background: 'rgba(127,29,29,0.22)',
+            color: '#fecaca',
+            fontSize: 12,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            textAlign: 'center',
+          }}
+        >
+          {webglError}
+        </div>
+      ) : (
+        <div
+          ref={containerRef}
+          style={{
+            width: '100%',
+            height: 490,
+            borderRadius: 10,
+            overflow: 'hidden',
+            border: '1px solid rgba(148,163,184,0.24)',
+            background: '#0b1220',
+          }}
+        />
+      )}
 
       {/* Live Picked Wire / Breaker Inspector Banner */}
       <div

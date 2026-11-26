@@ -1,3 +1,5 @@
+'use client'
+
 /**
  * Persisted ChatToolCard for `krusch:electrical` (`PluginChatExtension`).
  * Renders strictly from persisted tool call output across all 3 registered cards:
@@ -5,7 +7,7 @@
  */
 
 import type { ChatToolCardProps } from '@pascal-app/editor'
-import { ELECTRICAL_SCHEDULE_VIEW_ID } from './electrical-panel'
+import { ELECTRICAL_SCHEDULE_VIEW_ID } from '../render'
 
 type AuditFindingItem = {
   id: string

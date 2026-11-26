@@ -11,6 +11,7 @@ import { electricalPanelRenderDefinition } from './nodes/panel'
 import { electricalTransformerRenderDefinition } from './nodes/transformer'
 
 export const ELECTRICAL_PLUGIN_ID = 'krusch:electrical' as const
+export const ELECTRICAL_SCHEDULE_VIEW_ID = 'krusch:electrical:schedule' as const
 
 export const electricalRenderPlugin: Plugin = {
   id: ELECTRICAL_PLUGIN_ID,

@@ -57,6 +57,7 @@ import {
   clampToBoxFillGauge,
   clampToBranchWireGauge,
   getWorkingClearance110_26,
+  isZeroYokeDeviceKind,
   round2,
   usesSeparateRoughInBox,
 } from './tables'
@@ -116,9 +117,11 @@ function getZoneAt(
   x: number,
   z: number,
   levelId: string | null = null,
+  preFilteredZones?: readonly SceneNodeLike[],
 ): SceneNodeLike | null {
-  for (const n of Object.values(nodes)) {
-    if (n.type !== 'zone') continue
+  const candidates = preFilteredZones ?? Object.values(nodes)
+  for (const n of candidates) {
+    if (!preFilteredZones && n.type !== 'zone') continue
     if (!belongsToLevel(nodes, n, levelId)) continue
     if (Array.isArray(n.polygon) && n.polygon.length >= 3) {
       if (pointInPolygon2D(x, z, n.polygon as [number, number][])) return n
@@ -451,8 +454,19 @@ function horizontalDistToAabbXZ(x: number, z: number, box: Aabb3): number {
   return Math.hypot(dx, dz)
 }
 
+type AuditWallSegment = {
+  sx: number
+  sz: number
+  ex: number
+  ez: number
+  length: number
+  thickness: number
+  doorOpenings: Array<[number, number]>
+}
+
 /**
- * Return true if any 2D wall segment strictly separates points `(ax, az)` and `(bx, bz)`.
+ * Return true if any solid 2D wall segment (excluding door openings and host-wall centerline jitter)
+ * strictly separates points `(ax, az)` and `(bx, bz)`.
  * Used so solid drywall partitions properly separate rooms for NEC 406.9(C) & 406.5(E) proximity checks.
  */
 function wallSeparatesPoints2D(
@@ -460,12 +474,14 @@ function wallSeparatesPoints2D(
   az: number,
   bx: number,
   bz: number,
-  walls: ReadonlyArray<{ sx: number; sz: number; ex: number; ez: number }>,
+  walls: ReadonlyArray<AuditWallSegment>,
 ): boolean {
   const rX = bx - ax
   const rZ = bz - az
-  if (Math.hypot(rX, rZ) < 1e-4) return false
+  const segDist = Math.hypot(rX, rZ)
+  if (segDist < 1e-4) return false
   for (const w of walls) {
+    if (w.length < 1e-4) continue
     const sX = w.ex - w.sx
     const sZ = w.ez - w.sz
     const denom = rX * sZ - rZ * sX
@@ -474,9 +490,16 @@ function wallSeparatesPoints2D(
     const qpz = w.sz - az
     const t = (qpx * sZ - qpz * sX) / denom
     const u = (qpx * rZ - qpz * rX) / denom
-    if (t > 0.01 && t < 0.99 && u >= -0.02 && u <= 1.02) {
-      return true
-    }
+    if (t <= 0.01 || t >= 0.99 || u < -0.02 || u > 1.02) continue
+    // An open doorway does not form a solid partition barrier (NEC 406.9(C) applies across open doorways)
+    const alongWall = u * w.length
+    if (w.doorOpenings.some(([dMin, dMax]) => alongWall >= dMin && alongWall <= dMax)) continue
+    // Require the device to be on the opposite face of the wall (>= 40% of thickness / >= 4cm),
+    // preventing slightly recessed in-bathroom boxes from being masked by their own backing wall centerline.
+    const perpDistFromA = Math.abs((ax - w.sx) * sZ - (az - w.sz) * sX) / w.length
+    const minOppositeFaceClearance = Math.max(0.04, w.thickness * 0.4)
+    if (perpDistFromA < minOppositeFaceClearance) continue
+    return true
   }
   return false
 }
@@ -517,7 +540,16 @@ export function auditSceneElectrical(
   const runs = all.filter((n) => n.type === 'electrical:conduit-run')
   const transformers = all.filter((n) => n.type === 'electrical:transformer')
   const stairs = all.filter((n) => n.type === 'stair')
-  const wallsByLevel = new Map<string, Array<{ sx: number; sz: number; ex: number; ez: number }>>()
+  const zones = all.filter((n) => n.type === 'zone')
+  const doorsByWallId = new Map<string, SceneNodeLike[]>()
+  for (const n of all) {
+    if (n.type === 'door' && typeof n.parentId === 'string') {
+      const bucket = doorsByWallId.get(n.parentId) ?? []
+      bucket.push(n)
+      doorsByWallId.set(n.parentId, bucket)
+    }
+  }
+  const wallsByLevel = new Map<string, AuditWallSegment[]>()
   const getWallsForLevel = (levelId: string | null) => {
     const key = levelId ?? '__all__'
     let list = wallsByLevel.get(key)
@@ -527,12 +559,32 @@ export function auditSceneElectrical(
         if (n.type !== 'wall') continue
         if (!belongsToLevel(nodes, n, levelId)) continue
         if (!Array.isArray(n.start) || !Array.isArray(n.end)) continue
-        list.push({
-          sx: Number(n.start[0]),
-          sz: Number(n.start[1]),
-          ex: Number(n.end[0]),
-          ez: Number(n.end[1]),
-        })
+        const sx = Number(n.start[0])
+        const sz = Number(n.start[1])
+        const ex = Number(n.end[0])
+        const ez = Number(n.end[1])
+        const length = Math.hypot(ex - sx, ez - sz)
+        if (!Number.isFinite(length) || length < 0.05) continue
+        const dx = (ex - sx) / length
+        const dz = (ez - sz) / length
+        const thickness =
+          typeof n.thickness === 'number' && n.thickness > 0 ? n.thickness : 0.14
+        const doorOpenings: Array<[number, number]> = []
+        for (const door of doorsByWallId.get(n.id) ?? []) {
+          const openW = typeof door.width === 'number' && door.width > 0 ? door.width : 0.9
+          let tCenter = length / 2
+          if (Array.isArray(door.position) && typeof door.position[0] === 'number') {
+            const px = door.position[0] as number
+            const pz = typeof door.position[2] === 'number' ? (door.position[2] as number) : 0
+            if (Math.abs(pz) < 0.4 && px >= -0.2 && px <= length + 0.2) {
+              tCenter = px
+            } else {
+              tCenter = (px - sx) * dx + (pz - sz) * dz
+            }
+          }
+          doorOpenings.push([Math.max(0, tCenter - openW / 2), Math.min(length, tCenter + openW / 2)])
+        }
+        list.push({ sx, sz, ex, ez, length, thickness, doorOpenings })
       }
       wallsByLevel.set(key, list)
     }
@@ -680,7 +732,7 @@ export function auditSceneElectrical(
       }
 
       const panelLevelId = resolveNodeLevelId(nodes, panel)
-      const pZone = getZoneAt(nodes, pPos[0], pPos[2], panelLevelId)
+      const pZone = getZoneAt(nodes, pPos[0], pPos[2], panelLevelId, zones)
       const pZoneCat = zoneDescriptorOf(pZone)
       if (pZoneCat && BATHROOM_PATTERN.test(pZoneCat)) {
         push({
@@ -830,7 +882,7 @@ export function auditSceneElectrical(
     const txPos = toVec3(tx.position)
     if (txPos) {
       const txLevelId = resolveNodeLevelId(nodes, tx)
-      const txZone = getZoneAt(nodes, txPos[0], txPos[2], txLevelId)
+      const txZone = getZoneAt(nodes, txPos[0], txPos[2], txLevelId, zones)
       const txZoneCat = zoneDescriptorOf(txZone)
       const txNema = typeof tx.nemaRating === 'string' ? tx.nemaRating : 'NEMA-2'
       if (txZoneCat && OUTDOOR_PATTERN.test(txZoneCat) && !['NEMA-3R', 'NEMA-4', 'NEMA-4X'].includes(txNema)) {
@@ -857,15 +909,10 @@ export function auditSceneElectrical(
       const boxType = (typeof dev.boxType === 'string' ? dev.boxType : 'single-gang-standard') as BoxType
       const validBoxGauge = clampToBoxFillGauge(typeof dev.wireGauge === 'string' ? dev.wireGauge : undefined)
       const conductorCount = typeof dev.conductorCount === 'number' ? dev.conductorCount : 4
-      const isZeroYokeKind =
-        devKind === 'junction-box' ||
-        devKind === 'luminaire' ||
-        devKind === 'ceiling-fan' ||
-        devKind === 'smoke-co'
       const yokeCount =
         typeof dev.yokeCount === 'number'
           ? dev.yokeCount
-          : isZeroYokeKind
+          : isZeroYokeDeviceKind(devKind)
             ? 0
             : 1
       const clampCount = typeof dev.clampCount === 'number' ? dev.clampCount : 1
@@ -896,8 +943,8 @@ export function auditSceneElectrical(
       const [x, , z] = devPos
       const devRot = typeof dev.rotation === 'number' && Number.isFinite(dev.rotation) ? dev.rotation : 0
       const zone =
-        getZoneAt(nodes, x, z, devLevelId) ??
-        getZoneAt(nodes, x + Math.sin(devRot) * 0.22, z + Math.cos(devRot) * 0.22, devLevelId)
+        getZoneAt(nodes, x, z, devLevelId, zones) ??
+        getZoneAt(nodes, x + Math.sin(devRot) * 0.22, z + Math.cos(devRot) * 0.22, devLevelId, zones)
       const zoneCat = zoneDescriptorOf(zone)
       const devMeta = dev.metadata as { mepSourceNodeId?: string; roomName?: string; zoneName?: string } | undefined
       const mepSource =
@@ -944,7 +991,7 @@ export function auditSceneElectrical(
         if (devLevelId && fix.levelId && devLevelId !== fix.levelId) continue
         const fixCx = (fix.box.min[0] + fix.box.max[0]) / 2
         const fixCz = (fix.box.min[2] + fix.box.max[2]) / 2
-        const fixZone = getZoneAt(nodes, fixCx, fixCz, fix.levelId ?? devLevelId)
+        const fixZone = getZoneAt(nodes, fixCx, fixCz, fix.levelId ?? devLevelId, zones)
         if (zone && fixZone && zone.id !== fixZone.id) continue
         const fixRoomTag = (
           (typeof fix.node.roomName === 'string' && fix.node.roomName) ||
@@ -1092,7 +1139,7 @@ export function auditSceneElectrical(
     const pos = toVec3(dev.position)
     if (!pos) continue
     const devLevelId = resolveNodeLevelId(nodes, dev)
-    const zone = getZoneAt(nodes, pos[0], pos[2], devLevelId)
+    const zone = getZoneAt(nodes, pos[0], pos[2], devLevelId, zones)
     const zCat = zoneDescriptorOf(zone)
     if (!zCat) continue
     const key = `${dev.panelId}:${dev.circuitNumber}`
