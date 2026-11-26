@@ -562,16 +562,66 @@ export function planNecAutoPopulate(
   )
   const obstacles = extractTradeObstacles(nodes, levelId)
 
-  // Extract bathtub/shower fixture footprints on this level so auto-populate keeps outlets >= 3 ft (0.95 m) clear (NEC 406.9(C))
+  // Extract bathtub/shower & sink basin footprints on this level so auto-populate keeps outlets >= 3 ft clear of tubs (NEC 406.9(C))
+  // and outside sink basins (NEC 406.5(E)) even when nudging receptacles around vertical DWV stacks
   const tubBoxes = extractTubBoxes(nodes, levelId)
   const distToNearestTub = (x: number, z: number): number => minDistToTubBoxes(tubBoxes, x, z)
+  const sinkBoxes: Aabb3[] = []
+  for (const n of all) {
+    if (!belongsToLevel(nodes, n, levelId)) continue
+    if (n.type !== 'plumbing:fixture' && n.type !== 'item' && n.type !== 'procedural-item') continue
+    const desc = `${String(n.name ?? '')} ${String(n.fixtureKind ?? '')} ${String(n.kind ?? '')}`.toLowerCase()
+    if (!/sink|lavatory|vanity|basin/.test(desc)) continue
+    const b = n.type === 'plumbing:fixture' ? getPlumbingFixtureBox(n) : null
+    if (b) {
+      sinkBoxes.push(b)
+    } else if (Array.isArray(n.position) && n.position.length >= 3) {
+      const px = Number(n.position[0]) || 0
+      const py = Number(n.position[1]) || 0
+      const pz = Number(n.position[2]) || 0
+      sinkBoxes.push({ min: [px - 0.35, py, pz - 0.35], max: [px + 0.35, py + 1.0, pz + 0.35] })
+    }
+  }
+  const hitsSinkBasin = (x: number, z: number): boolean =>
+    sinkBoxes.some((b) => x >= b.min[0] - 0.35 && x <= b.max[0] + 0.35 && z >= b.min[2] - 0.35 && z <= b.max[2] + 0.35)
   const bonesMode: BonesIngestionMode = options.bonesMode ?? 'auto'
   const bonesSchematic = extractBonesSchematic(nodes, levelId)
   const bonesCtx = bonesSchematic.framing
 
   // 1. Resolve or plan Panelboard (honoring authoritative `bones:service` panel or back-to-back meter/entry
-  //    anchor if present, centering cleanly inside a stud bay, and strictly respecting NEC 240.24(D)/(E))
-  let panelNode: SceneNodeLike | null = existingPanels[0] ?? null
+  //    anchor if present, centering cleanly inside a stud bay, and strictly respecting NEC 240.24(D)/(E)).
+  //    On multi-story / multi-unit buildings, if this level has no panel yet AND the shared lower-level panel
+  //    is already >= 45% full (>= 18 spaces or >= 55% rated load), spawn a dedicated per-level sub-panel
+  //    instead of overflowing the lower panel's 40-space bus (NEC 408.54 / 408.30).
+  let panelNode: SceneNodeLike | null = levelPanels[0] ?? null
+  if (!panelNode && allPanels.length > 0) {
+    const shared = allPanels[0]!
+    const sharedDevs = all.filter((n) => n.type === 'electrical:device' && n.panelId === shared.id)
+    const occupiedSpaces = new Set<number>()
+    let connectedVa = 0
+    for (const d of sharedDevs) {
+      const ckt = typeof d.circuitNumber === 'number' && d.circuitNumber >= 1 ? Math.floor(d.circuitNumber) : 0
+      const poles = d.poles === 3 ? 3 : d.poles === 2 ? 2 : 1
+      if (ckt > 0) {
+        for (let p = 0; p < poles; p++) occupiedSpaces.add(ckt + p * 2)
+      }
+      connectedVa += typeof d.loadVa === 'number' ? d.loadVa : 180
+    }
+    const sharedBusA = typeof shared.busRatingAmps === 'number' ? shared.busRatingAmps : 200
+    const sharedVs =
+      shared.voltageSystem === '120/208V-3P' || shared.voltageSystem === '277/480V-3P'
+        ? shared.voltageSystem
+        : '120/240V-1P'
+    const sharedVll = getVoltageLineToLine(sharedVs)
+    const sharedRatedVa = sharedVs === '120/240V-1P' ? sharedBusA * sharedVll : sharedBusA * sharedVll * Math.sqrt(3)
+    const sharedMaxSpaces = typeof shared.spaces === 'number' ? shared.spaces : 40
+    const needsSubpanel =
+      occupiedSpaces.size >= Math.max(18, Math.floor(sharedMaxSpaces * 0.45)) ||
+      connectedVa >= sharedRatedVa * 0.55
+    if (!needsSubpanel) {
+      panelNode = shared
+    }
+  }
   let createdPanel: AutoPopulatePlan['createdPanel'] = null
   if (!panelNode) {
     const voltageSystem: VoltageSystem = occupancy === 'commercial' ? '120/208V-3P' : '120/240V-1P'
@@ -889,10 +939,20 @@ export function planNecAutoPopulate(
       panelRot = w.yaw
     }
 
-    const panelId = 'elecpanel_auto_1'
+    const existingPanelIds = new Set(allPanels.map((p) => p.id))
+    let panelSeq = allPanels.length + 1
+    while (existingPanelIds.has(`elecpanel_auto_${panelSeq}`)) panelSeq += 1
+    const panelId = `elecpanel_auto_${panelSeq}`
+    const isSubpanel = allPanels.length > 0
+    const panelLabel =
+      occupancy === 'commercial'
+        ? `LP-${panelSeq}`
+        : isSubpanel
+          ? `SP-${panelSeq}`
+          : 'MDP-1'
     createdPanel = {
       id: panelId,
-      name: occupancy === 'commercial' ? 'LP-1' : 'MDP-1',
+      name: panelLabel,
       position: panelPos,
       rotation: panelRot,
       occupancy,
@@ -995,17 +1055,42 @@ export function planNecAutoPopulate(
       }
       return false
     }
-    // Keep non-MEP wall outlets/switches out from behind HVAC/Plumbing equipment or inside wall-embedded structural columns
+    const hitsVerticalDwvStack = (px: number, py: number, pz: number): boolean => {
+      for (const obs of obstacles) {
+        if (obs.nodeType !== 'plumbing:pipe-run' && obs.nodeType !== 'pipe-segment') continue
+        const b = obs.box
+        if (b.max[1] - b.min[1] < 0.65) continue
+        if (Math.max(b.max[0] - b.min[0], b.max[2] - b.min[2]) < 0.07) continue
+        const pad = Math.max(0.14, obs.requiredClearanceM + 0.04)
+        if (
+          px >= b.min[0] - pad &&
+          px <= b.max[0] + pad &&
+          pz >= b.min[2] - pad &&
+          pz <= b.max[2] + pad &&
+          py >= b.min[1] - 0.1 &&
+          py <= b.max[1] + 0.1
+        ) {
+          return true
+        }
+      }
+      return false
+    }
+    // Keep non-MEP wall outlets/switches out from behind HVAC/Plumbing equipment, vertical 3" DWV stacks,
+    // and wall-embedded structural columns (while never nudging into sink basins or bathtub 3 ft zones)
+    const isWallReceptForNudge =
+      resolved.deviceKind === 'duplex' ||
+      resolved.deviceKind === 'gfci' ||
+      resolved.deviceKind === 'afci' ||
+      resolved.deviceKind === 'weatherproof-gfci'
+    const blockedByEquip = hitsTradeObstacle(resolved.position[0], resolved.position[1], resolved.position[2], 0.22, 0.25, true)
+    const blockedByStack = hitsVerticalDwvStack(resolved.position[0], resolved.position[1], resolved.position[2])
     if (
       !resolved.mepSourceNodeId &&
       !resolved.bonesSourceId &&
-      (resolved.deviceKind === 'duplex' ||
-        resolved.deviceKind === 'gfci' ||
-        resolved.deviceKind === 'afci' ||
-        resolved.deviceKind === 'weatherproof-gfci' ||
+      (isWallReceptForNudge ||
         resolved.deviceKind === 'switch-1p' ||
         resolved.deviceKind === 'switch-3way') &&
-      hitsTradeObstacle(resolved.position[0], resolved.position[1], resolved.position[2], 0.22, 0.25, true)
+      (blockedByEquip || blockedByStack)
     ) {
       const hostW = walls.find((w) => {
         const dx = resolved.position[0] - w.start[0]
@@ -1016,15 +1101,23 @@ export function planNecAutoPopulate(
       })
       if (hostW) {
         const curAlong = (resolved.position[0] - hostW.start[0]) * hostW.dx + (resolved.position[2] - hostW.start[1]) * hostW.dz
-        for (const shift of [0.45, -0.45, 0.75, -0.75, 1.15, -1.15, 1.55, -1.55]) {
+        const origZone = zoneAtPoint(zones, resolved.position[0], resolved.position[2])
+        const shifts = blockedByStack && !blockedByEquip
+          ? [0.25, -0.25, 0.36, -0.36, 0.55, -0.55]
+          : [0.45, -0.45, 0.75, -0.75, 1.15, -1.15, 1.55, -1.55]
+        for (const shift of shifts) {
           const na = curAlong + shift
           if (na < 0.28 || na > hostW.length - 0.28) continue
           const hitsOpening = hostW.openings.some((o) => o.kind === 'door' && na > o.tMin && na < o.tMax)
           if (hitsOpening) continue
           const nx = round3(resolved.position[0] + hostW.dx * shift)
           const nz = round3(resolved.position[2] + hostW.dz * shift)
+          if (isWallReceptForNudge && (distToNearestTub(nx, nz) < 1.15 || hitsSinkBasin(nx, nz))) continue
+          const newZone = zoneAtPoint(zones, nx, nz)
+          if (origZone && newZone && origZone.id !== newZone.id) continue
           if (
             !hitsTradeObstacle(nx, resolved.position[1], nz, 0.22, 0.25, true) &&
+            !hitsVerticalDwvStack(nx, resolved.position[1], nz) &&
             !isNearExisting([nx, resolved.position[1], nz], resolved.rotation, 0.35)
           ) {
             resolved.position = [nx, resolved.position[1], nz]
@@ -2123,7 +2216,7 @@ export function planNecAutoPopulate(
     ]
     let pos: Vec3 = basePos
 
-    if ((isHvacEquip || mepNode.type === 'plumbing:equipment') && !isCeilingHardwiredExhaust) {
+    if (isHvacEquip || mepNode.type === 'plumbing:equipment') {
       const mepOriginX = Number(mepNode.position[0])
       const mepOriginZ = Number(mepNode.position[2])
       const mepOriginZone = zoneAtPoint(zones, mepOriginX, mepOriginZ)
@@ -3503,6 +3596,29 @@ export function planNecAutoPopulate(
       homeRunCount,
       daisyChainCount,
     })
+  }
+
+  // Auto-size a freshly created panelboard's bus & main breaker per NEC 240.6(A) / 408.30
+  // when connected floor load exceeds 78% of the default 200A / 400A rating (e.g. multi-unit apartment floors)
+  if (createdPanel) {
+    const totalConnectedVa = assignedDevices.reduce((sum, d) => sum + (typeof d.loadVa === 'number' ? d.loadVa : 180), 0)
+    const vll = getVoltageLineToLine(panelVoltageSystem)
+    const totalLineAmps = isThreePhasePanel ? totalConnectedVa / (vll * Math.sqrt(3)) : totalConnectedVa / vll
+    const stdPanelRatings = [200, 225, 400, 600, 800, 1200]
+    if (totalLineAmps > createdPanel.busRatingAmps * 0.78) {
+      const target =
+        stdPanelRatings.find((r) => r >= createdPanel!.busRatingAmps && totalLineAmps <= r * 0.78) ?? 1200
+      createdPanel.busRatingAmps = target
+      createdPanel.mainBreakerAmps = target
+    }
+    const maxCktUsed = assignedDevices.reduce((mx, d) => {
+      const c = typeof d.circuitNumber === 'number' ? d.circuitNumber : 0
+      const p = d.poles === 3 ? 3 : d.poles === 2 ? 2 : 1
+      return Math.max(mx, c + (p - 1) * 2)
+    }, 0)
+    if (maxCktUsed > createdPanel.spaces) {
+      createdPanel.spaces = maxCktUsed <= 60 ? 60 : 84
+    }
   }
 
   return {

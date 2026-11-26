@@ -133,4 +133,79 @@ describe('Cross-Trade 4-MEP Coordination Regression Suite (XTRADE-05..15)', () =
     )
     expect(gfciOrBathErrors).toHaveLength(0)
   })
+
+  test('Multi-story heavy floor spawns dedicated sub-panel, avoids vertical 3" DWV stack, and offsets ceiling bath fan clear of supply diffuser (XTRADE-26..28)', () => {
+    let nodes: Record<string, SceneNodeLike> = {
+      level_0: { id: 'level_0', type: 'level', name: 'Floor 1', level: 0, height: 2.74 },
+      level_1: { id: 'level_1', type: 'level', name: 'Floor 2', level: 1, height: 2.74 },
+      // Floor 1 panel already loaded with 20 occupied circuits
+      panel_l1: {
+        id: 'elecpanel_auto_1',
+        type: 'electrical:panel',
+        parentId: 'level_0',
+        name: 'MDP-1',
+        position: [1, 1.52, 0.2],
+        rotation: 0,
+        occupancy: 'residential',
+        voltageSystem: '120/240V-1P',
+        busRatingAmps: 200,
+        mainBreakerAmps: 200,
+        spaces: 40,
+      },
+      // Floor 2 rooms + vertical 3" DWV stack + ceiling exhaust fan adjacent to supply diffuser
+      w1: { id: 'w1', type: 'wall', parentId: 'level_1', start: [0, 0], end: [10, 0], height: 2.74, thickness: 0.16 },
+      w2: { id: 'w2', type: 'wall', parentId: 'level_1', start: [10, 0], end: [10, 8], height: 2.74, thickness: 0.16 },
+      w3: { id: 'w3', type: 'wall', parentId: 'level_1', start: [10, 8], end: [0, 8], height: 2.74, thickness: 0.16 },
+      w4: { id: 'w4', type: 'wall', parentId: 'level_1', start: [0, 8], end: [0, 0], height: 2.74, thickness: 0.16 },
+      w_mid: { id: 'w_mid', type: 'wall', parentId: 'level_1', start: [5, 0], end: [5, 8], height: 2.74, thickness: 0.16 },
+      r_kit: { id: 'r_kit', type: 'zone', parentId: 'level_1', name: 'Kitchen', polygon: [[0, 0], [5, 0], [5, 8], [0, 8]] },
+      r_bath: { id: 'r_bath', type: 'zone', parentId: 'level_1', name: 'Bathroom', polygon: [[5, 0], [10, 0], [10, 8], [5, 8]] },
+      dwv_stack: {
+        id: 'plumbpipe_stack_1',
+        type: 'plumbing:pipe-run',
+        parentId: 'level_1',
+        system: 'dwv-stack',
+        nominalSize: '3"',
+        path: [[5, -0.3, 4], [5, 3.0, 4]],
+      },
+      bath_diffuser: {
+        id: 'hvacterm_1',
+        type: 'hvac:terminal',
+        parentId: 'level_1',
+        name: 'Bathroom Supply (120 CFM)',
+        position: [7.5, 2.72, 4.22],
+      },
+      bath_fan: {
+        id: 'hvaceq_fan_1',
+        type: 'hvac:equipment',
+        parentId: 'level_1',
+        equipmentKind: 'bath-exhaust-fan',
+        name: 'Bathroom Exhaust Fan',
+        position: [7.5, 2.7, 4.0],
+        rotation: 0,
+        electricalDemand: { required: true, voltage: 120, poles: 1, breakerAmps: 15, loadVa: 120, dedicatedCircuit: false, gfciRequired: true, loadCategory: 'motor', label: 'Bath Exhaust Fan' },
+      },
+    }
+    for (let c = 1; c <= 20; c++) {
+      nodes[`l1_dev_${c}`] = {
+        id: `l1_dev_${c}`,
+        type: 'electrical:device',
+        parentId: 'level_0',
+        panelId: 'elecpanel_auto_1',
+        circuitNumber: c,
+        poles: 1,
+        loadVa: 1200,
+        position: [2 + (c % 5), 0.4, 2],
+      }
+    }
+
+    nodes = applyChanges(nodes, electricalAgentOperations.electrical_autopopulate_nec(nodes as any, { levelId: 'level_1' }, { activeLevelId: 'level_1' }))
+    const panels = Object.values(nodes).filter((n) => n.type === 'electrical:panel')
+    expect(panels.length).toBe(2)
+    expect(panels.some((p) => p.name === 'SP-2')).toBe(true)
+
+    const audit = auditSceneElectrical(nodes)
+    const clashErrors = audit.findings.filter((f) => f.severity === 'error' && f.codeRef === 'TRADE-PRIORITY')
+    expect(clashErrors).toHaveLength(0)
+  })
 })
