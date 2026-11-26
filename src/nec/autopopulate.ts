@@ -825,7 +825,13 @@ export function planNecAutoPopulate(
       cy: number,
       cz: number,
       rotY: number,
-    ): { wsConflict: boolean; overheadConflict: boolean } => {
+    ): {
+      wsConflict: boolean
+      wsConflictCount: number
+      bodyConflict: boolean
+      overheadConflict: boolean
+      overheadConflictCount: number
+    } => {
       const candNode: SceneNodeLike = {
         id: '__panel_cand__',
         type: 'electrical:panel',
@@ -842,51 +848,53 @@ export function planNecAutoPopulate(
         'panel',
         levelHeight,
       )
-      // Also check panel body itself (behind front face) so panel never embeds inside furniture/fixtures
-      const bodyAndWorkingPrism = {
+      // Check exact NEC 110.26(A) working prism (100% parity with audit.ts) plus surface-mounted body prism
+      // without probing into the host wall cavity behind the panel.
+      const bodyPrism = {
         ...workingPrism,
-        lzMin: -panelD / 2 - 0.04,
+        lzMin: -panelD / 2,
+        lzMax: panelD / 2,
       }
 
-      let wsConflict = false
+      let wsConflictCount = 0
+      let bodyConflict = false
       for (const box of workingSpaceObstructionBoxes) {
-        if (prismIntersectsAabb(bodyAndWorkingPrism, box)) {
-          wsConflict = true
-          break
+        if (prismIntersectsAabb(workingPrism, box)) {
+          wsConflictCount += 1
+        } else if (!bodyConflict && prismIntersectsAabb(bodyPrism, box)) {
+          bodyConflict = true
         }
       }
 
       // NEC 240.24(F): Keep panels clear of stairway footprints
-      if (!wsConflict) {
-        for (const stair of stairs) {
-          if (!Array.isArray(stair.position) || stair.position.length < 3) continue
-          const sx = Number(stair.position[0])
-          const sz = Number(stair.position[2])
-          const sRot = typeof stair.rotation === 'number' ? stair.rotation : 0
-          const sw = typeof stair.width === 'number' ? stair.width : 1.0
-          const sLen = typeof stair.length === 'number' ? stair.length : 2.8
-          const sc = Math.cos(sRot)
-          const ss = Math.sin(sRot)
-          const scx = [
-            sx - (sw / 2) * sc,
-            sx + (sw / 2) * sc,
-            sx + (sw / 2) * sc + sLen * ss,
-            sx - (sw / 2) * sc + sLen * ss,
-          ]
-          const scz = [
-            sz + (sw / 2) * ss,
-            sz - (sw / 2) * ss,
-            sz - (sw / 2) * ss + sLen * sc,
-            sz + (sw / 2) * ss + sLen * sc,
-          ]
-          const sMinX = Math.min(...scx) - 0.25
-          const sMaxX = Math.max(...scx) + 0.25
-          const sMinZ = Math.min(...scz) - 0.25
-          const sMaxZ = Math.max(...scz) + 0.25
-          if (cx >= sMinX && cx <= sMaxX && cz >= sMinZ && cz <= sMaxZ) {
-            wsConflict = true
-            break
-          }
+      for (const stair of stairs) {
+        if (!Array.isArray(stair.position) || stair.position.length < 3) continue
+        const sx = Number(stair.position[0])
+        const sz = Number(stair.position[2])
+        const sRot = typeof stair.rotation === 'number' ? stair.rotation : 0
+        const sw = typeof stair.width === 'number' ? stair.width : 1.0
+        const sLen = typeof stair.length === 'number' ? stair.length : 2.8
+        const sc = Math.cos(sRot)
+        const ss = Math.sin(sRot)
+        const scx = [
+          sx - (sw / 2) * sc,
+          sx + (sw / 2) * sc,
+          sx + (sw / 2) * sc + sLen * ss,
+          sx - (sw / 2) * sc + sLen * ss,
+        ]
+        const scz = [
+          sz + (sw / 2) * ss,
+          sz - (sw / 2) * ss,
+          sz - (sw / 2) * ss + sLen * sc,
+          sz + (sw / 2) * ss + sLen * sc,
+        ]
+        const sMinX = Math.min(...scx) - 0.25
+        const sMaxX = Math.max(...scx) + 0.25
+        const sMinZ = Math.min(...scz) - 0.25
+        const sMaxZ = Math.max(...scz) + 0.25
+        if (cx >= sMinX && cx <= sMaxX && cz >= sMinZ && cz <= sMaxZ) {
+          wsConflictCount += 1
+          break
         }
       }
 
@@ -901,18 +909,60 @@ export function planNecAutoPopulate(
         yMin: 0,
         yMax: Math.max(dedicatedOverheadPrism.yMax, levelHeight + 1.0, 3.85),
       }
-      let overheadConflict = false
+      let overheadConflictCount = 0
       for (const obs of foreignOverheadObs) {
         if (
           prismIntersectsAabb(dedicatedOverheadPrism, obs.box) ||
           prismIntersectsAabb(fullDedicatedColumnPrism, obs.box)
         ) {
-          overheadConflict = true
-          break
+          overheadConflictCount += 1
         }
       }
 
-      return { wsConflict, overheadConflict }
+      return {
+        wsConflict: wsConflictCount > 0,
+        wsConflictCount,
+        bodyConflict,
+        overheadConflict: overheadConflictCount > 0,
+        overheadConflictCount,
+      }
+    }
+
+    const panelPenaltyFor = (clr: ReturnType<typeof evaluatePanelClearance>): number =>
+      clr.wsConflictCount * 1000 +
+      clr.overheadConflictCount * 800 +
+      (clr.bodyConflict && clr.wsConflictCount === 0 ? 500 : 0)
+
+    const isInteriorUnzonedFace = (
+      hostW: WallSeg,
+      px: number,
+      pz: number,
+      nx: number,
+      nz: number,
+    ): boolean => {
+      // Check if another indoor zone lies along the face normal (e.g., an unzoned hallway/corridor between rooms)
+      for (const d of [0.9, 1.6, 2.6, 4.0]) {
+        const zAhead = zoneAtPoint(zones, px + nx * d, pz + nz * d)
+        if (zAhead && !isOutdoorCategory(zAhead.category)) return true
+      }
+      // Or cast a 2D ray from the wall face along (nx, nz) to see if an enclosing interior wall faces it
+      const rx = px + nx * 0.15
+      const rz = pz + nz * 0.15
+      for (const other of walls) {
+        if (other.id === hostW.id) continue
+        const sX = other.end[0] - other.start[0]
+        const sZ = other.end[1] - other.start[1]
+        const denom = nx * sZ - nz * sX
+        if (Math.abs(denom) < 1e-6) continue
+        const qpx = other.start[0] - rx
+        const qpz = other.start[1] - rz
+        const t = (qpx * sZ - qpz * sX) / denom
+        const u = (qpx * nz - qpz * nx) / denom
+        if (t >= 0.15 && t <= 7.5 && u >= -0.02 && u <= 1.02) {
+          return true
+        }
+      }
+      return false
     }
 
     // 1a. Honor an explicit `bones:service` (`serviceType: 'panel'`), or back-to-back `electric-meter` / `power-entry`
@@ -957,18 +1007,14 @@ export function planNecAutoPopulate(
             const candX = round3(px + nx * (hostWall.thickness / 2 + 0.072))
             const candZ = round3(pz + nz * (hostWall.thickness / 2 + 0.072))
             const candRot = side === 1 ? hostWall.yaw : hostWall.yaw + Math.PI
-            const { wsConflict, overheadConflict } = evaluatePanelClearance(candX, candY, candZ, candRot)
-            const candScore =
-              500 -
-              Math.abs(shift) * 5 -
-              (wsConflict ? 1000 : 0) -
-              (overheadConflict ? 800 : 0)
+            const clr = evaluatePanelClearance(candX, candY, candZ, candRot)
+            const candScore = 500 - Math.abs(shift) * 5 - panelPenaltyFor(clr)
             if (candScore > bestPanelScore) {
               bestPanelScore = candScore
               panelPos = [candX, candY, candZ]
               panelRot = candRot
             }
-            if (!overheadConflict && !wsConflict) {
+            if (!clr.overheadConflict && !clr.wsConflict && !clr.bodyConflict) {
               foundCleanAnchor = true
               break
             }
@@ -976,94 +1022,115 @@ export function planNecAutoPopulate(
           if (foundCleanAnchor) break
         }
       } else if (sp.position && bonesCtx.servicePanel) {
-        bestPanelScore = 500
-        panelPos = [round3(sp.position[0]), round3(sp.position[1] || 1.52), round3(sp.position[2])]
-        panelRot = 0
+        const candX = round3(sp.position[0])
+        const candY = round3(sp.position[1] || 1.52)
+        const candZ = round3(sp.position[2])
+        const clr = evaluatePanelClearance(candX, candY, candZ, 0)
+        const candScore = 500 - panelPenaltyFor(clr)
+        if (candScore > bestPanelScore) {
+          bestPanelScore = candScore
+          panelPos = [candX, candY, candZ]
+          panelRot = 0
+        }
       }
     }
 
-    const scanWallsForPanel = (allowUnzoned: boolean) => {
+    const scanWallsForPanel = (opts: {
+      allowUnzoned: boolean
+      avoidWindows: boolean
+      useRawStepOffsets: boolean
+      minSpanLen: number
+    }) => {
       for (const w of walls) {
         const wRule = resolveWallFramingRule(bonesCtx, w.id)
-        const wSpans = getWallRoomSpans(w, true)
+        const wSpans = getWallRoomSpans(w, opts.avoidWindows)
         const candidateTs: Array<{ t: number; span: [number, number] }> = []
         for (const span of wSpans) {
           const spanLen = span[1] - span[0]
-          if (spanLen < 0.45) continue
+          if (spanLen < opts.minSpanLen) continue
           for (const frac of [0.5, 0.25, 0.75, 0.15, 0.85]) {
             candidateTs.push({ t: span[0] + spanLen * frac, span })
           }
-          if (spanLen >= 1.4) {
-            for (let tStep = span[0] + 0.4; tStep <= span[1] - 0.4; tStep += 0.45) {
+          if (spanLen >= 0.5) {
+            const margin = Math.min(0.35, spanLen * 0.2)
+            for (let tStep = span[0] + margin; tStep <= span[1] - margin + 1e-4; tStep += 0.45) {
               candidateTs.push({ t: tStep, span })
             }
           }
         }
-        const triedBayTs = new Set<number>()
+        const triedTs = new Set<number>()
         for (const { t: rawT, span } of candidateTs) {
           const bayT = snapPanelOffsetToStudBay(w.length, rawT, {
             spanMin: span[0],
             spanMax: span[1],
             rule: wRule,
           })
-          const keyT = Math.round(bayT * 20)
-          if (triedBayTs.has(keyT)) continue
-          triedBayTs.add(keyT)
-          const px = w.start[0] + w.dx * bayT
-          const pz = w.start[1] + w.dz * bayT
-          for (const side of [1, -1] as const) {
-            const nx = w.nx * side
-            const nz = w.nz * side
-            const probeX = px + nx * 0.45
-            const probeZ = pz + nz * 0.45
-            const zProbe = zoneAtPoint(zones, probeX, probeZ)
-            if (!allowUnzoned && !zProbe) continue
-            // NEC 110.28 / 312.2: Never mount an indoor NEMA 1 panelboard on the exterior face of a perimeter wall
-            if (zones.length > 0 && !zProbe) {
-              const oppZone = zoneAtPoint(zones, px - nx * 0.45, pz - nz * 0.45)
-              if (oppZone && !isOutdoorCategory(oppZone.category)) continue
-            }
-            if (zProbe) {
-              const cat = zProbe.category
-              if (isBathroom(cat) || CLOSET_PATTERN.test(cat) || isOutdoorCategory(cat)) continue
-            }
-            const candX = round3(px + nx * (w.thickness / 2 + 0.072))
-            const candZ = round3(pz + nz * (w.thickness / 2 + 0.072))
-            const candRot = side === 1 ? w.yaw : w.yaw + Math.PI
-            // Also check panel's own center isn't inside a bathroom/closet/outdoor zone
-            const centerZone = zoneAtPoint(zones, candX, candZ)
-            if (
-              centerZone &&
-              (isBathroom(centerZone.category) ||
-                CLOSET_PATTERN.test(centerZone.category) ||
-                isOutdoorCategory(centerZone.category))
-            ) {
-              continue
-            }
-            const { wsConflict, overheadConflict } = evaluatePanelClearance(candX, 1.52, candZ, candRot)
-            let baseScore = 20
-            if (zProbe) {
-              const cat = zProbe.category
-              baseScore =
-                isGarage(cat) || isBasementOrUtility(cat)
-                  ? 100
-                  : isHallway(cat)
-                    ? 80
-                    : isPrimaryCommonZone(cat) || isBedroom(cat) || /office|study|den|bureau/i.test(cat)
-                      ? 65
-                      : 40
-            } else {
-              // Unzoned building: prefer wall face pointing toward building interior center
-              const toCenterX = buildingCenterX - px
-              const toCenterZ = buildingCenterZ - pz
-              const facingInterior = toCenterX * nx + toCenterZ * nz >= 0
-              baseScore = facingInterior ? 30 : 12
-            }
-            const score = baseScore - (wsConflict ? 1000 : 0) - (overheadConflict ? 800 : 0)
-            if (score > bestPanelScore) {
-              bestPanelScore = score
-              panelPos = [candX, 1.52, candZ]
-              panelRot = candRot
+          const offsetsToTry = opts.useRawStepOffsets ? [bayT, rawT] : [bayT]
+          for (const candT of offsetsToTry) {
+            const clampedT = Math.max(span[0] + 0.12, Math.min(span[1] - 0.12, candT))
+            const keyT = Math.round(clampedT * 20)
+            if (triedTs.has(keyT)) continue
+            triedTs.add(keyT)
+            const px = w.start[0] + w.dx * clampedT
+            const pz = w.start[1] + w.dz * clampedT
+            for (const side of [1, -1] as const) {
+              const nx = w.nx * side
+              const nz = w.nz * side
+              const probeX = px + nx * 0.45
+              const probeZ = pz + nz * 0.45
+              const zProbe = zoneAtPoint(zones, probeX, probeZ)
+              if (!opts.allowUnzoned && !zProbe) continue
+              // NEC 110.28 / 312.2: Never mount an indoor NEMA 1 panelboard on the exterior face of a perimeter wall,
+              // while allowing unzoned interior corridors/hallways when facing another interior wall or room.
+              if (zones.length > 0 && !zProbe) {
+                const oppZone = zoneAtPoint(zones, px - nx * 0.45, pz - nz * 0.45)
+                if (oppZone && !isOutdoorCategory(oppZone.category) && !isInteriorUnzonedFace(w, px, pz, nx, nz)) {
+                  continue
+                }
+              }
+              if (zProbe) {
+                const cat = zProbe.category
+                if (isBathroom(cat) || CLOSET_PATTERN.test(cat) || isOutdoorCategory(cat)) continue
+              }
+              const candX = round3(px + nx * (w.thickness / 2 + 0.072))
+              const candZ = round3(pz + nz * (w.thickness / 2 + 0.072))
+              const candRot = side === 1 ? w.yaw : w.yaw + Math.PI
+              // Also check panel's own center isn't inside a bathroom/closet/outdoor zone
+              const centerZone = zoneAtPoint(zones, candX, candZ)
+              if (
+                centerZone &&
+                (isBathroom(centerZone.category) ||
+                  CLOSET_PATTERN.test(centerZone.category) ||
+                  isOutdoorCategory(centerZone.category))
+              ) {
+                continue
+              }
+              const clr = evaluatePanelClearance(candX, 1.52, candZ, candRot)
+              let baseScore = 20
+              if (zProbe) {
+                const cat = zProbe.category
+                baseScore =
+                  isGarage(cat) || isBasementOrUtility(cat)
+                    ? 100
+                    : isHallway(cat)
+                      ? 80
+                      : isPrimaryCommonZone(cat) || isBedroom(cat) || /office|study|den|bureau/i.test(cat)
+                        ? 65
+                        : 40
+              } else {
+                // Unzoned building / unzoned interior corridor: prefer wall face pointing toward building interior
+                const toCenterX = buildingCenterX - px
+                const toCenterZ = buildingCenterZ - pz
+                const facingInterior = toCenterX * nx + toCenterZ * nz >= 0
+                baseScore = facingInterior ? 30 : 12
+              }
+              const relaxPenalty = (opts.avoidWindows ? 0 : 8) + (candT === bayT ? 0 : 2)
+              const score = baseScore - relaxPenalty - panelPenaltyFor(clr)
+              if (score > bestPanelScore) {
+                bestPanelScore = score
+                panelPos = [candX, 1.52, candZ]
+                panelRot = candRot
+              }
             }
           }
         }
@@ -1072,20 +1139,64 @@ export function planNecAutoPopulate(
 
     if (bestPanelScore < 450) {
       if (zones.length > 0) {
-        scanWallsForPanel(false)
+        scanWallsForPanel({
+          allowUnzoned: false,
+          avoidWindows: true,
+          useRawStepOffsets: false,
+          minSpanLen: 0.45,
+        })
       }
-      // REAL-ELC-03: If zero-zone building (e.g. IT Room, Office, My Home, Warner 2) OR every zoned spot
-      // was obstructed (e.g. fy_iceworld sparse zones), scan ALL walls with exact 110.26(A)/(E) clearance checks!
+      // REAL-ELC-03 + R2-ELC-02: If zero-zone building OR every Pass-1 zoned spot had a 110.26(A)/(E)
+      // conflict, scan ALL walls on both sides with raw 0.45m along-wall offsets & unzoned interior corridors.
       if (bestPanelScore < 0) {
-        scanWallsForPanel(true)
+        scanWallsForPanel({
+          allowUnzoned: true,
+          avoidWindows: true,
+          useRawStepOffsets: true,
+          minSpanLen: 0.45,
+        })
+      }
+      // R2-ELC-02 Pass 3: If dense furniture still blocked every window-free span, relax window-span
+      // splitting and narrow wall piers (>= 0.35m) while still strictly enforcing NEC 110.26(A)/(E).
+      if (bestPanelScore < 0) {
+        scanWallsForPanel({
+          allowUnzoned: true,
+          avoidWindows: false,
+          useRawStepOffsets: true,
+          minSpanLen: 0.35,
+        })
       }
     }
-    if (bestPanelScore === -Infinity && walls[0]) {
-      const w = walls[0]
-      const mx = (w.start[0] + w.end[0]) / 2
-      const mz = (w.start[1] + w.end[1]) / 2
-      panelPos = [round3(mx + w.nx * (w.thickness / 2 + 0.08)), 1.52, round3(mz + w.nz * (w.thickness / 2 + 0.08))]
-      panelRot = w.yaw
+    // R2-ELC-02 Pass 4: Last-resort fallback STILL evaluates `evaluatePanelClearance` across every wall
+    // and both sides (preferring zero working-space & overhead conflicts over blind walls[0] midpoint).
+    if (bestPanelScore === -Infinity && walls.length > 0) {
+      for (const w of walls) {
+        for (const frac of [0.5, 0.25, 0.75]) {
+          const px = w.start[0] + w.dx * (w.length * frac)
+          const pz = w.start[1] + w.dz * (w.length * frac)
+          for (const side of [1, -1] as const) {
+            const nx = w.nx * side
+            const nz = w.nz * side
+            const candX = round3(px + nx * (w.thickness / 2 + 0.072))
+            const candZ = round3(pz + nz * (w.thickness / 2 + 0.072))
+            const candRot = side === 1 ? w.yaw : w.yaw + Math.PI
+            const zProbe = zoneAtPoint(zones, px + nx * 0.45, pz + nz * 0.45)
+            const prohibitedZone = Boolean(
+              zProbe &&
+                (isBathroom(zProbe.category) ||
+                  CLOSET_PATTERN.test(zProbe.category) ||
+                  isOutdoorCategory(zProbe.category)),
+            )
+            const clr = evaluatePanelClearance(candX, 1.52, candZ, candRot)
+            const score = 10 - (prohibitedZone ? 5000 : 0) - panelPenaltyFor(clr)
+            if (score > bestPanelScore) {
+              bestPanelScore = score
+              panelPos = [candX, 1.52, candZ]
+              panelRot = candRot
+            }
+          }
+        }
+      }
     }
 
     const existingPanelIds = new Set(allPanels.map((p) => p.id))
@@ -1319,8 +1430,7 @@ export function planNecAutoPopulate(
         // Never silently drop mandatory NEC 210.70 room/stairway switches when clear of equipment & wet zones.
         const isMandatoryBathGfci =
           resolved.circuitGroup === 'Bathroom GFCI (20A)' && /Vanity GFCI/i.test(resolved.name)
-        const isMandatorySwitchSafe = isWallSwitchForNudge && !blockedByEquip && initWet.ok
-        if (!nudgedClean && !isMandatoryBathGfci && !isMandatorySwitchSafe && (blockedByEquip || !initWet.ok)) {
+        if (!nudgedClean && !isMandatoryBathGfci && (blockedByEquip || !initWet.ok)) {
           return false
         }
       }

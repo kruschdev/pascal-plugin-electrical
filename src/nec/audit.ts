@@ -693,6 +693,41 @@ export function wallSeparatesPoints2D(
   return false
 }
 
+/**
+ * Return true when an exterior device mounted on a host perimeter wall has its outer face
+ * `(outerX, outerZ)` strictly on the opposite side of that host wall's plane from `(fixX, fixZ)`.
+ * Prevents exterior front-door lights/WR outlets from false-flagging an interior shower on the
+ * opposite side of the exterior wall (including when the ray diagonally crosses the exterior door).
+ */
+function hostWallSeparatesExteriorFace2D(
+  devX: number,
+  devZ: number,
+  outerX: number,
+  outerZ: number,
+  fixX: number,
+  fixZ: number,
+  walls: ReadonlyArray<AuditWallSegment>,
+): boolean {
+  for (const w of walls) {
+    if (w.length < 1e-4) continue
+    const dx = (w.ex - w.sx) / w.length
+    const dz = (w.ez - w.sz) / w.length
+    const along = (devX - w.sx) * dx + (devZ - w.sz) * dz
+    if (along < -0.25 || along > w.length + 0.25) continue
+    const nx = -dz
+    const nz = dx
+    const devPerp = (devX - w.sx) * nx + (devZ - w.sz) * nz
+    if (Math.abs(devPerp) > w.thickness / 2 + 0.25) continue
+    const sideOuter = (outerX - w.sx) * nx + (outerZ - w.sz) * nz
+    const sideFix = (fixX - w.sx) * nx + (fixZ - w.sz) * nz
+    const minOppositeFaceClearance = Math.max(0.04, w.thickness * 0.4)
+    if (Math.abs(sideOuter) >= minOppositeFaceClearance && sideOuter * sideFix < -1e-4) {
+      return true
+    }
+  }
+  return false
+}
+
 function extractStairFootprintBox(stair: SceneNodeLike): Aabb3 | null {
   const pos = toVec3(stair.position)
   if (!pos) return null
@@ -1146,9 +1181,18 @@ export function auditSceneElectrical(
       const devMeta = dev.metadata as {
         mepSourceNodeId?: string
         mepHardwired?: boolean
+        isExterior?: boolean
         roomName?: string
         zoneName?: string
       } | undefined
+      const isExteriorDevice = Boolean(
+        dev.isExterior === true ||
+          devMeta?.isExterior === true ||
+          devKind === 'weatherproof-gfci' ||
+          devKind === 'exterior-light' ||
+          (zoneCat && OUTDOOR_PATTERN.test(zoneCat)) ||
+          /\b(outdoor|exterior|front\s*door|back\s*door|patio|porch|deck|balcony|yard)\b/i.test(devName),
+      )
       const mepSource =
         typeof devMeta?.mepSourceNodeId === 'string' ? nodes[devMeta.mepSourceNodeId] : undefined
       const isCeilingBathExhaustMep = Boolean(
@@ -1205,6 +1249,7 @@ export function auditSceneElectrical(
         devKind === 'dimmer'
       const isLuminaire =
         devKind === 'luminaire' ||
+        devKind === 'exterior-light' ||
         devKind === 'ceiling-fan' ||
         devKind === 'under-cabinet-led'
 
@@ -1213,6 +1258,16 @@ export function auditSceneElectrical(
       if (isReceptacle || isSwitch || isLuminaire) {
         const levelWallSegs = getWallsForLevel(devLevelId)
         const devY = devPos[1]
+        const outFx = Math.sin(devRot)
+        const outFz = Math.cos(devRot)
+        const outerFaceX = x + outFx * 0.12
+        const outerFaceZ = z + outFz * 0.12
+        const outerProbeZone = isExteriorDevice
+          ? getZoneAt(nodes, x + outFx * 0.3, z + outFz * 0.3, devLevelId, zones)
+          : null
+        const devFacesExterior =
+          isExteriorDevice &&
+          (!outerProbeZone || OUTDOOR_PATTERN.test(zoneDescriptorOf(outerProbeZone)))
         for (const entry of wetFixtureEntries) {
           const { fix, cx: fixCx, cz: fixCz, zone: fixZone, roomTag: fixRoomTag } = entry
           if (devLevelId && fix.levelId && devLevelId !== fix.levelId) continue
@@ -1224,6 +1279,25 @@ export function auditSceneElectrical(
           }
           // Solid partition wall strictly between device and fixture separates adjacent rooms
           if (wallSeparatesPoints2D(x, z, fixCx, fixCz, levelWallSegs)) continue
+          // R2-ELC-02: Exterior-facing devices (Front Door Outdoor WR GFCI, Exterior Light) separated
+          // by a host exterior wall from an interior bathroom tub/shower are outdoors and exempt.
+          if (isExteriorDevice && fix.kind === 'tub-shower') {
+            if (
+              wallSeparatesPoints2D(outerFaceX, outerFaceZ, fixCx, fixCz, levelWallSegs) ||
+              hostWallSeparatesExteriorFace2D(x, z, outerFaceX, outerFaceZ, fixCx, fixCz, levelWallSegs)
+            ) {
+              continue
+            }
+            const fixZoneCat = zoneDescriptorOf(fixZone)
+            if (
+              devFacesExterior &&
+              fixZone &&
+              BATHROOM_PATTERN.test(fixZoneCat) &&
+              (!zone || zone.id !== fixZone.id)
+            ) {
+              continue
+            }
+          }
           if (fix.kind === 'tub-shower') {
             if (isReceptacle && !isCeilingBathExhaustMep && horizDist < 0.914 && devY < 2.438) {
               // NEC 2023 406.9(C) Exception: In compact bathrooms with less than the required 3 ft zone,

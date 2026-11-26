@@ -96,6 +96,21 @@ export type RoutingCavityContext = {
   readonly roofPitchRise?: number
   /** Resolved architectural ceiling/wall height (m) of the active level. */
   readonly levelHeight?: number
+  /** Explicit `roof-segment` planes applicable to this level (same-level or unwalled upper roof level). */
+  readonly explicitRoofSegs?: readonly ExplicitRoofSegment[]
+}
+
+export type ExplicitRoofSegment = {
+  readonly cx: number
+  readonly cz: number
+  readonly cosR: number
+  readonly sinR: number
+  readonly halfW: number
+  readonly halfD: number
+  readonly overhangM: number
+  readonly eaveY: number
+  readonly slopeTan: number
+  readonly roofType: string
 }
 
 export type PitchedRoofEnvelope = {
@@ -108,16 +123,158 @@ export type PitchedRoofEnvelope = {
   readonly ridgeAlongX: boolean
   readonly halfSpan: number
   readonly ridgeCenter: number
+  readonly explicitSegs?: readonly ExplicitRoofSegment[]
+}
+
+function levelElevationOrder(lvl: SceneNodeLike | undefined): number {
+  if (!lvl) return 0
+  if (typeof lvl.baseElevation === 'number' && Number.isFinite(lvl.baseElevation)) {
+    return lvl.baseElevation
+  }
+  if (typeof lvl.elevation === 'number' && Number.isFinite(lvl.elevation)) {
+    return lvl.elevation
+  }
+  if (typeof lvl.level === 'number' && Number.isFinite(lvl.level)) {
+    return lvl.level
+  }
+  return 0
+}
+
+/**
+ * Extract explicit `roof-segment` planes applicable to `levelId` (same-level AND, when `levelId`
+ * has no walled level above it in the same building, any unwalled roof level at/above `curElev`
+ * in the same building), transforming ancestor `roof` positions & rotations identically to
+ * Structural `audit.ts` and HVAC `buildAtticRoofEnvelope`.
+ */
+export function extractExplicitRoofSegments(
+  nodes: Readonly<Record<string, SceneNodeLike>>,
+  levelId: string | null | undefined,
+  wallH: number,
+): ExplicitRoofSegment[] {
+  const all = Object.values(nodes)
+  const levels = all.filter((n) => n.type === 'level')
+  const curLvl = (levelId ? nodes[levelId] : undefined) ?? levels[0]
+  const curLvlId = levelId ?? curLvl?.id ?? null
+  const curBuildingId = typeof curLvl?.parentId === 'string' ? curLvl.parentId : null
+  const curElev = levelElevationOrder(curLvl)
+
+  const hasWalledLevelAbove = Boolean(
+    curLvl &&
+      levels.some((o) => {
+        if (o.id === curLvl.id) return false
+        const oBldg = typeof o.parentId === 'string' ? o.parentId : null
+        if (curBuildingId && oBldg && curBuildingId !== oBldg) return false
+        const oElev = levelElevationOrder(o)
+        return (
+          oElev > curElev &&
+          all.some((w) => w.type === 'wall' && w.visible !== false && belongsToLevel(nodes, w, o.id))
+        )
+      }),
+  )
+
+  const unwalledUpperLevelIds = new Set<string>()
+  if (!hasWalledLevelAbove && curLvl) {
+    for (const o of levels) {
+      if (o.id === curLvl.id) continue
+      const oBldg = typeof o.parentId === 'string' ? o.parentId : null
+      if (curBuildingId && oBldg && curBuildingId !== oBldg) continue
+      const oElev = levelElevationOrder(o)
+      const oHasWalls = all.some(
+        (w) => w.type === 'wall' && w.visible !== false && belongsToLevel(nodes, w, o.id),
+      )
+      if (!oHasWalls && oElev >= curElev) {
+        unwalledUpperLevelIds.add(o.id)
+      }
+    }
+  }
+
+  const explicitSegs: ExplicitRoofSegment[] = []
+  for (const n of all) {
+    if (n.type !== 'roof-segment' || n.visible === false) continue
+    let inScope = belongsToLevel(nodes, n, curLvlId)
+    if (!inScope && unwalledUpperLevelIds.size > 0) {
+      for (const uid of unwalledUpperLevelIds) {
+        if (belongsToLevel(nodes, n, uid)) {
+          inScope = true
+          break
+        }
+      }
+    }
+    if (!inScope) continue
+
+    let wx = Array.isArray(n.position) ? Number(n.position[0] ?? 0) : 0
+    let wy = Array.isArray(n.position) ? Number(n.position[1] ?? 0) : 0
+    let wz = Array.isArray(n.position) ? Number(n.position[2] ?? 0) : 0
+    let rot = typeof n.rotation === 'number' && Number.isFinite(n.rotation) ? n.rotation : 0
+    let curParentId = typeof n.parentId === 'string' ? n.parentId : null
+    const seenParents = new Set<string>()
+    while (curParentId && !seenParents.has(curParentId)) {
+      seenParents.add(curParentId)
+      const parent = nodes[curParentId]
+      if (!parent) break
+      if (parent.type === 'roof') {
+        const pRot = typeof parent.rotation === 'number' && Number.isFinite(parent.rotation) ? parent.rotation : 0
+        const pc = Math.cos(pRot)
+        const ps = Math.sin(pRot)
+        const px = Array.isArray(parent.position) ? Number(parent.position[0] ?? 0) : 0
+        const py = Array.isArray(parent.position) ? Number(parent.position[1] ?? 0) : 0
+        const pz = Array.isArray(parent.position) ? Number(parent.position[2] ?? 0) : 0
+        const rx = wx * pc + wz * ps
+        const rz = -wx * ps + wz * pc
+        wx = px + rx
+        wy = py + wy
+        wz = pz + rz
+        rot += pRot
+      } else if (parent.type === 'level') {
+        break
+      }
+      curParentId = typeof parent.parentId === 'string' ? parent.parentId : null
+    }
+
+    const width = typeof n.width === 'number' && n.width > 0.2 ? n.width : 6
+    const depth = typeof n.depth === 'number' && n.depth > 0.2 ? n.depth : 6
+    const roofType = typeof n.roofType === 'string' ? n.roofType : 'gable'
+    const rawPitch = typeof n.pitch === 'number' && Number.isFinite(n.pitch) ? n.pitch : 26.57
+    const pitchRad =
+      rawPitch <= 0
+        ? 0
+        : rawPitch > 1.4
+          ? (Math.min(65, rawPitch) * Math.PI) / 180
+          : Math.min((65 * Math.PI) / 180, rawPitch)
+    const overhangM = typeof n.overhang === 'number' && n.overhang >= 0 ? n.overhang : 0.35
+    const segWallH =
+      typeof n.wallHeight === 'number' && Number.isFinite(n.wallHeight) && n.wallHeight >= 0
+        ? n.wallHeight
+        : 0
+    const eaveY = wy > 0.05 ? wy + segWallH : wallH + segWallH
+    explicitSegs.push({
+      cx: wx,
+      cz: wz,
+      cosR: Math.cos(rot),
+      sinR: Math.sin(rot),
+      halfW: width / 2,
+      halfD: depth / 2,
+      overhangM,
+      eaveY,
+      slopeTan: roofType === 'flat' || pitchRad <= 0.008 ? 0 : Math.tan(pitchRad),
+      roofType,
+    })
+  }
+  return explicitSegs
 }
 
 /**
  * Compute approximate gable roof plane parameters from the level's wall envelope,
- * matching structural gable framing (ridge along longer axis, slope = pitch/12 over shorter half-span).
+ * matching structural gable framing (ridge along longer axis, slope = pitch/12 over shorter half-span)
+ * and optionally incorporating explicit `roof-segment` planes from the scene graph.
  */
 export function computeRoofEnvelopeFromWalls(
   walls: readonly RoutingWallSegment[],
   wallH: number,
   pitchRiseOver12 = 6,
+  nodes?: Readonly<Record<string, SceneNodeLike>>,
+  levelId?: string | null,
+  explicitSegsOverride?: readonly ExplicitRoofSegment[],
 ): PitchedRoofEnvelope | null {
   if (walls.length === 0 || !(wallH > 0)) return null
   let minX = Number.POSITIVE_INFINITY
@@ -140,6 +297,12 @@ export function computeRoofEnvelopeFromWalls(
   const halfSpan = (ridgeAlongX ? spanZ : spanX) / 2
   const ridgeCenter = ridgeAlongX ? (minZ + maxZ) / 2 : (minX + maxX) / 2
   const pitch = Number.isFinite(pitchRiseOver12) && pitchRiseOver12 > 0 ? pitchRiseOver12 : 6
+  const explicitSegs =
+    explicitSegsOverride && explicitSegsOverride.length > 0
+      ? explicitSegsOverride
+      : nodes
+        ? extractExplicitRoofSegments(nodes, levelId, wallH)
+        : undefined
   return {
     minX,
     maxX,
@@ -150,14 +313,36 @@ export function computeRoofEnvelopeFromWalls(
     ridgeAlongX,
     halfSpan,
     ridgeCenter,
+    ...(explicitSegs && explicitSegs.length > 0 ? { explicitSegs } : {}),
   }
 }
 
-/** Compute sloped gable roof plane elevation (m) at world/level-local (x, z). */
+/** Compute sloped roof plane elevation (m) at world/level-local (x, z), tightening to explicit `roof-segment` planes when covered. */
 export function roofYAt(x: number, z: number, env: PitchedRoofEnvelope): number {
   const distFromRidge = Math.abs((env.ridgeAlongX ? z : x) - env.ridgeCenter)
   const riseM = Math.max(0, env.halfSpan - distFromRidge) * (env.pitchRiseOver12 / 12)
-  return env.wallH + riseM
+  const fallbackGableY = env.wallH + riseM
+  if (env.explicitSegs && env.explicitSegs.length > 0) {
+    let bestSegY: number | null = null
+    for (const seg of env.explicitSegs) {
+      const dx = x - seg.cx
+      const dz = z - seg.cz
+      const lx = dx * seg.cosR - dz * seg.sinR
+      const lz = dx * seg.sinR + dz * seg.cosR
+      if (
+        Math.abs(lx) <= seg.halfW + 0.15 &&
+        Math.abs(lz) <= seg.halfD + seg.overhangM + 0.15
+      ) {
+        const segY =
+          seg.roofType === 'shed'
+            ? seg.eaveY + Math.max(0, seg.halfD - lz) * seg.slopeTan
+            : seg.eaveY + Math.max(0, seg.halfD - Math.abs(lz)) * seg.slopeTan
+        if (bestSegY === null || segY > bestSegY) bestSegY = segY
+      }
+    }
+    if (bestSegY !== null) return Math.min(fallbackGableY, bestSegY)
+  }
+  return fallbackGableY
 }
 
 export type RoutingMode =
@@ -201,6 +386,10 @@ export type RouteElectricalOptions = {
   routingStrategy?: 'auto' | 'wall-only'
   /** Optional small lateral wall-chase stagger (meters, clamped to +/- 0.018 m) to prevent coplanar parallel conduit Z-fighting. */
   laneOffsetLateralM?: number
+  /** Optional scene graph nodes for extracting explicit `roof-segment` envelopes when not already supplied on `cavities`. */
+  nodes?: Readonly<Record<string, SceneNodeLike>>
+  /** Optional active level ID paired with `nodes` for explicit `roof-segment` scoping. */
+  levelId?: string | null
 }
 
 export type ElectricalRouteResult = {
@@ -925,34 +1114,36 @@ export function extractTradeObstacles(
 
 /**
  * Resolve the architectural ceiling/wall height (meters) of a Pascal level.
- * Checks the level node's explicit `height`, then falls back to wall node heights,
- * and finally Pascal's standard 2.5 m level height.
+ * Aligns with Structural `audit.ts`: prefers `maxWallH` (> 1.5 m) when explicit tall walls exist
+ * on the level, falling back to `levelNode.height` when walls omit explicit heights, and 2.7 m otherwise.
  */
 export function resolveLevelHeightM(
   nodes: Readonly<Record<string, SceneNodeLike>>,
   levelId?: string | null,
 ): number {
   const all = Object.values(nodes)
+  let maxWallH = 0
+  for (const n of all) {
+    if (n.type !== 'wall' || n.visible === false) continue
+    if (levelId && !belongsToLevel(nodes, n, levelId)) continue
+    if (typeof n.height === 'number' && Number.isFinite(n.height) && n.height > 1.5 && n.height <= 12) {
+      if (n.height > maxWallH) maxWallH = n.height
+    }
+  }
+  if (maxWallH > 1.5) return maxWallH
+
   const levelNode =
     (levelId ? nodes[levelId] : undefined) ?? all.find((n) => n.type === 'level')
   if (
     levelNode &&
     typeof levelNode.height === 'number' &&
-    levelNode.height >= 1.8 &&
+    Number.isFinite(levelNode.height) &&
+    levelNode.height > 1.5 &&
     levelNode.height <= 12
   ) {
     return levelNode.height
   }
-
-  let maxWallH = 0
-  for (const n of all) {
-    if (n.type !== 'wall') continue
-    if (levelId && !belongsToLevel(nodes, n, levelId)) continue
-    if (typeof n.height === 'number' && n.height >= 1.8 && n.height <= 12) {
-      if (n.height > maxWallH) maxWallH = n.height
-    }
-  }
-  return maxWallH > 0 ? maxWallH : 2.5
+  return 2.7
 }
 
 /**
@@ -1081,14 +1272,23 @@ export function extractRoutingCavities(
   const activeLevel =
     (levelId ? nodes[levelId] : undefined) ?? all.find((n) => n.type === 'level')
   const activeLevelId = activeLevel?.id ?? levelId ?? null
-  const activeLevelNum =
+  const activeBuildingId = typeof activeLevel?.parentId === 'string' ? activeLevel.parentId : null
+  const activeLevelIdx =
     activeLevel && typeof activeLevel.level === 'number' ? activeLevel.level : 0
+  const activeLevelOrder = levelElevationOrder(activeLevel)
 
-  const levelNumById = new Map<string, number>()
+  const levelOrderById = new Map<string, number>()
+  const levelBuildingById = new Map<string, string | null>()
   for (const n of all) {
     if (n.type === 'level') {
-      levelNumById.set(n.id, typeof n.level === 'number' ? n.level : 0)
+      levelOrderById.set(n.id, levelElevationOrder(n))
+      levelBuildingById.set(n.id, typeof n.parentId === 'string' ? n.parentId : null)
     }
+  }
+  const sameBuildingLevel = (lid: string | null): boolean => {
+    if (!lid || !activeBuildingId) return true
+    const b = levelBuildingById.get(lid) ?? null
+    return !b || b === activeBuildingId
   }
 
   let hasAttic = false
@@ -1106,10 +1306,10 @@ export function extractRoutingCavities(
   const wallLevelIds = new Set<string>()
   const roofLevelIds = new Set<string>()
   for (const n of all) {
-    if (n.type === 'wall') {
+    if (n.type === 'wall' && n.visible !== false) {
       const lid = resolveNodeLevelId(nodes, n)
       if (lid) wallLevelIds.add(lid)
-    } else if (n.type === 'roof' || n.type === 'roof-segment') {
+    } else if ((n.type === 'roof' || n.type === 'roof-segment') && n.visible !== false) {
       const lid = resolveNodeLevelId(nodes, n)
       if (lid) roofLevelIds.add(lid)
     }
@@ -1119,8 +1319,8 @@ export function extractRoutingCavities(
     (n) =>
       n.type === 'level' &&
       n.id !== activeLevelId &&
-      typeof n.level === 'number' &&
-      n.level > activeLevelNum &&
+      sameBuildingLevel(n.id) &&
+      levelElevationOrder(n) > activeLevelOrder &&
       wallLevelIds.has(n.id),
   )
 
@@ -1138,28 +1338,29 @@ export function extractRoutingCavities(
   for (const n of all) {
     const t = n.type
     const nLevelId = resolveNodeLevelId(nodes, n)
-    const nLevelNum = nLevelId !== null ? (levelNumById.get(nLevelId) ?? 0) : activeLevelNum
+    const nLevelOrder = nLevelId !== null ? (levelOrderById.get(nLevelId) ?? 0) : activeLevelOrder
     const nameCat = `${typeof n.name === 'string' ? n.name : ''} ${typeof n.category === 'string' ? n.category : ''}`
     const meta = (n.metadata && typeof n.metadata === 'object' ? n.metadata : {}) as Record<string, unknown>
 
     // 1. Attic / overhead joist cavity detection
-    if (t === 'roof' || t === 'roof-segment') {
+    if ((t === 'roof' || t === 'roof-segment') && n.visible !== false) {
       if (
         !hasUpperWallLevel &&
-        (nLevelId === null || nLevelId === activeLevelId || nLevelNum >= activeLevelNum)
+        sameBuildingLevel(nLevelId) &&
+        (nLevelId === null || nLevelId === activeLevelId || nLevelOrder >= activeLevelOrder)
       ) {
         hasAttic = true
         addSource('roof')
       }
-    } else if (t === 'level' && n.id !== activeLevelId) {
-      if (typeof n.level === 'number' && n.level === activeLevelNum + 1) {
+    } else if (t === 'level' && n.id !== activeLevelId && sameBuildingLevel(n.id)) {
+      if (typeof n.level === 'number' && n.level === activeLevelIdx + 1) {
         hasAttic = true
         const upperIsRoofOnly =
           !wallLevelIds.has(n.id) && (roofLevelIds.has(n.id) || /\b(roof|attic)\b/i.test(nameCat))
         addSource(upperIsRoofOnly ? 'roof' : 'upper-floor-joists')
       }
       if (
-        (typeof n.level === 'number' && n.level < activeLevelNum && CRAWL_PATTERN.test(nameCat)) ||
+        (typeof n.level === 'number' && n.level < activeLevelIdx && CRAWL_PATTERN.test(nameCat)) ||
         (n.level === undefined && CRAWL_PATTERN.test(nameCat))
       ) {
         hasCrawlSpace = true
@@ -1174,7 +1375,7 @@ export function extractRoutingCavities(
         addSource('ceiling-plenum')
       }
     } else if (t === 'zone') {
-      if (ATTIC_PATTERN.test(nameCat) && !hasUpperWallLevel && nLevelNum >= activeLevelNum) {
+      if (ATTIC_PATTERN.test(nameCat) && !hasUpperWallLevel && sameBuildingLevel(nLevelId) && nLevelOrder >= activeLevelOrder) {
         hasAttic = true
         addSource('attic-zone')
       }
@@ -1195,14 +1396,14 @@ export function extractRoutingCavities(
     }
   }
 
-  // Also check if a lower level below activeLevelNum contains a crawlspace/basement/utility zone
+  // Also check if a lower level below activeLevelOrder contains a crawlspace/basement/utility zone
   if (!hasCrawlSpace) {
     for (const n of all) {
       if (n.type !== 'zone') continue
       const nLevelId = resolveNodeLevelId(nodes, n)
-      if (!nLevelId || nLevelId === activeLevelId) continue
-      const nLevelNum = levelNumById.get(nLevelId) ?? 0
-      if (nLevelNum >= activeLevelNum) continue
+      if (!nLevelId || nLevelId === activeLevelId || !sameBuildingLevel(nLevelId)) continue
+      const nLevelOrder = levelOrderById.get(nLevelId) ?? 0
+      if (nLevelOrder >= activeLevelOrder) continue
       const nameCat = `${typeof n.name === 'string' ? n.name : ''} ${typeof n.category === 'string' ? n.category : ''}`
       if (CRAWL_PATTERN.test(nameCat) || /utility|mechanical/i.test(nameCat)) {
         hasCrawlSpace = true
@@ -1215,6 +1416,10 @@ export function extractRoutingCavities(
     }
   }
 
+  const explicitRoofSegs = !hasUpperWallLevel
+    ? extractExplicitRoofSegments(nodes, activeLevelId, levelHeight)
+    : []
+
   return {
     hasAttic,
     hasCrawlSpace,
@@ -1224,6 +1429,7 @@ export function extractRoutingCavities(
     sources,
     roofPitchRise,
     levelHeight,
+    ...(explicitRoofSegs.length > 0 ? { explicitRoofSegs } : {}),
   }
 }
 
@@ -2068,10 +2274,41 @@ function buildCavityEuclideanPath(
   const endPt: Vec3 =
     concealed && isEndWall ? [round3(eProj.x), end[1], round3(eProj.z)] : end
 
-  // VIS-05: Under a pitched gable roof, never climb vertically above `wallH` at an exterior eave where
-  // `roofYAt(x, z)` drops close to `wallH`. Travel inward at `eaveSafeY <= wallH - 0.08` until
-  // safely beneath the sloped roof plane before rising to `cavityY`.
-  if (roofEnv && cavityY > roofEnv.wallH + 0.02) {
+  // VIS-05 + R2-ELC-01: Under a pitched gable or explicit `roof-segment` roof, NEVER climb above
+  // `roofYAt(px, pz, roofEnv) - roofMarginM`. Travel inward at `eaveSafeY <= wallH - 0.08` until
+  // safely beneath the sloped roof plane before rising to `cavityY`, and reject any attic candidate
+  // whose sampled points would protrude through flat/shed/narrow explicit `roof-segment`s.
+  if (roofEnv && cavityY > roofEnv.wallH - 0.04) {
+    const isPathUnderRoof = (pts: readonly Vec3[]): boolean => {
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i]!
+        const b = pts[i + 1]!
+        if (a[1] <= roofEnv.wallH - 0.04 && b[1] <= roofEnv.wallH - 0.04) continue
+        const segLenXZ = Math.hypot(b[0] - a[0], b[2] - a[2])
+        const steps = Math.max(4, Math.min(24, Math.ceil(segLenXZ / 0.45)))
+        for (let s = 0; s <= steps; s++) {
+          const f = s / steps
+          const px = a[0] + (b[0] - a[0]) * f
+          const py = a[1] + (b[1] - a[1]) * f
+          const pz = a[2] + (b[2] - a[2]) * f
+          if (py <= roofEnv.wallH - 0.04) continue
+          if (py > roofYAt(px, pz, roofEnv) - roofMarginM + 1e-3) return false
+        }
+      }
+      return true
+    }
+
+    const directAttic = simplifyOrthogonalPath([
+      startPt,
+      [round3(startPt[0]), round3(cavityY), round3(startPt[2])],
+      [round3(endPt[0]), round3(cavityY), round3(endPt[2])],
+      endPt,
+    ])
+    if (isPathUnderRoof(directAttic)) {
+      return directAttic
+    }
+
+    const eaveSafeY = round3(Math.max(0.2, roofEnv.wallH - 0.08))
     const slope = roofEnv.pitchRiseOver12 / 12
     const maxDistFromRidge = roofEnv.halfSpan - (cavityY + roofMarginM - roofEnv.wallH) / slope
     if (maxDistFromRidge <= 0.05) return null
@@ -2079,27 +2316,59 @@ function buildCavityEuclideanPath(
     const uMaxSafe = roofEnv.ridgeCenter + maxDistFromRidge
     const uStart = roofEnv.ridgeAlongX ? startPt[2] : startPt[0]
     const uEnd = roofEnv.ridgeAlongX ? endPt[2] : endPt[0]
-    const startSafe = uStart >= uMinSafe - 1e-4 && uStart <= uMaxSafe + 1e-4
-    const endSafe = uEnd >= uMinSafe - 1e-4 && uEnd <= uMaxSafe + 1e-4
-    if (!startSafe || !endSafe) {
-      const eaveSafeY = round3(Math.max(0.2, roofEnv.wallH - 0.08))
-      const du = uEnd - uStart
-      const overlapsSafeBand =
-        Math.abs(du) > 1e-4 &&
-        Math.max(uStart, uEnd) >= uMinSafe &&
-        Math.min(uStart, uEnd) <= uMaxSafe
-      if (overlapsSafeBand) {
-        const tA = (uMinSafe - uStart) / du
-        const tB = (uMaxSafe - uStart) / du
-        const tIn = Math.max(0, Math.min(1, Math.min(tA, tB)))
-        const tOut = Math.max(0, Math.min(1, Math.max(tA, tB)))
+
+    if (roofEnv.explicitSegs && roofEnv.explicitSegs.length > 0) {
+      // Sample along the straight 2D line from startPt -> endPt to find the longest contiguous roof-safe interval
+      const N = 24
+      const safeAtT = (t: number): boolean => {
+        const px = startPt[0] + (endPt[0] - startPt[0]) * t
+        const pz = startPt[2] + (endPt[2] - startPt[2]) * t
+        return cavityY <= roofYAt(px, pz, roofEnv) - roofMarginM + 1e-3
+      }
+      let bestStart = -1
+      let bestEnd = -1
+      let curStart = -1
+      for (let i = 0; i <= N; i++) {
+        const t = i / N
+        if (safeAtT(t)) {
+          if (curStart < 0) curStart = i
+          if (i - curStart > bestEnd - bestStart) {
+            bestStart = curStart
+            bestEnd = i
+          }
+        } else {
+          curStart = -1
+        }
+      }
+      if (bestStart >= 0 && bestEnd >= bestStart) {
+        let tIn = bestStart / N
+        let tOut = bestEnd / N
+        if (bestStart > 0) {
+          let lo = (bestStart - 1) / N
+          let hi = tIn
+          for (let it = 0; it < 5; it++) {
+            const mid = (lo + hi) / 2
+            if (safeAtT(mid)) hi = mid
+            else lo = mid
+          }
+          tIn = hi
+        }
+        if (bestEnd < N) {
+          let lo = tOut
+          let hi = (bestEnd + 1) / N
+          for (let it = 0; it < 5; it++) {
+            const mid = (lo + hi) / 2
+            if (safeAtT(mid)) lo = mid
+            else hi = mid
+          }
+          tOut = lo
+        }
         const entryX = round3(startPt[0] + (endPt[0] - startPt[0]) * tIn)
         const entryZ = round3(startPt[2] + (endPt[2] - startPt[2]) * tIn)
         const exitX = round3(startPt[0] + (endPt[0] - startPt[0]) * tOut)
         const exitZ = round3(startPt[2] + (endPt[2] - startPt[2]) * tOut)
         const pts: Vec3[] = [startPt]
         if (tIn > 1e-3) {
-          // Rise through wall top plate to eaveSafeY, then follow underside of sloped roof rafter to (entryX, cavityY, entryZ)
           pts.push([round3(startPt[0]), eaveSafeY, round3(startPt[2])])
         }
         pts.push([entryX, round3(cavityY), entryZ])
@@ -2108,22 +2377,86 @@ function buildCavityEuclideanPath(
           pts.push([round3(endPt[0]), eaveSafeY, round3(endPt[2])])
         }
         pts.push(endPt)
-        return simplifyOrthogonalPath(pts)
+        const cand = simplifyOrthogonalPath(pts)
+        if (isPathUnderRoof(cand)) return cand
       }
+
+      // Try ridge-tucked fallback shifted inward toward the gable ridge or explicit roof peak
       const uSafe = round3(Math.max(uMinSafe, Math.min(uMaxSafe, (uStart + uEnd) / 2)))
-      const entryX = roofEnv.ridgeAlongX ? round3(startPt[0]) : uSafe
-      const entryZ = roofEnv.ridgeAlongX ? uSafe : round3(startPt[2])
-      const exitX = roofEnv.ridgeAlongX ? round3(endPt[0]) : uSafe
-      const exitZ = roofEnv.ridgeAlongX ? uSafe : round3(endPt[2])
-      return simplifyOrthogonalPath([
+      const ridgeEntryX = roofEnv.ridgeAlongX ? round3(startPt[0]) : uSafe
+      const ridgeEntryZ = roofEnv.ridgeAlongX ? uSafe : round3(startPt[2])
+      const ridgeExitX = roofEnv.ridgeAlongX ? round3(endPt[0]) : uSafe
+      const ridgeExitZ = roofEnv.ridgeAlongX ? uSafe : round3(endPt[2])
+      const ridgeCand = simplifyOrthogonalPath([
         startPt,
         [round3(startPt[0]), eaveSafeY, round3(startPt[2])],
-        [entryX, round3(cavityY), entryZ],
-        [exitX, round3(cavityY), exitZ],
+        [ridgeEntryX, round3(cavityY), ridgeEntryZ],
+        [ridgeExitX, round3(cavityY), ridgeExitZ],
         [round3(endPt[0]), eaveSafeY, round3(endPt[2])],
         endPt,
       ])
+      if (isPathUnderRoof(ridgeCand)) return ridgeCand
+
+      for (const seg of roofEnv.explicitSegs) {
+        if (seg.slopeTan <= 0.01) continue
+        const highLz = seg.roofType === 'shed' ? -seg.halfD * 0.65 : 0
+        const wx = round3(seg.cx + highLz * seg.sinR)
+        const wz = round3(seg.cz + highLz * seg.cosR)
+        if (cavityY > roofYAt(wx, wz, roofEnv) - roofMarginM + 1e-3) continue
+        const segCand = simplifyOrthogonalPath([
+          startPt,
+          [round3(startPt[0]), eaveSafeY, round3(startPt[2])],
+          [wx, round3(cavityY), wz],
+          [round3(endPt[0]), eaveSafeY, round3(endPt[2])],
+          endPt,
+        ])
+        if (isPathUnderRoof(segCand)) return segCand
+      }
+      return null
     }
+
+    const du = uEnd - uStart
+    const overlapsSafeBand =
+      Math.abs(du) > 1e-4 &&
+      Math.max(uStart, uEnd) >= uMinSafe &&
+      Math.min(uStart, uEnd) <= uMaxSafe
+    if (overlapsSafeBand) {
+      const tA = (uMinSafe - uStart) / du
+      const tB = (uMaxSafe - uStart) / du
+      const tIn = Math.max(0, Math.min(1, Math.min(tA, tB)))
+      const tOut = Math.max(0, Math.min(1, Math.max(tA, tB)))
+      const entryX = round3(startPt[0] + (endPt[0] - startPt[0]) * tIn)
+      const entryZ = round3(startPt[2] + (endPt[2] - startPt[2]) * tIn)
+      const exitX = round3(startPt[0] + (endPt[0] - startPt[0]) * tOut)
+      const exitZ = round3(startPt[2] + (endPt[2] - startPt[2]) * tOut)
+      const pts: Vec3[] = [startPt]
+      if (tIn > 1e-3) {
+        // Rise through wall top plate to eaveSafeY, then follow underside of sloped roof rafter to (entryX, cavityY, entryZ)
+        pts.push([round3(startPt[0]), eaveSafeY, round3(startPt[2])])
+      }
+      pts.push([entryX, round3(cavityY), entryZ])
+      pts.push([exitX, round3(cavityY), exitZ])
+      if (tOut < 1 - 1e-3) {
+        pts.push([round3(endPt[0]), eaveSafeY, round3(endPt[2])])
+      }
+      pts.push(endPt)
+      const cand = simplifyOrthogonalPath(pts)
+      return isPathUnderRoof(cand) ? cand : null
+    }
+    const uSafe = round3(Math.max(uMinSafe, Math.min(uMaxSafe, (uStart + uEnd) / 2)))
+    const entryX = roofEnv.ridgeAlongX ? round3(startPt[0]) : uSafe
+    const entryZ = roofEnv.ridgeAlongX ? uSafe : round3(startPt[2])
+    const exitX = roofEnv.ridgeAlongX ? round3(endPt[0]) : uSafe
+    const exitZ = roofEnv.ridgeAlongX ? uSafe : round3(endPt[2])
+    const fallbackCand = simplifyOrthogonalPath([
+      startPt,
+      [round3(startPt[0]), eaveSafeY, round3(startPt[2])],
+      [entryX, round3(cavityY), entryZ],
+      [exitX, round3(cavityY), exitZ],
+      [round3(endPt[0]), eaveSafeY, round3(endPt[2])],
+      endPt,
+    ])
+    return isPathUnderRoof(fallbackCand) ? fallbackCand : null
   }
 
   return simplifyOrthogonalPath([
@@ -2418,7 +2751,14 @@ export function routeElectricalRun(
   )
   const roofEnv =
     walls && wallCeilingH > 0
-      ? computeRoofEnvelopeFromWalls(walls, wallCeilingH, cavities?.roofPitchRise ?? 6)
+      ? computeRoofEnvelopeFromWalls(
+          walls,
+          wallCeilingH,
+          cavities?.roofPitchRise ?? 6,
+          options.nodes,
+          options.levelId,
+          cavities?.explicitRoofSegs,
+        )
       : null
   const roofMarginM = conduitRadiusM + 0.065
   const ridgeMaxY = roofEnv
@@ -2455,12 +2795,15 @@ export function routeElectricalRun(
     for (let i = 0; i < p.length - 1; i++) {
       const a = p[i]!
       const b = p[i + 1]!
-      if (a[1] <= roofEnv.wallH + 0.05 && b[1] <= roofEnv.wallH + 0.05) continue
-      for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+      if (a[1] <= roofEnv.wallH - 0.04 && b[1] <= roofEnv.wallH - 0.04) continue
+      const segLenXZ = Math.hypot(b[0] - a[0], b[2] - a[2])
+      const steps = Math.max(4, Math.min(24, Math.ceil(segLenXZ / 0.45)))
+      for (let s = 0; s <= steps; s++) {
+        const f = s / steps
         const px = a[0] + (b[0] - a[0]) * f
         const py = a[1] + (b[1] - a[1]) * f
         const pz = a[2] + (b[2] - a[2]) * f
-        if (py <= roofEnv.wallH + 0.05) continue
+        if (py <= roofEnv.wallH - 0.04) continue
         if (
           px < roofEnv.minX - 0.1 ||
           px > roofEnv.maxX + 0.1 ||
@@ -2469,7 +2812,7 @@ export function routeElectricalRun(
         ) {
           continue
         }
-        if (py + conduitRadiusM > roofYAt(px, pz, roofEnv) - 0.06 + 1e-3) {
+        if (py > roofYAt(px, pz, roofEnv) - roofMarginM + 1e-3) {
           return true
         }
       }
@@ -2595,10 +2938,13 @@ export function routeElectricalRun(
       const segA = cur[segIdx]!
       const segB = cur[segIdx + 1]!
       let segDetourMaxY = detourMaxY
-      if (hasTrueRoofAttic && roofEnv && segDetourMaxY > roofEnv.wallH + 0.05) {
+      if (hasTrueRoofAttic && roofEnv && segDetourMaxY > roofEnv.wallH - 0.04) {
         const localRoofCap =
-          Math.min(roofYAt(segA[0], segA[2], roofEnv), roofYAt(segB[0], segB[2], roofEnv)) -
-          roofMarginM
+          Math.min(
+            roofYAt(segA[0], segA[2], roofEnv),
+            roofYAt((segA[0] + segB[0]) / 2, (segA[2] + segB[2]) / 2, roofEnv),
+            roofYAt(segB[0], segB[2], roofEnv),
+          ) - roofMarginM
         segDetourMaxY = Math.min(segDetourMaxY, Math.max(detourMinY, round3(localRoofCap)))
       }
       const margin = Math.max(obs.requiredClearanceM, clearanceM) + conduitRadiusM
@@ -2984,7 +3330,7 @@ export function routeElectricalRun(
     let bestClashes = currentClashes.length
 
     // 3a. Wall-Vertical -> Attic Euclidean -> Wall-Vertical (NEC 334.23 / 320.23)
-    if (cavities.hasAttic) {
+    if (cavities.hasAttic && (!hasTrueRoofAttic || !roofEnv || maxCavityY > roofEnv.wallH + 0.02)) {
       const atticY = Math.min(resolvedAtticY, maxCavityY)
       const activeRoofEnv = hasTrueRoofAttic ? roofEnv : null
       const rawAttic = buildCavityEuclideanPath(
@@ -3009,7 +3355,7 @@ export function routeElectricalRun(
         // REAL-ELC-04 + ELC-R-BUG-01 + VIS-05: When attic-euclidean at base `atticY` clashes
         // with an attic HVAC trunk, try bounded elevated attic planes (capped at `maxCavityY` so
         // `upper-floor-joists` never shoot into Level 2 rooms and roof attics stay strictly below
-        // `roofYAt(x, z) - 0.06`) AND lateral shifted attic paths inside the building wall envelope.
+        // `roofYAt(x, z) - roofMarginM`) AND lateral shifted attic paths inside the building wall envelope.
         if (bestAttic.clashes.length > 0 || (rawAtticClashes.length > 0 && bestAttic.score >= bestScore)) {
           const atticStart = rawAttic[0]!
           const atticEnd = rawAttic[rawAttic.length - 1]!
@@ -3054,12 +3400,13 @@ export function routeElectricalRun(
               true,
             )
             if (
-              elevRes.clashes.length < bestAttic.clashes.length ||
-              (elevRes.clashes.length === bestAttic.clashes.length && elevRes.score < bestAttic.score)
+              !pathViolatesRoof(elevRes.path) &&
+              (elevRes.clashes.length < bestAttic.clashes.length ||
+                (elevRes.clashes.length === bestAttic.clashes.length && elevRes.score < bestAttic.score))
             ) {
               bestAttic = elevRes
             }
-            if (bestAttic.clashes.length === 0) break
+            if (bestAttic.clashes.length === 0 && !pathViolatesRoof(bestAttic.path)) break
           }
 
           if (bestAttic.clashes.length > 0 && !allClashesAtImmovableEndpoint(bestAttic.clashes)) {
@@ -3076,7 +3423,7 @@ export function routeElectricalRun(
                 cx = Math.max(envBounds.minX, Math.min(envBounds.maxX, cx))
                 cz = Math.max(envBounds.minZ, Math.min(envBounds.maxZ, cz))
               }
-              if (activeRoofEnv && planeY > activeRoofEnv.wallH + 0.02) {
+              if (activeRoofEnv && planeY > activeRoofEnv.wallH - 0.04) {
                 const slope = activeRoofEnv.pitchRiseOver12 / 12
                 const maxDist =
                   activeRoofEnv.halfSpan - (planeY + roofMarginM - activeRoofEnv.wallH) / slope
@@ -3087,6 +3434,9 @@ export function routeElectricalRun(
                   cz = round3(Math.max(uMin, Math.min(uMax, cz)))
                 } else {
                   cx = round3(Math.max(uMin, Math.min(uMax, cx)))
+                }
+                if (planeY > roofYAt(cx, cz, activeRoofEnv) - roofMarginM + 1e-3) {
+                  return null
                 }
               }
               return [cx, cz]
@@ -3109,11 +3459,11 @@ export function routeElectricalRun(
                 : planeY
               const needStartEave =
                 activeRoofEnv !== null &&
-                planeY > activeRoofEnv.wallH + 0.02 &&
+                planeY > activeRoofEnv.wallH - 0.04 &&
                 Math.hypot(sClamped[0] - sX, sClamped[1] - sZ) > 0.02
               const needEndEave =
                 activeRoofEnv !== null &&
-                planeY > activeRoofEnv.wallH + 0.02 &&
+                planeY > activeRoofEnv.wallH - 0.04 &&
                 Math.hypot(eClamped[0] - eX, eClamped[1] - eZ) > 0.02
               const pts: Vec3[] = [atticStart]
               if (needStartEave) {
@@ -3128,7 +3478,9 @@ export function routeElectricalRun(
                 pts.push([round3(eX), eaveSafeY, round3(eZ)])
               }
               pts.push(atticEnd)
-              return simplifyOrthogonalPath(pts)
+              const simplified = simplifyOrthogonalPath(pts)
+              if (activeRoofEnv && pathViolatesRoof(simplified)) return null
+              return simplified
             }
 
             outerAtticShift: for (const planeY of shiftPlanes) {
