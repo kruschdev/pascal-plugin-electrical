@@ -858,6 +858,7 @@ export const electricalAgentOperations = {
           ...(dev.bonesServiceType ? { bonesServiceType: dev.bonesServiceType } : {}),
           ...(dev.bonesUserMoved ? { bonesUserMoved: true } : {}),
           ...(dev.mepSourceNodeId ? { mepSourceNodeId: dev.mepSourceNodeId } : {}),
+          ...(dev.mepHardwired ? { mepHardwired: true } : {}),
           ...(dev.loadCategory ? { loadCategory: dev.loadCategory } : {}),
         },
         position: dev.position,

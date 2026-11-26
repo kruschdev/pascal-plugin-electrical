@@ -1427,7 +1427,41 @@ function buildWallGuidedManhattanPath(
     ])
   }
 
-  // Build 2D wall centerline graph with wall-to-wall intersections & T-junction snapping
+  return routeViaWallNetwork(
+    start,
+    end,
+    chaseY,
+    walls,
+    sProj,
+    eProj,
+    isStartWall,
+    isEndWall,
+    startPt,
+    endPt,
+    concealed,
+  )
+}
+
+interface CachedWallGraphEdge {
+  to: number
+  weight: number
+  isWall: boolean
+}
+
+interface CachedWallNetworkBase {
+  wallGeom: Array<{ w: RoutingWallSegment; len: number; dx: number; dz: number }>
+  nodes2D: Array<{ x: number; z: number }>
+  adj: CachedWallGraphEdge[][]
+  /** Sorted wall split points `(t, vIdx)` along each wall index for O(log k) start/end splicing. */
+  wallChains: Array<Array<{ t: number; vIdx: number }>>
+}
+
+const wallNetworkCache = new WeakMap<readonly RoutingWallSegment[], CachedWallNetworkBase>()
+
+function getCachedWallNetworkBase(walls: readonly RoutingWallSegment[]): CachedWallNetworkBase {
+  const hit = wallNetworkCache.get(walls)
+  if (hit) return hit
+
   const wallGeom = walls.map((w) => {
     const vx = w.end[0] - w.start[0]
     const vz = w.end[1] - w.start[1]
@@ -1436,9 +1470,6 @@ function buildWallGuidedManhattanPath(
   })
 
   const splits: number[][] = wallGeom.map((g) => [0, g.len])
-  splits[sProj.wallIdx]!.push(sProj.t)
-  splits[eProj.wallIdx]!.push(eProj.t)
-
   const JUNCTION_SNAP = 0.25
   for (let i = 0; i < wallGeom.length; i++) {
     const a = wallGeom[i]!
@@ -1489,7 +1520,6 @@ function buildWallGuidedManhattanPath(
     }
   }
 
-  // Merge nearby wall junction vertices (<= 0.20 m) into shared graph nodes
   const nodes2D: Array<{ x: number; z: number }> = []
   const findOrAddVertex = (x: number, z: number, eps: number): number => {
     for (let idx = 0; idx < nodes2D.length; idx++) {
@@ -1500,32 +1530,21 @@ function buildWallGuidedManhattanPath(
     return nodes2D.length - 1
   }
 
-  // Register wall endpoints & T-junctions first so corners cluster accurately
   for (let i = 0; i < wallGeom.length; i++) {
     const g = wallGeom[i]!
     for (const t of splits[i]!) {
-      if (
-        (i === sProj.wallIdx && Math.abs(t - sProj.t) < 1e-4) ||
-        (i === eProj.wallIdx && Math.abs(t - eProj.t) < 1e-4)
-      ) {
-        continue
-      }
       findOrAddVertex(g.w.start[0] + g.dx * t, g.w.start[1] + g.dz * t, 0.2)
     }
   }
 
-  // Register exact start & end wall projections (only snap if practically on top of a corner)
-  const startV = findOrAddVertex(sProj.x, sProj.z, 0.04)
-  const endV = findOrAddVertex(eProj.x, eProj.z, 0.04)
-
-  type GraphEdge = { to: number; weight: number; isWall: boolean }
-  const adj: GraphEdge[][] = Array.from({ length: nodes2D.length }, () => [])
+  const adj: CachedWallGraphEdge[][] = Array.from({ length: nodes2D.length }, () => [])
   const addEdge = (u: number, v: number, weight: number, isWall: boolean) => {
     if (u === v) return
     adj[u]!.push({ to: v, weight, isWall })
     adj[v]!.push({ to: u, weight, isWall })
   }
 
+  const wallChains: Array<Array<{ t: number; vIdx: number }>> = wallGeom.map(() => [])
   for (let i = 0; i < wallGeom.length; i++) {
     const g = wallGeom[i]!
     const ts = [...splits[i]!].sort((a, b) => a - b)
@@ -1533,13 +1552,10 @@ function buildWallGuidedManhattanPath(
     for (const t of ts) {
       const px = g.w.start[0] + g.dx * t
       const pz = g.w.start[1] + g.dz * t
-      let vIdx: number
-      if (i === sProj.wallIdx && Math.abs(t - sProj.t) < 1e-4) {
-        vIdx = startV
-      } else if (i === eProj.wallIdx && Math.abs(t - eProj.t) < 1e-4) {
-        vIdx = endV
-      } else {
-        vIdx = findOrAddVertex(px, pz, 0.2)
+      const vIdx = findOrAddVertex(px, pz, 0.2)
+      const chain = wallChains[i]!
+      if (chain.length === 0 || chain[chain.length - 1]!.vIdx !== vIdx) {
+        chain.push({ t, vIdx })
       }
       if (prevV !== -1 && prevV !== vIdx) {
         const uNode = nodes2D[prevV]!
@@ -1550,9 +1566,9 @@ function buildWallGuidedManhattanPath(
     }
   }
 
-  // Ensure connectivity across disconnected wall islands using orthogonal Manhattan ceiling bridges
+  // Pre-connect disconnected wall islands once per wall array using orthogonal Manhattan ceiling bridges
   const nVerts = nodes2D.length
-  const getComponents = (): number[] => {
+  const getComponents = (): { comp: number[]; count: number } => {
     const comp = new Array<number>(nVerts).fill(-1)
     let cid = 0
     for (let i = 0; i < nVerts; i++) {
@@ -1570,12 +1586,12 @@ function buildWallGuidedManhattanPath(
       }
       cid += 1
     }
-    return comp
+    return { comp, count: cid }
   }
 
-  let comp = getComponents()
+  let { comp, count } = getComponents()
   let guard = 0
-  while (comp[startV] !== comp[endV] && guard < 32) {
+  while (count > 1 && guard < 32) {
     guard += 1
     let bestU = -1
     let bestV = -1
@@ -1594,10 +1610,117 @@ function buildWallGuidedManhattanPath(
       }
     }
     if (bestU === -1 || bestV === -1) break
-    // Penalize ceiling bridges slightly so real wall paths are always preferred when connected
     addEdge(bestU, bestV, bestD * 1.6 + 0.5, false)
-    comp = getComponents()
+    const next = getComponents()
+    comp = next.comp
+    count = next.count
   }
+
+  const built: CachedWallNetworkBase = { wallGeom, nodes2D, adj, wallChains }
+  wallNetworkCache.set(walls, built)
+  return built
+}
+
+function spliceWallEndpoint(
+  base: CachedWallNetworkBase,
+  wallIdx: number,
+  t: number,
+  x: number,
+  z: number,
+  extraNodes: Array<{ x: number; z: number }>,
+  extraEdges: Map<number, CachedWallGraphEdge[]>,
+): number {
+  const baseCount = base.nodes2D.length
+  const chain = base.wallChains[wallIdx] ?? []
+  // Snap if practically on top of an existing wall vertex (<= 0.04 m)
+  for (const item of chain) {
+    const v = base.nodes2D[item.vIdx]!
+    if (Math.hypot(v.x - x, v.z - z) <= 0.04) return item.vIdx
+  }
+  for (let i = 0; i < extraNodes.length; i++) {
+    const v = extraNodes[i]!
+    if (Math.hypot(v.x - x, v.z - z) <= 0.04) return baseCount + i
+  }
+
+  const newIdx = baseCount + extraNodes.length
+  extraNodes.push({ x, z })
+  const addTemp = (u: number, v: number, weight: number) => {
+    if (u === v) return
+    let eu = extraEdges.get(u)
+    if (!eu) {
+      eu = []
+      extraEdges.set(u, eu)
+    }
+    eu.push({ to: v, weight, isWall: true })
+    let ev = extraEdges.get(v)
+    if (!ev) {
+      ev = []
+      extraEdges.set(v, ev)
+    }
+    ev.push({ to: u, weight, isWall: true })
+  }
+
+  // Connect to immediate left & right split vertices on this wall
+  let left: { t: number; vIdx: number } | null = null
+  let right: { t: number; vIdx: number } | null = null
+  for (const item of chain) {
+    if (item.t <= t) left = item
+    if (item.t >= t && !right) right = item
+  }
+  if (left) {
+    const v = base.nodes2D[left.vIdx]!
+    addTemp(newIdx, left.vIdx, Math.hypot(v.x - x, v.z - z))
+  }
+  if (right && right.vIdx !== left?.vIdx) {
+    const v = base.nodes2D[right.vIdx]!
+    addTemp(newIdx, right.vIdx, Math.hypot(v.x - x, v.z - z))
+  }
+  return newIdx
+}
+
+/**
+ * Build a wall-following route between start and end using the cached 2D wall centerline graph.
+ */
+function routeViaWallNetwork(
+  start: Vec3,
+  end: Vec3,
+  chaseY: number,
+  walls: readonly RoutingWallSegment[],
+  sProj: WallProjection,
+  eProj: WallProjection,
+  isStartWall: boolean,
+  isEndWall: boolean,
+  startPt: Vec3,
+  endPt: Vec3,
+  concealed: boolean,
+): Vec3[] | null {
+  const base = getCachedWallNetworkBase(walls)
+  const baseCount = base.nodes2D.length
+  const extraNodes: Array<{ x: number; z: number }> = []
+  const extraEdges = new Map<number, CachedWallGraphEdge[]>()
+
+  const startV = spliceWallEndpoint(base, sProj.wallIdx, sProj.t, sProj.x, sProj.z, extraNodes, extraEdges)
+  const endV = spliceWallEndpoint(base, eProj.wallIdx, eProj.t, eProj.x, eProj.z, extraNodes, extraEdges)
+
+  // If both endpoints landed on the same wall, add direct wall edge between them as well
+  if (sProj.wallIdx === eProj.wallIdx && startV !== endV) {
+    const d = Math.hypot(eProj.x - sProj.x, eProj.z - sProj.z)
+    let eu = extraEdges.get(startV)
+    if (!eu) {
+      eu = []
+      extraEdges.set(startV, eu)
+    }
+    eu.push({ to: endV, weight: d, isWall: true })
+    let ev = extraEdges.get(endV)
+    if (!ev) {
+      ev = []
+      extraEdges.set(endV, ev)
+    }
+    ev.push({ to: startV, weight: d, isWall: true })
+  }
+
+  const nVerts = baseCount + extraNodes.length
+  const getNode = (idx: number) => (idx < baseCount ? base.nodes2D[idx]! : extraNodes[idx - baseCount]!)
 
   // Dijkstra shortest wall-following path from startV to endV
   const distArr = new Array<number>(nVerts).fill(Number.POSITIVE_INFINITY)
@@ -1617,13 +1740,30 @@ function buildWallGuidedManhattanPath(
     }
     if (u === -1 || u === endV) break
     visited[u] = true
-    for (const e of adj[u]!) {
-      if (visited[e.to]) continue
-      const nd = distArr[u]! + e.weight
-      if (nd < distArr[e.to]!) {
-        distArr[e.to] = nd
-        prevArr[e.to] = u
-        prevIsWall[e.to] = e.isWall
+    const baseAdj = u < baseCount ? base.adj[u]! : undefined
+    if (baseAdj) {
+      for (let ei = 0; ei < baseAdj.length; ei++) {
+        const e = baseAdj[ei]!
+        if (visited[e.to]) continue
+        const nd = distArr[u]! + e.weight
+        if (nd < distArr[e.to]!) {
+          distArr[e.to] = nd
+          prevArr[e.to] = u
+          prevIsWall[e.to] = e.isWall
+        }
+      }
+    }
+    const tempAdj = extraEdges.get(u)
+    if (tempAdj) {
+      for (let ei = 0; ei < tempAdj.length; ei++) {
+        const e = tempAdj[ei]!
+        if (visited[e.to]) continue
+        const nd = distArr[u]! + e.weight
+        if (nd < distArr[e.to]!) {
+          distArr[e.to] = nd
+          prevArr[e.to] = u
+          prevIsWall[e.to] = e.isWall
+        }
       }
     }
   }
@@ -1645,7 +1785,7 @@ function buildWallGuidedManhattanPath(
   const pts2D: Array<[number, number]> = []
   const edgeWall: boolean[] = []
   for (let i = 0; i < revNodes.length; i++) {
-    const v = nodes2D[revNodes[i]!]!
+    const v = getNode(revNodes[i]!)
     const pt: [number, number] = [v.x, v.z]
     if (pts2D.length >= 2) {
       const lastWall = edgeWall[edgeWall.length - 1]
@@ -1669,6 +1809,21 @@ function buildWallGuidedManhattanPath(
     pts2D.push(pt)
   }
 
+  return finalizeWallNetworkPath(pts2D, edgeWall, start, end, chaseY, isStartWall, isEndWall, startPt, endPt, concealed)
+}
+
+function finalizeWallNetworkPath(
+  pts2D: Array<[number, number]>,
+  edgeWall: boolean[],
+  start: Vec3,
+  end: Vec3,
+  chaseY: number,
+  isStartWall: boolean,
+  isEndWall: boolean,
+  startPt: Vec3,
+  endPt: Vec3,
+  concealed: boolean,
+): Vec3[] {
   // In surface-mounted mode, corner-align flush wall offsets at start & end to eliminate 6cm micro-jogs.
   // In concealed ('in-wall') mode, keep every vertex dead-center on the 2D wall centerline between drywall faces!
   if (!concealed && isStartWall && pts2D.length >= 3 && edgeWall[0] && edgeWall[1]) {
@@ -1756,6 +1911,7 @@ function buildCavityEuclideanPath(
   cavityY: number,
   walls: readonly RoutingWallSegment[],
   wallPlacement: 'in-wall' | 'surface' = 'in-wall',
+  allowSameWall = false,
 ): Vec3[] | null {
   if (walls.length === 0) return null
   const sProj = projectPointToWalls(start[0], start[2], walls)
@@ -1769,6 +1925,7 @@ function buildCavityEuclideanPath(
   // Same wall, same height band, no door or window between -> keep horizontal in-wall stud bore (never bore plates needlessly)
   const midY = round3((start[1] + end[1]) / 2)
   if (
+    !allowSameWall &&
     isStartWall &&
     isEndWall &&
     sProj.wallIdx === eProj.wallIdx &&
@@ -2192,27 +2349,50 @@ export function routeElectricalRun(
   bestScore = resolvedManhattan.score
   let currentClashes = resolvedManhattan.clashes
 
+  const cavities = options.cavities
+  const resolvedAtticY =
+    cavities?.atticY ?? round3((wallCeilingH > 0 ? wallCeilingH : 2.5) + 0.12)
+
   // Step 2a: Explicit lateral box-bypass fallback around ANY clashing higher-priority obstacle
-  // (`structural` columns/beams, `plumbing` vertical stacks, or `hvac` vertical return drops)
+  // (`structural` columns/beams, `plumbing` equipment/stacks, or `hvac` equipment/ducts/terminals)
   if (currentClashes.length > 0) {
     const clashingTargets: Array<{ id: string; nodeId: string }> = []
     const seenTargetKeys = new Set<string>()
+    let hasMepEquipDuctOrTermClash = false
     for (const c of currentClashes) {
+      if (
+        c.obstacleNodeType === 'plumbing:equipment' ||
+        c.obstacleNodeType === 'hvac:equipment' ||
+        c.obstacleNodeType === 'hvac-equipment' ||
+        c.obstacleNodeType === 'hvac:duct-run' ||
+        c.obstacleNodeType === 'duct-segment' ||
+        c.obstacleNodeType === 'hvac:terminal'
+      ) {
+        hasMepEquipDuctOrTermClash = true
+      }
       const k = `${c.obstacleId}::${c.obstacleNodeId}`
       if (!seenTargetKeys.has(k)) {
         seenTargetKeys.add(k)
         clashingTargets.push({ id: c.obstacleId, nodeId: c.obstacleNodeId })
+        if (clashingTargets.length >= 3) break
       }
     }
-    const tryBypassCand = (cand: Vec3[]) => {
+    const detourBudget = { remaining: 6 }
+    const tryBypassCand = (cand: Vec3[], detourMaxYOverride?: number) => {
       const ev = scorePath(cand)
       if (ev.score < bestScore) {
         bestScore = ev.score
         bestPath = cand
         currentClashes = ev.clashes
       }
-      if (ev.clashes.length > 0) {
-        const det = resolveDetours(cand, minY, inWallMaxY)
+      if (
+        ev.clashes.length > 0 &&
+        currentClashes.length > 0 &&
+        detourBudget.remaining > 0 &&
+        ev.clashes.length <= Math.min(currentClashes.length, 3)
+      ) {
+        detourBudget.remaining -= 1
+        const det = resolveDetours(cand, minY, detourMaxYOverride ?? inWallMaxY)
         if (det.score < bestScore) {
           bestScore = det.score
           bestPath = det.path
@@ -2220,15 +2400,28 @@ export function routeElectricalRun(
         }
       }
     }
+    const atticHopElevs =
+      hasMepEquipDuctOrTermClash && cavities?.hasAttic && isFlexibleCable && routingStrategy === 'auto'
+        ? [round3(resolvedAtticY + 0.35), round3(resolvedAtticY + 0.65), round3(resolvedAtticY + 0.95)]
+        : []
+    const soffitLowElevs = hasMepEquipDuctOrTermClash
+      ? [
+          Math.max(minY, round3(preferredChaseY - 0.55)),
+          Math.max(minY, round3(preferredChaseY - 0.95)),
+          Math.max(minY, round3(Math.min(start[1], end[1]) - 0.25)),
+        ]
+      : []
     const candidateYs = Array.from(
       new Set([
         ...(Math.abs(start[1] - end[1]) < 0.25 ? [round3((start[1] + end[1]) / 2)] : []),
         preferredChaseY,
         ...ceilingElevations,
         ...lowFallbackElevations,
+        ...soffitLowElevs,
+        ...atticHopElevs,
       ]),
     )
-    for (const target of clashingTargets) {
+    outerBypass: for (const target of clashingTargets) {
       const obs =
         obstacles.find((o) => o.id === target.id) ??
         obstacles.find((o) => o.nodeId === target.nodeId)
@@ -2242,6 +2435,7 @@ export function routeElectricalRun(
       const xOffs = [round3(cx + halfX + pad), round3(cx - (halfX + pad))]
       const zOffs = [round3(cz + halfZ + pad), round3(cz - (halfZ + pad))]
       for (const y of candidateYs) {
+        const yMax = Math.max(inWallMaxY, y + 0.35)
         for (const xOff of xOffs) {
           tryBypassCand(
             simplifyOrthogonalPath([
@@ -2252,7 +2446,9 @@ export function routeElectricalRun(
               [end[0], y, end[2]],
               end,
             ]),
+            yMax,
           )
+          if (currentClashes.length === 0 && bestScore < 400) break outerBypass
         }
         for (const zOff of zOffs) {
           tryBypassCand(
@@ -2264,7 +2460,77 @@ export function routeElectricalRun(
               [end[0], y, end[2]],
               end,
             ]),
+            yMax,
           )
+          if (currentClashes.length === 0 && bestScore < 400) break outerBypass
+        }
+      }
+    }
+
+    // REAL-ELC-04: If clashes against mechanical equipment, HVAC ducts, or HVAC terminals STILL remain,
+    // test open-ceiling / low-chase lateral offsets (+/- 0.6 m, +/- 1.2 m, +/- 1.8 m) and soffit/attic planes
+    // so branches route cleanly around mechanical rooms without stalling performance.
+    if (currentClashes.length > 0 && hasMepEquipDuctOrTermClash) {
+      const midX = round3((start[0] + end[0]) / 2)
+      const midZ = round3((start[2] + end[2]) / 2)
+      const lateralDeltas = [0.6, -0.6, 1.2, -1.2, 1.8, -1.8]
+      const xChannels = Array.from(
+        new Set([
+          midX,
+          ...lateralDeltas.map((d) => round3(midX + d)),
+          ...lateralDeltas.map((d) => round3(start[0] + d)),
+          ...lateralDeltas.map((d) => round3(end[0] + d)),
+        ]),
+      )
+      const zChannels = Array.from(
+        new Set([
+          midZ,
+          ...lateralDeltas.map((d) => round3(midZ + d)),
+          ...lateralDeltas.map((d) => round3(start[2] + d)),
+          ...lateralDeltas.map((d) => round3(end[2] + d)),
+        ]),
+      )
+      const mechElevs = Array.from(
+        new Set([
+          preferredChaseY,
+          ...soffitLowElevs,
+          ...lowFallbackElevations,
+          ...atticHopElevs,
+        ]),
+      )
+      outerMechLateral: for (const y of mechElevs) {
+        const yMax = Math.max(inWallMaxY, y + 0.35)
+        for (const order of ['xz', 'zx'] as const) {
+          tryBypassCand(buildManhattanCandidate(start, end, y, order), yMax)
+          if (currentClashes.length === 0 && bestScore < 400) break outerMechLateral
+        }
+        for (const sx of xChannels) {
+          tryBypassCand(
+            simplifyOrthogonalPath([
+              start,
+              [start[0], y, start[2]],
+              [sx, y, start[2]],
+              [sx, y, end[2]],
+              [end[0], y, end[2]],
+              end,
+            ]),
+            yMax,
+          )
+          if (currentClashes.length === 0 && bestScore < 400) break outerMechLateral
+        }
+        for (const sz of zChannels) {
+          tryBypassCand(
+            simplifyOrthogonalPath([
+              start,
+              [start[0], y, start[2]],
+              [start[0], y, sz],
+              [end[0], y, sz],
+              [end[0], y, end[2]],
+              end,
+            ]),
+            yMax,
+          )
+          if (currentClashes.length === 0 && bestScore < 400) break outerMechLateral
         }
       }
     }
@@ -2275,25 +2541,35 @@ export function routeElectricalRun(
   // and offset-axis ceiling channels stay strictly orthogonal with <= 360° bends and avoid wet-wall risers.
   if (walls && !isFlexibleCable && (currentClashes.length > 0 || bestScore >= 400)) {
     const plenumElevs = [...ceilingElevations, ...lowFallbackElevations]
+    const conduitDetourBudget = { remaining: 8 }
     const tryConduitCand = (cand: Vec3[]) => {
       const directEv = scorePath(cand)
       if (directEv.score < bestScore) {
         bestScore = directEv.score
         bestPath = cand
         bestMode = 'open-manhattan'
+        currentClashes = directEv.clashes
       }
-      if (directEv.clashes.length > 0) {
+      if (
+        directEv.clashes.length > 0 &&
+        currentClashes.length > 0 &&
+        conduitDetourBudget.remaining > 0 &&
+        directEv.clashes.length <= Math.min(currentClashes.length, 3)
+      ) {
+        conduitDetourBudget.remaining -= 1
         const det = resolveDetours(cand, minY, inWallMaxY)
         if (det.score < bestScore) {
           bestScore = det.score
           bestPath = det.path
           bestMode = 'open-manhattan'
+          currentClashes = det.clashes
         }
       }
     }
-    for (const y of plenumElevs) {
+    outerConduit: for (const y of plenumElevs) {
       for (const order of ['xz', 'zx'] as const) {
         tryConduitCand(buildManhattanCandidate(start, end, y, order))
+        if (currentClashes.length === 0 && bestScore < 400) break outerConduit
       }
       // Offset-axis ceiling plenum paths (4 x 90° = 360° max, cleanly dodging wet-wall risers without U-detours)
       const midX = round3((start[0] + end[0]) / 2)
@@ -2335,6 +2611,7 @@ export function routeElectricalRun(
             end,
           ]),
         )
+        if (currentClashes.length === 0 && bestScore < 400) break outerConduit
       }
       for (const sz of zChannels) {
         tryConduitCand(
@@ -2347,6 +2624,7 @@ export function routeElectricalRun(
             end,
           ]),
         )
+        if (currentClashes.length === 0 && bestScore < 400) break outerConduit
       }
     }
   }
@@ -2354,25 +2632,104 @@ export function routeElectricalRun(
   // Step 3: Hybrid Manhattan-in-Wall <-> Euclidean-in-Attic / Crawlspace evaluation
   // Only activated when `routingStrategy === 'auto'`, flexible cable (`NM-B` / `MC`, preserving orthogonal
   // `EMT`/`RMC`/`PVC` per NEC 110.12 / 358.30), and an accessible attic or dry crawl space is present!
-  const cavities = options.cavities
   const CAVITY_MIN_SAVINGS_M = 0.35
   if (walls && cavities && routingStrategy === 'auto' && isFlexibleCable) {
     let bestClashes = currentClashes.length
 
     // 3a. Wall-Vertical -> Attic Euclidean -> Wall-Vertical (NEC 334.23 / 320.23)
     if (cavities.hasAttic) {
-      const atticY = cavities.atticY ?? round3((wallCeilingH > 0 ? wallCeilingH : 2.5) + 0.12)
-      const rawAttic = buildCavityEuclideanPath(start, end, atticY, walls, wallPlacement)
+      const atticY = resolvedAtticY
+      const rawAttic = buildCavityEuclideanPath(start, end, atticY, walls, wallPlacement, bestClashes > 0)
       if (rawAttic) {
-        const atticDetour = resolveDetours(rawAttic, Math.max(minY, atticY - 0.1), atticY + 0.55, true)
-        const resolvesClash = atticDetour.clashes.length < bestClashes
+        let bestAttic = resolveDetours(rawAttic, Math.max(minY, atticY - 0.1), atticY + 0.55, true)
+
+        // REAL-ELC-04: When attic-euclidean at base `atticY` still clashes with an attic HVAC rectangular trunk
+        // or round duct, try elevated attic clearance planes (+0.35, +0.65, +0.95, +1.25 m) AND lateral shifted
+        // attic paths (+/- 0.8 m, +/- 1.5 m) while keeping start/end vertical wall risers locked in stud bays!
+        if (bestAttic.clashes.length > 0) {
+          const atticStart = rawAttic[0]!
+          const atticEnd = rawAttic[rawAttic.length - 1]!
+          const sX = atticStart[0]
+          const sZ = atticStart[2]
+          const eX = atticEnd[0]
+          const eZ = atticEnd[2]
+          const runDx = eX - sX
+          const runDz = eZ - sZ
+          const runLen = Math.hypot(runDx, runDz)
+          const perpX = runLen > 1e-4 ? -runDz / runLen : 1
+          const perpZ = runLen > 1e-4 ? runDx / runLen : 0
+          const midX = (sX + eX) / 2
+          const midZ = (sZ + eZ) / 2
+
+          const elevatedPlanes = [
+            round3(atticY + 0.35),
+            round3(atticY + 0.65),
+            round3(atticY + 0.95),
+            round3(atticY + 1.25),
+          ]
+          for (const planeY of elevatedPlanes) {
+            const elevRaw = buildCavityEuclideanPath(start, end, planeY, walls, wallPlacement, bestClashes > 0)
+            if (!elevRaw) continue
+            const elevRes = resolveDetours(elevRaw, Math.max(minY, planeY - 0.1), planeY + 0.55, true)
+            if (
+              elevRes.clashes.length < bestAttic.clashes.length ||
+              (elevRes.clashes.length === bestAttic.clashes.length && elevRes.score < bestAttic.score)
+            ) {
+              bestAttic = elevRes
+            }
+            if (bestAttic.clashes.length === 0) break
+          }
+
+          if (bestAttic.clashes.length > 0) {
+            const shiftPlanes = [atticY, round3(atticY + 0.35), round3(atticY + 0.65), round3(atticY + 0.95)]
+            const lateralShifts = [0.8, -0.8, 1.5, -1.5]
+            outerAtticShift: for (const planeY of shiftPlanes) {
+              for (const shift of lateralShifts) {
+                const dogleg = simplifyOrthogonalPath([
+                  atticStart,
+                  [round3(sX), planeY, round3(sZ)],
+                  [round3(midX + perpX * shift), planeY, round3(midZ + perpZ * shift)],
+                  [round3(eX), planeY, round3(eZ)],
+                  atticEnd,
+                ])
+                const dogEv = scorePath(dogleg)
+                if (
+                  dogEv.clashes.length < bestAttic.clashes.length ||
+                  (dogEv.clashes.length === bestAttic.clashes.length && dogEv.score < bestAttic.score)
+                ) {
+                  bestAttic = { path: dogleg, score: dogEv.score, clashes: dogEv.clashes }
+                }
+                if (bestAttic.clashes.length === 0) break outerAtticShift
+
+                const parallelShift = simplifyOrthogonalPath([
+                  atticStart,
+                  [round3(sX), planeY, round3(sZ)],
+                  [round3(sX + perpX * shift), planeY, round3(sZ + perpZ * shift)],
+                  [round3(eX + perpX * shift), planeY, round3(eZ + perpZ * shift)],
+                  [round3(eX), planeY, round3(eZ)],
+                  atticEnd,
+                ])
+                const parEv = scorePath(parallelShift)
+                if (
+                  parEv.clashes.length < bestAttic.clashes.length ||
+                  (parEv.clashes.length === bestAttic.clashes.length && parEv.score < bestAttic.score)
+                ) {
+                  bestAttic = { path: parallelShift, score: parEv.score, clashes: parEv.clashes }
+                }
+                if (bestAttic.clashes.length === 0) break outerAtticShift
+              }
+            }
+          }
+        }
+
+        const resolvesClash = bestAttic.clashes.length < bestClashes
         const strictlyShorter =
-          atticDetour.clashes.length <= bestClashes &&
-          atticDetour.score + CAVITY_MIN_SAVINGS_M < bestScore
+          bestAttic.clashes.length <= bestClashes &&
+          bestAttic.score + CAVITY_MIN_SAVINGS_M < bestScore
         if (resolvesClash || strictlyShorter) {
-          bestPath = atticDetour.path
-          bestScore = atticDetour.score
-          bestClashes = atticDetour.clashes.length
+          bestPath = bestAttic.path
+          bestScore = bestAttic.score
+          bestClashes = bestAttic.clashes.length
           bestMode = 'attic-euclidean'
           bestNecNotes = [
             'NEC 334.23 / 320.23: Vertical wall-cavity riser through bored top plate into attic Euclidean run; protect cable with guard strips within 6 ft of attic access.',
@@ -2386,7 +2743,7 @@ export function routeElectricalRun(
     const endpointsNearFloorOrWall = start[1] < 1.9 && end[1] < 1.9
     if (cavities.hasCrawlSpace && crawlAllowedForCable && endpointsNearFloorOrWall) {
       const crawlY = cavities.crawlSpaceY ?? -0.18
-      const rawCrawl = buildCavityEuclideanPath(start, end, crawlY, walls, wallPlacement)
+      const rawCrawl = buildCavityEuclideanPath(start, end, crawlY, walls, wallPlacement, bestClashes > 0)
       if (rawCrawl) {
         const crawlDetour = resolveDetours(rawCrawl, crawlY - 0.45, Math.min(-0.04, crawlY + 0.12), true)
         const resolvesClash = crawlDetour.clashes.length < bestClashes
