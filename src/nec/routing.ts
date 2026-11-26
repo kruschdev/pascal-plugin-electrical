@@ -126,7 +126,7 @@ export type PitchedRoofEnvelope = {
   readonly explicitSegs?: readonly ExplicitRoofSegment[]
 }
 
-function levelElevationOrder(lvl: SceneNodeLike | undefined): number {
+export function levelElevationOrder(lvl: SceneNodeLike | undefined): number {
   if (!lvl) return 0
   if (typeof lvl.baseElevation === 'number' && Number.isFinite(lvl.baseElevation)) {
     return lvl.baseElevation
@@ -137,7 +137,46 @@ function levelElevationOrder(lvl: SceneNodeLike | undefined): number {
   if (typeof lvl.level === 'number' && Number.isFinite(lvl.level)) {
     return lvl.level
   }
+  if (typeof lvl.index === 'number' && Number.isFinite(lvl.index)) {
+    return lvl.index
+  }
   return 0
+}
+
+/**
+ * Determine whether `levelId` is the building's ground / lowest walled story:
+ * - Single-story or unlevelled scenes -> true
+ * - Explicit `level <= 0` / `baseElevation <= 0` -> true
+ * - Otherwise true only when `levelId` is at or below the minimum elevation among walled sibling levels in the same building.
+ */
+export function isGroundOrLowestWalledLevel(
+  nodes: Readonly<Record<string, SceneNodeLike>>,
+  levelId: string | null | undefined,
+): boolean {
+  if (!levelId) return true
+  const curLvl = nodes[levelId]
+  if (!curLvl || curLvl.type !== 'level') return true
+  const curOrder = levelElevationOrder(curLvl)
+  const curBldg = typeof curLvl.parentId === 'string' ? curLvl.parentId : null
+  const all = Object.values(nodes)
+  const wallLevelIds = new Set<string>()
+  for (const n of all) {
+    if (n.type === 'wall' && n.visible !== false) {
+      const lid = resolveNodeLevelId(nodes, n)
+      if (lid) wallLevelIds.add(lid)
+    }
+  }
+  const walledSiblings = all.filter((n) => {
+    if (n.type !== 'level') return false
+    if (!wallLevelIds.has(n.id)) return false
+    const nBldg = typeof n.parentId === 'string' ? n.parentId : null
+    if (curBldg && nBldg && curBldg !== nBldg) return false
+    return true
+  })
+  if (walledSiblings.length <= 1) return true
+  if (curOrder <= 0) return true
+  const minWalledOrder = Math.min(...walledSiblings.map((l) => levelElevationOrder(l)))
+  return curOrder <= minWalledOrder + 1e-4
 }
 
 /**
@@ -390,6 +429,10 @@ export type RouteElectricalOptions = {
   nodes?: Readonly<Record<string, SceneNodeLike>>
   /** Optional active level ID paired with `nodes` for explicit `roof-segment` scoping. */
   levelId?: string | null
+  /** Optional interior room polygons for concave footprint containment when wall loops are incomplete. */
+  interiorPolygons?: readonly (readonly (readonly [number, number])[])[]
+  /** Optional outdoor/courtyard polygons excluded from enclosed interior footprint. */
+  outdoorPolygons?: readonly (readonly (readonly [number, number])[])[]
 }
 
 export type ElectricalRouteResult = {
@@ -1660,22 +1703,29 @@ function buildWallGuidedManhattanPath(
   walls: readonly RoutingWallSegment[],
   wallPlacement: 'in-wall' | 'surface' = 'in-wall',
   bypassHorizontalShortcut = false,
+  interiorPolygons?: readonly (readonly (readonly [number, number])[])[],
+  outdoorPolygons?: readonly (readonly (readonly [number, number])[])[],
+  isPointTrapped?: (pt: Vec3) => boolean,
 ): Vec3[] | null {
   if (walls.length === 0) return null
   const sProj = projectPointToWalls(start[0], start[2], walls)
   const eProj = projectPointToWalls(end[0], end[2], walls)
   if (!sProj || !eProj) return null
 
-  const isStartWall = isEndpointWallMounted(start, sProj)
-  const isEndWall = isEndpointWallMounted(end, eProj)
+  const rawStartWall = isEndpointWallMounted(start, sProj)
+  const rawEndWall = isEndpointWallMounted(end, eProj)
   const concealed = wallPlacement === 'in-wall'
 
-  // In concealed ('in-wall') mode, wall-mounted boxes terminate inside the stud cavity on the wall centerline
-  // (where the rough-in box rear/top knockouts sit between the two drywall faces).
-  const startPt: Vec3 =
-    concealed && isStartWall ? [round3(sProj.x), start[1], round3(sProj.z)] : start
-  const endPt: Vec3 =
-    concealed && isEndWall ? [round3(eProj.x), end[1], round3(eProj.z)] : end
+  // In concealed ('in-wall') mode, wall-mounted boxes terminate inside the stud cavity on the wall centerline,
+  // EXCEPT never snap a clear endpoint onto a wall centerline point that falls inside an adjacent obstacle's clearance!
+  const sSnapped: Vec3 = [round3(sProj.x), start[1], round3(sProj.z)]
+  const eSnapped: Vec3 = [round3(eProj.x), end[1], round3(eProj.z)]
+  const isStartWall =
+    rawStartWall && !(concealed && isPointTrapped && !isPointTrapped(start) && isPointTrapped(sSnapped))
+  const isEndWall =
+    rawEndWall && !(concealed && isPointTrapped && !isPointTrapped(end) && isPointTrapped(eSnapped))
+  const startPt: Vec3 = concealed && isStartWall ? sSnapped : start
+  const endPt: Vec3 = concealed && isEndWall ? eSnapped : end
 
   // Fast path A: Same wall, same mounting height band, no door or window in between -> horizontal stud-bored wall chase!
   const midY = round3((start[1] + end[1]) / 2)
@@ -1755,6 +1805,8 @@ function buildWallGuidedManhattanPath(
     startPt,
     endPt,
     concealed,
+    interiorPolygons,
+    outdoorPolygons,
   )
 }
 
@@ -1770,6 +1822,101 @@ interface CachedWallNetworkBase {
   adj: CachedWallGraphEdge[][]
   /** Sorted wall split points `(t, vIdx)` along each wall index for O(log k) start/end splicing. */
   wallChains: Array<Array<{ t: number; vIdx: number }>>
+  /** Bounded interior face polygons extracted from wall-only cycles (positive signed area in XZ). */
+  boundedFaces: Array<Array<[number, number]>>
+  /** True when `boundedFaces` covers the vast majority (>= 72%) of wall length (closed perimeter footprint). */
+  boundedFacesComplete: boolean
+  /** Tight XZ bounding box of all walls in this level. */
+  aabb: XZBounds
+}
+
+function pointInPolygon2D(px: number, pz: number, poly: ReadonlyArray<readonly [number, number]>): boolean {
+  let inside = false
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, zi] = poly[i]!
+    const [xj, zj] = poly[j]!
+    const intersect = zi > pz !== zj > pz && px < ((xj - xi) * (pz - zi)) / (zj - zi + 1e-12) + xi
+    if (intersect) inside = !inside
+  }
+  return inside
+}
+
+/**
+ * Extract all bounded interior face polygons (positive signed area in XZ) from wall-only edges
+ * of the planar wall graph using half-edge angle sorting. Handles concave L/U/T/H footprints
+ * and multi-room layouts without requiring `zone` nodes.
+ */
+function extractBoundedWallFaces(
+  nodes2D: ReadonlyArray<{ x: number; z: number }>,
+  adj: ReadonlyArray<ReadonlyArray<CachedWallGraphEdge>>,
+): Array<Array<[number, number]>> {
+  type HalfEdge = { id: number; from: number; to: number; twin: number; angle: number }
+  const halfEdges: HalfEdge[] = []
+  const seenUndirected = new Set<string>()
+  const outgoing: number[][] = Array.from({ length: nodes2D.length }, () => [])
+
+  for (let u = 0; u < adj.length; u++) {
+    const nu = nodes2D[u]!
+    for (const e of adj[u]!) {
+      if (!e.isWall) continue
+      const v = e.to
+      if (u === v) continue
+      const key = u < v ? `${u}:${v}` : `${v}:${u}`
+      if (seenUndirected.has(key)) continue
+      seenUndirected.add(key)
+      const nv = nodes2D[v]!
+      if (Math.hypot(nv.x - nu.x, nv.z - nu.z) < 1e-4) continue
+      const id1 = halfEdges.length
+      const id2 = id1 + 1
+      halfEdges.push({ id: id1, from: u, to: v, twin: id2, angle: Math.atan2(nv.z - nu.z, nv.x - nu.x) })
+      halfEdges.push({ id: id2, from: v, to: u, twin: id1, angle: Math.atan2(nu.z - nv.z, nu.x - nv.x) })
+      outgoing[u]!.push(id1)
+      outgoing[v]!.push(id2)
+    }
+  }
+  if (halfEdges.length === 0) return []
+
+  const outIndex = new Int32Array(halfEdges.length)
+  for (let v = 0; v < outgoing.length; v++) {
+    const list = outgoing[v]!
+    list.sort((a, b) => halfEdges[a]!.angle - halfEdges[b]!.angle)
+    for (let i = 0; i < list.length; i++) {
+      outIndex[list[i]!] = i
+    }
+  }
+
+  const visited = new Uint8Array(halfEdges.length)
+  const faces: Array<Array<[number, number]>> = []
+  const maxSteps = halfEdges.length + 2
+  for (let i = 0; i < halfEdges.length; i++) {
+    if (visited[i]) continue
+    const poly: Array<[number, number]> = []
+    let cur = i
+    let steps = 0
+    while (!visited[cur] && steps < maxSteps) {
+      visited[cur] = 1
+      const he = halfEdges[cur]!
+      const nv = nodes2D[he.from]!
+      poly.push([nv.x, nv.z])
+      const nextList = outgoing[he.to]!
+      const deg = nextList.length
+      if (deg === 0) break
+      const twinPos = outIndex[he.twin]!
+      cur = nextList[(twinPos - 1 + deg) % deg]!
+      steps += 1
+    }
+    if (poly.length < 3) continue
+    let area2 = 0
+    for (let k = 0; k < poly.length; k++) {
+      const [x1, z1] = poly[k]!
+      const [x2, z2] = poly[(k + 1) % poly.length]!
+      area2 += x1 * z2 - x2 * z1
+    }
+    if (area2 > 0.2) {
+      faces.push(poly)
+    }
+  }
+  return faces
 }
 
 const wallNetworkCache = new WeakMap<readonly RoutingWallSegment[], CachedWallNetworkBase>()
@@ -1947,9 +2094,162 @@ function getCachedWallNetworkBase(walls: readonly RoutingWallSegment[]): CachedW
     }
   }
 
-  const built: CachedWallNetworkBase = { wallGeom, nodes2D, adj, wallChains }
+  const boundedFaces = extractBoundedWallFaces(nodes2D, adj)
+  let minX = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let minZ = Number.POSITIVE_INFINITY
+  let maxZ = Number.NEGATIVE_INFINITY
+  let totalWallLen = 0
+  let coveredWallLen = 0
+  for (const g of wallGeom) {
+    for (const pt of [g.w.start, g.w.end]) {
+      if (pt[0] < minX) minX = pt[0]
+      if (pt[0] > maxX) maxX = pt[0]
+      if (pt[1] < minZ) minZ = pt[1]
+      if (pt[1] > maxZ) maxZ = pt[1]
+    }
+    if (g.len < 0.05) continue
+    totalWallLen += g.len
+    if (boundedFaces.length > 0) {
+      const mx = (g.w.start[0] + g.w.end[0]) / 2
+      const mz = (g.w.start[1] + g.w.end[1]) / 2
+      const nx = -g.dz
+      const nz = g.dx
+      const probe = g.w.thickness / 2 + 0.2
+      const touchesFace = boundedFaces.some(
+        (face) =>
+          pointInPolygon2D(mx + nx * probe, mz + nz * probe, face) ||
+          pointInPolygon2D(mx - nx * probe, mz - nz * probe, face),
+      )
+      if (touchesFace) coveredWallLen += g.len
+    }
+  }
+  const boundedFacesComplete =
+    boundedFaces.length > 0 && totalWallLen > 0 && coveredWallLen / totalWallLen >= 0.72
+  const aabb: XZBounds = Number.isFinite(minX)
+    ? { minX, maxX, minZ, maxZ }
+    : { minX: -Infinity, maxX: Infinity, minZ: -Infinity, maxZ: Infinity }
+  const built: CachedWallNetworkBase = {
+    wallGeom,
+    nodes2D,
+    adj,
+    wallChains,
+    boundedFaces,
+    boundedFacesComplete,
+    aabb,
+  }
   wallNetworkCache.set(walls, built)
   return built
+}
+
+/**
+ * Determine whether 2D point `(px, pz)` lies inside the enclosed building wall/room footprint
+ * (or concealed within a wall's thickness + `wallToleranceBonus`).
+ * Combines closed wall-graph faces (`boundedFaces`) with `interiorPolygons` (so open-sided rooms
+ * like lanais/covered porches stay interior), and falls back to the tight wall AABB when hand-drawn
+ * walls have open corners (`!boundedFacesComplete`) without interior zones.
+ */
+export function isPointInsideWallFootprint(
+  px: number,
+  pz: number,
+  walls: readonly RoutingWallSegment[],
+  interiorPolygons?: readonly (readonly (readonly [number, number])[])[],
+  outdoorPolygons?: readonly (readonly (readonly [number, number])[])[],
+  wallToleranceBonus = 0.025,
+): boolean {
+  if (walls.length === 0) return true
+  const proj = projectPointToWalls(px, pz, walls)
+  if (proj && proj.dist <= proj.wall.thickness / 2 + wallToleranceBonus) {
+    return true
+  }
+  if (outdoorPolygons && outdoorPolygons.some((poly) => poly.length >= 3 && pointInPolygon2D(px, pz, poly))) {
+    return false
+  }
+  if (interiorPolygons && interiorPolygons.some((poly) => poly.length >= 3 && pointInPolygon2D(px, pz, poly))) {
+    return true
+  }
+  const base = getCachedWallNetworkBase(walls)
+  if (base.boundedFacesComplete) {
+    return base.boundedFaces.some((face) => pointInPolygon2D(px, pz, face))
+  }
+  if (base.boundedFaces.length > 0 && base.boundedFaces.some((face) => pointInPolygon2D(px, pz, face))) {
+    return true
+  }
+  if (interiorPolygons && interiorPolygons.length > 0) {
+    // Interior zone polygons were provided; if wall loops are incomplete, only treat points inside tight AABB as inside
+    // when walls are open, while rejecting points strictly outside the building AABB (e.g., outdoor condensers / yard bulges).
+    return (
+      px >= base.aabb.minX - wallToleranceBonus &&
+      px <= base.aabb.maxX + wallToleranceBonus &&
+      pz >= base.aabb.minZ - wallToleranceBonus &&
+      pz <= base.aabb.maxZ + wallToleranceBonus
+    )
+  }
+  return (
+    px >= base.aabb.minX - wallToleranceBonus &&
+    px <= base.aabb.maxX + wallToleranceBonus &&
+    pz >= base.aabb.minZ - wallToleranceBonus &&
+    pz <= base.aabb.maxZ + wallToleranceBonus
+  )
+}
+
+/**
+ * Determine whether every sampled point along the horizontal projection of segment `[a, b]`
+ * stays inside the enclosed building wall/room footprint.
+ */
+export function isSegmentInsideWallFootprint(
+  a: Vec3,
+  b: Vec3,
+  walls: readonly RoutingWallSegment[],
+  interiorPolygons?: readonly (readonly (readonly [number, number])[])[],
+  outdoorPolygons?: readonly (readonly (readonly [number, number])[])[],
+  wallToleranceBonus = 0.025,
+): boolean {
+  if (walls.length === 0) return true
+  const segLenXZ = Math.hypot(b[0] - a[0], b[2] - a[2])
+  if (segLenXZ < 0.02) {
+    return isPointInsideWallFootprint(a[0], a[2], walls, interiorPolygons, outdoorPolygons, wallToleranceBonus)
+  }
+  const steps = Math.max(2, Math.min(24, Math.ceil(segLenXZ / 0.35)))
+  for (let s = 0; s <= steps; s++) {
+    const f = s / steps
+    const px = a[0] + (b[0] - a[0]) * f
+    const pz = a[2] + (b[2] - a[2]) * f
+    if (!isPointInsideWallFootprint(px, pz, walls, interiorPolygons, outdoorPolygons, wallToleranceBonus)) {
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * Clamp a point `(px, pz)` that fell outside the enclosed wall footprint back inset `insetM` (default 0.12 m)
+ * inside the nearest interior wall face rather than allowing outward exterior bulges.
+ */
+export function clampPointInsetToWallFootprint(
+  px: number,
+  pz: number,
+  walls: readonly RoutingWallSegment[],
+  insetM = 0.12,
+  interiorPolygons?: readonly (readonly (readonly [number, number])[])[],
+  outdoorPolygons?: readonly (readonly (readonly [number, number])[])[],
+): [number, number] {
+  if (walls.length === 0) return [round3(px), round3(pz)]
+  if (isPointInsideWallFootprint(px, pz, walls, interiorPolygons, outdoorPolygons, 0.025)) {
+    return [round3(px), round3(pz)]
+  }
+  const proj = projectPointToWalls(px, pz, walls)
+  if (!proj) return [round3(px), round3(pz)]
+  const nx = -proj.dz
+  const nz = proj.dx
+  const stepOff = proj.wall.thickness / 2 + Math.max(0.04, insetM)
+  const posCand: [number, number] = [round3(proj.x + nx * stepOff), round3(proj.z + nz * stepOff)]
+  const negCand: [number, number] = [round3(proj.x - nx * stepOff), round3(proj.z - nz * stepOff)]
+  const posIn = isPointInsideWallFootprint(posCand[0], posCand[1], walls, interiorPolygons, outdoorPolygons, 0)
+  const negIn = isPointInsideWallFootprint(negCand[0], negCand[1], walls, interiorPolygons, outdoorPolygons, 0)
+  if (posIn && !negIn) return posCand
+  if (negIn && !posIn) return negCand
+  return [round3(proj.x), round3(proj.z)]
 }
 
 function spliceWallEndpoint(
@@ -2024,6 +2324,8 @@ function routeViaWallNetwork(
   startPt: Vec3,
   endPt: Vec3,
   concealed: boolean,
+  interiorPolygons?: readonly (readonly (readonly [number, number])[])[],
+  outdoorPolygons?: readonly (readonly (readonly [number, number])[])[],
 ): Vec3[] | null {
   const base = getCachedWallNetworkBase(walls)
   const baseCount = base.nodes2D.length
@@ -2140,7 +2442,21 @@ function routeViaWallNetwork(
     pts2D.push(pt)
   }
 
-  return finalizeWallNetworkPath(pts2D, edgeWall, start, end, chaseY, isStartWall, isEndWall, startPt, endPt, concealed)
+  return finalizeWallNetworkPath(
+    pts2D,
+    edgeWall,
+    start,
+    end,
+    chaseY,
+    isStartWall,
+    isEndWall,
+    startPt,
+    endPt,
+    concealed,
+    walls,
+    interiorPolygons,
+    outdoorPolygons,
+  )
 }
 
 function finalizeWallNetworkPath(
@@ -2154,7 +2470,33 @@ function finalizeWallNetworkPath(
   startPt: Vec3,
   endPt: Vec3,
   concealed: boolean,
+  walls?: readonly RoutingWallSegment[],
+  interiorPolygons?: readonly (readonly (readonly [number, number])[])[],
+  outdoorPolygons?: readonly (readonly (readonly [number, number])[])[],
 ): Vec3[] {
+  const chooseInsideElbow = (
+    ax: number,
+    az: number,
+    bx: number,
+    bz: number,
+    defaultElbow: [number, number],
+    altElbow: [number, number],
+  ): [number, number] => {
+    if (!walls || walls.length === 0) return defaultElbow
+    const a3: Vec3 = [ax, chaseY, az]
+    const b3: Vec3 = [bx, chaseY, bz]
+    const d3: Vec3 = [defaultElbow[0], chaseY, defaultElbow[1]]
+    const al3: Vec3 = [altElbow[0], chaseY, altElbow[1]]
+    const defOk =
+      isSegmentInsideWallFootprint(a3, d3, walls, interiorPolygons, outdoorPolygons) &&
+      isSegmentInsideWallFootprint(d3, b3, walls, interiorPolygons, outdoorPolygons)
+    if (defOk) return defaultElbow
+    const altOk =
+      isSegmentInsideWallFootprint(a3, al3, walls, interiorPolygons, outdoorPolygons) &&
+      isSegmentInsideWallFootprint(al3, b3, walls, interiorPolygons, outdoorPolygons)
+    if (altOk) return altElbow
+    return defaultElbow
+  }
   // In surface-mounted mode, corner-align flush wall offsets at start & end to eliminate 6cm micro-jogs.
   // In concealed ('in-wall') mode, keep every vertex dead-center on the 2D wall centerline between drywall faces!
   if (!concealed && isStartWall && pts2D.length >= 3 && edgeWall[0] && edgeWall[1]) {
@@ -2198,7 +2540,15 @@ function finalizeWallNetworkPath(
   const first2D = pts2D[0]!
   if (!isStartWall) {
     if (Math.abs(startPt[0] - first2D[0]) > 0.01 && Math.abs(startPt[2] - first2D[1]) > 0.01) {
-      pts3D.push([first2D[0], chaseY, startPt[2]])
+      const elbow = chooseInsideElbow(
+        startPt[0],
+        startPt[2],
+        first2D[0],
+        first2D[1],
+        [first2D[0], startPt[2]],
+        [startPt[0], first2D[1]],
+      )
+      pts3D.push([elbow[0], chaseY, elbow[1]])
     }
     pts3D.push([first2D[0], chaseY, first2D[1]])
   } else if (Math.hypot(startPt[0] - first2D[0], startPt[2] - first2D[1]) > 0.01) {
@@ -2209,7 +2559,8 @@ function finalizeWallNetworkPath(
     const a = pts2D[i]!
     const b = pts2D[i + 1]!
     if (!edgeWall[i] && Math.abs(b[0] - a[0]) > 0.01 && Math.abs(b[1] - a[1]) > 0.01) {
-      pts3D.push([b[0], chaseY, a[1]])
+      const elbow = chooseInsideElbow(a[0], a[1], b[0], b[1], [b[0], a[1]], [a[0], b[1]])
+      pts3D.push([elbow[0], chaseY, elbow[1]])
     }
     pts3D.push([b[0], chaseY, b[1]])
   }
@@ -2217,7 +2568,15 @@ function finalizeWallNetworkPath(
   const last2D = pts2D[pts2D.length - 1]!
   if (!isEndWall) {
     if (Math.abs(endPt[0] - last2D[0]) > 0.01 && Math.abs(endPt[2] - last2D[1]) > 0.01) {
-      pts3D.push([last2D[0], chaseY, endPt[2]])
+      const elbow = chooseInsideElbow(
+        last2D[0],
+        last2D[1],
+        endPt[0],
+        endPt[2],
+        [last2D[0], endPt[2]],
+        [endPt[0], last2D[1]],
+      )
+      pts3D.push([elbow[0], chaseY, elbow[1]])
     }
     pts3D.push([endPt[0], chaseY, endPt[2]])
   } else if (Math.hypot(endPt[0] - last2D[0], endPt[2] - last2D[1]) > 0.01) {
@@ -2486,6 +2845,7 @@ function buildSegmentDetours(
   maxY: number,
   obs?: TradeObstacle,
   envBounds: XZBounds | null = null,
+  isPathInFootprint?: (p: readonly Vec3[]) => boolean,
 ): Vec3[][] {
   const stepPad = 0.03
   const dx = Math.abs(b[0] - a[0])
@@ -2505,16 +2865,20 @@ function buildSegmentDetours(
 
   const filterByEnv = (paths: Vec3[][]): Vec3[][] => {
     const simplified = paths.map((d) => simplifyOrthogonalPath(d))
-    if (!envBounds) return simplified
-    return simplified.filter((p) =>
-      p.every(
-        (pt) =>
-          pt[0] >= envBounds.minX &&
-          pt[0] <= envBounds.maxX &&
-          pt[2] >= envBounds.minZ &&
-          pt[2] <= envBounds.maxZ,
-      ),
-    )
+    return simplified.filter((p) => {
+      if (envBounds) {
+        const insideBox = p.every(
+          (pt) =>
+            pt[0] >= envBounds.minX &&
+            pt[0] <= envBounds.maxX &&
+            pt[2] >= envBounds.minZ &&
+            pt[2] <= envBounds.maxZ,
+        )
+        if (!insideBox) return false
+      }
+      if (isPathInFootprint && !isPathInFootprint(p)) return false
+      return true
+    })
   }
 
   // Horizontal diagonal segment (e.g. attic or crawl-space Euclidean cable pull):
@@ -2702,7 +3066,306 @@ export function routeElectricalRun(
   options: RouteElectricalOptions = {},
 ): ElectricalRouteResult {
   const walls = options.walls && options.walls.length > 0 ? options.walls : null
+  if (walls) {
+    const base = getCachedWallNetworkBase(walls)
+    const hasEnclosedFootprint =
+      base.boundedFaces.length > 0 || (options.interiorPolygons !== undefined && options.interiorPolygons.length > 0)
+    const wallMountTol = 0.14
+    const startInside =
+      !hasEnclosedFootprint ||
+      isPointInsideWallFootprint(
+        start[0],
+        start[2],
+        walls,
+        options.interiorPolygons,
+        options.outdoorPolygons,
+        wallMountTol,
+      )
+    const endInside =
+      !hasEnclosedFootprint ||
+      isPointInsideWallFootprint(
+        end[0],
+        end[2],
+        walls,
+        options.interiorPolygons,
+        options.outdoorPolygons,
+        wallMountTol,
+      )
+    const isGroundedExteriorDrop = end[1] < -0.05 && start[1] >= 0
+    // Only split through exterior wall penetration for grounded lower drops (y < -0.05) or genuine
+    // outdoor equipment/disconnects (y <= 1.85 outside footprint) — never hijack ceiling luminaires!
+    const shouldUseExteriorWallExit =
+      startInside && (isGroundedExteriorDrop || (!endInside && end[1] <= 1.85))
+    if (shouldUseExteriorWallExit) {
+      const eProj = projectPointToWalls(end[0], end[2], walls)
+      if (eProj) {
+        const leftNx = -eProj.dz
+        const leftNz = eProj.dx
+        let outSign: 1 | -1 = eProj.signedDist >= 0 ? 1 : -1
+        if (Math.abs(eProj.signedDist) < 1e-3 && hasEnclosedFootprint) {
+          const probeOff = eProj.wall.thickness / 2 + 0.25
+          const posIn = isPointInsideWallFootprint(
+            round3(eProj.x) + leftNx * probeOff,
+            round3(eProj.z) + leftNz * probeOff,
+            walls,
+            options.interiorPolygons,
+            options.outdoorPolygons,
+            0,
+          )
+          const negIn = isPointInsideWallFootprint(
+            round3(eProj.x) - leftNx * probeOff,
+            round3(eProj.z) - leftNz * probeOff,
+            walls,
+            options.interiorPolygons,
+            options.outdoorPolygons,
+            0,
+          )
+          if (posIn && !negIn) outSign = -1
+          else if (negIn && !posIn) outSign = 1
+        }
+        const outNx = leftNx * outSign
+        const outNz = leftNz * outSign
+        const extFaceOff = eProj.wall.thickness / 2 + 0.03
+        // If `end` is already mounted flush on the exterior face of this wall, drop straight onto `end`'s XZ
+        // to avoid a tiny 2cm U-jog bend at the disconnect box entry!
+        const endFlushOnExteriorFace =
+          eProj.dist >= eProj.wall.thickness / 2 - 0.01 && eProj.dist <= eProj.wall.thickness / 2 + 0.08
+
+        const fullHeightWalls = walls.filter((w) => w.height >= 1.8)
+        const wallCeilingH =
+          typeof options.cavities?.levelHeight === 'number' &&
+          options.cavities.levelHeight >= 1.8 &&
+          options.cavities.levelHeight <= 12
+            ? options.cavities.levelHeight
+            : fullHeightWalls.length > 0
+              ? Math.max(...fullHeightWalls.map((w) => w.height))
+              : Math.max(...walls.map((w) => w.height))
+        const rawPrefChaseY = options.preferredChaseY ?? 2.55
+        const prefChaseY =
+          wallCeilingH > 0
+            ? round3(
+                Math.min(
+                  rawPrefChaseY,
+                  (options.wallPlacement ?? 'in-wall') === 'in-wall'
+                    ? wallCeilingH - 0.06
+                    : wallCeilingH + 0.012,
+                ),
+              )
+            : rawPrefChaseY
+        const minYOpt = options.minY ?? 0.15
+        const racewayOpt: RacewayType = options.racewayType ?? 'nm-b'
+        const isFlexOpt = racewayOpt === 'nm-b' || racewayOpt === 'mc'
+        const maxBendOpt = options.maxBendDegrees ?? 360
+        const clearOpt = options.clearanceM ?? DEFAULT_CLEARANCE_M
+        const radOpt = options.conduitRadiusM ?? 0.015
+
+        // Try clean low exterior wall penetration first, plus chase-level & mid-wall exits for obstacle/bend relief
+        const penYs: number[] =
+          end[1] < minYOpt
+            ? Array.from(
+                new Set([
+                  round3(Math.max(0.3, Math.min(0.45, prefChaseY))),
+                  prefChaseY,
+                  round3(Math.max(minYOpt, prefChaseY - 0.55)),
+                ]),
+              )
+            : Array.from(
+                new Set([
+                  round3(Math.min(prefChaseY, Math.max(minYOpt, end[1]))),
+                  prefChaseY,
+                  round3(Math.max(minYOpt, prefChaseY - 0.55)),
+                ]),
+              )
+
+        const sProj0 = projectPointToWalls(start[0], start[2], walls)
+        const sAnchor: Vec3 =
+          (options.wallPlacement ?? 'in-wall') === 'in-wall' &&
+          sProj0 &&
+          isEndpointWallMounted(start, sProj0)
+            ? [round3(sProj0.x), start[1], round3(sProj0.z)]
+            : start
+
+        type ExtCandidateResult = {
+          path: Vec3[]
+          score: number
+          indoorRes: ElectricalRouteResult
+          clashes: TradeClashFinding[]
+        }
+        const extState: { best: ExtCandidateResult | null } = { best: null }
+
+        const evalWallShift = (tShift: number) => {
+          const tClamped = Math.max(0.12, Math.min(eProj.len - 0.12, eProj.t + tShift))
+          const wallX = round3(eProj.wall.start[0] + eProj.dx * tClamped)
+          const wallZ = round3(eProj.wall.start[1] + eProj.dz * tClamped)
+          const wallExtX =
+            tShift === 0 && endFlushOnExteriorFace ? round3(end[0]) : round3(wallX + outNx * extFaceOff)
+          const wallExtZ =
+            tShift === 0 && endFlushOnExteriorFace ? round3(end[2]) : round3(wallZ + outNz * extFaceOff)
+
+          for (const penY of penYs) {
+            const indoorTarget: Vec3 = [wallX, penY, wallZ]
+            const indoorCandidates: Array<{ path: Vec3[]; res: ElectricalRouteResult }> = []
+            const primaryIndoor = routeElectricalRunCore(start, indoorTarget, obstacles, options)
+            indoorCandidates.push({ path: primaryIndoor.path, res: primaryIndoor })
+            if (!isFlexOpt) {
+              const tightIndoor = routeElectricalRunCore(start, indoorTarget, obstacles, {
+                ...options,
+                maxBendDegrees: Math.max(180, maxBendOpt - 180),
+              })
+              indoorCandidates.push({ path: tightIndoor.path, res: tightIndoor })
+              // Test perpendicular indoor L-elbow approaches across ceiling & mid elevations so rigid conduit
+              // enters the exterior wall straight (0° extra bend) and avoids ducts/beams cleanly!
+              const chaseTries = Array.from(
+                new Set([
+                  penY,
+                  prefChaseY,
+                  round3(Math.max(minYOpt, prefChaseY - 0.35)),
+                  round3(Math.max(minYOpt, prefChaseY - 0.7)),
+                ]),
+              )
+              for (const cy of chaseTries) {
+                for (const order of ['xz', 'zx'] as const) {
+                  const cand = buildManhattanCandidate(sAnchor, indoorTarget, cy, order)
+                  let allIn = true
+                  for (let i = 0; i < cand.length - 1; i++) {
+                    const segA = cand[i]!
+                    const segB = cand[i + 1]!
+                    if (
+                      Math.hypot(segB[0] - segA[0], segB[2] - segA[2]) > 0.03 &&
+                      !isSegmentInsideWallFootprint(
+                        segA,
+                        segB,
+                        walls,
+                        options.interiorPolygons,
+                        options.outdoorPolygons,
+                      )
+                    ) {
+                      allIn = false
+                      break
+                    }
+                  }
+                  if (allIn) {
+                    indoorCandidates.push({ path: cand, res: primaryIndoor })
+                  }
+                }
+              }
+            }
+            for (const { path: indoorPath, res: indoorRes } of indoorCandidates) {
+              const extTail: Vec3[] = [
+                [wallX, penY, wallZ],
+                [wallExtX, penY, wallExtZ],
+              ]
+              const endY = round3(end[1])
+              if (Math.abs(endY - penY) > 0.01) {
+                extTail.push([wallExtX, endY, wallExtZ])
+              }
+              if (Math.hypot(end[0] - wallExtX, end[2] - wallExtZ) > 0.02) {
+                if (Math.abs(end[0] - wallExtX) > 0.01 && Math.abs(end[2] - wallExtZ) > 0.01) {
+                  const elbowA: Vec3 = [end[0], endY, wallExtZ]
+                  const elbowB: Vec3 = [wallExtX, endY, end[2]]
+                  const aClashes = detectRunTradeClashes(
+                    [[wallExtX, endY, wallExtZ], elbowA, end],
+                    obstacles,
+                    clearOpt,
+                    radOpt,
+                  ).length
+                  const bClashes = detectRunTradeClashes(
+                    [[wallExtX, endY, wallExtZ], elbowB, end],
+                    obstacles,
+                    clearOpt,
+                    radOpt,
+                  ).length
+                  extTail.push(aClashes <= bClashes ? elbowA : elbowB)
+                }
+                extTail.push(end)
+              }
+              const combined = simplifyOrthogonalPath([...indoorPath, ...extTail])
+              const combinedClashes = detectRunTradeClashes(combined, obstacles, clearOpt, radOpt)
+              const { totalBendDegrees } = countPathBendDegrees(combined)
+              const bendPenalty =
+                totalBendDegrees > maxBendOpt ? (isFlexOpt ? 50 : 400) : totalBendDegrees * 0.004
+              // Prefer low penetration (minimal exposed exterior vertical drop) when clash-free & bend-compliant
+              const exposedDropPenalty = Math.max(0, penY - Math.max(0.35, endY)) * 0.6
+              const score =
+                combinedClashes.length * 2000 +
+                polylineLengthM(combined) +
+                bendPenalty +
+                exposedDropPenalty +
+                Math.abs(tShift) * 0.5
+              if (!extState.best || score < extState.best.score) {
+                extState.best = {
+                  path: combined,
+                  score,
+                  indoorRes,
+                  clashes: combinedClashes,
+                }
+              }
+            }
+          }
+        }
+
+        evalWallShift(0)
+        // If the direct behind-condenser penetration hits a window LVL header, plumbing stack, or HVAC duct/plenum,
+        // shift cleanly along the same exterior wall to find a 0-clash penetration!
+        if (!extState.best || extState.best.clashes.length > 0) {
+          for (const dt of [0.55, -0.55, 1.1, -1.1, 1.8, -1.8]) {
+            evalWallShift(dt)
+            if (extState.best && extState.best.clashes.length === 0 && extState.best.score < 400) break
+          }
+        }
+
+        if (extState.best) {
+          const bestExtResult = extState.best
+          // Never return a clashing outdoor-split path if the direct obstacle-avoiding router finds fewer clashes
+          if (bestExtResult.clashes.length > 0 && !isGroundedExteriorDrop) {
+            const directFallback = routeElectricalRunCore(start, end, obstacles, options)
+            if (directFallback.remainingClashes.length < bestExtResult.clashes.length) {
+              return directFallback
+            }
+          }
+          const finalPath = bestExtResult.path
+          const routedLengthM = polylineLengthM(finalPath)
+          const routedLengthFt = round2(routedLengthM * METERS_TO_FEET)
+          const directLengthM = polylineLengthM(
+            simplifyOrthogonalPath([start, [start[0], prefChaseY, start[2]], [end[0], prefChaseY, end[2]], end]),
+          )
+          const detourAddedM = round2(Math.max(0, routedLengthM - directLengthM))
+          const { totalBendDegrees, bendCount90, pullBoxIndex } = countPathBendDegrees(finalPath)
+          const exceedsMaxBends = totalBendDegrees > maxBendOpt
+          const recommendedPullBoxAt =
+            exceedsMaxBends && pullBoxIndex !== null ? finalPath[pullBoxIndex] ?? null : null
+          return {
+            path: finalPath,
+            directLengthM,
+            routedLengthM,
+            routedLengthFt,
+            detourAddedM,
+            totalBendDegrees,
+            bendCount90,
+            exceedsMaxBends,
+            recommendedPullBoxAt,
+            avoidedObstacles: bestExtResult.indoorRes.avoidedObstacles,
+            remainingClashes: bestExtResult.clashes,
+            routingMode: bestExtResult.indoorRes.routingMode,
+            necNotes: bestExtResult.indoorRes.necNotes,
+          }
+        }
+      }
+    }
+  }
+  return routeElectricalRunCore(start, end, obstacles, options)
+}
+
+function routeElectricalRunCore(
+  start: Vec3,
+  end: Vec3,
+  obstacles: readonly TradeObstacle[],
+  options: RouteElectricalOptions = {},
+): ElectricalRouteResult {
+  const walls = options.walls && options.walls.length > 0 ? options.walls : null
   const wallPlacement = options.wallPlacement ?? 'in-wall'
+  const interiorPolygons = options.interiorPolygons
+  const outdoorPolygons = options.outdoorPolygons
   const cavities = options.cavities
   const fullHeightWalls = walls ? walls.filter((w) => w.height >= 1.8) : []
   const wallCeilingH =
@@ -2770,23 +3433,63 @@ export function routeElectricalRun(
     ? round3(Math.min(resolvedAtticY + 0.65, ridgeMaxY))
     : round3(resolvedAtticY + 0.16)
 
+  const wallBase = walls ? getCachedWallNetworkBase(walls) : null
+  const hasEnclosedFootprint = Boolean(
+    wallBase &&
+      (wallBase.boundedFaces.length > 0 || (interiorPolygons !== undefined && interiorPolygons.length > 0)),
+  )
+  const footprintWallTol = wallPlacement === 'surface' ? 0.07 : 0.025
+  const maxWallHalfThick = walls ? Math.max(...walls.map((w) => w.thickness / 2), 0.07) : 0.07
+
+  const isPointTrappedInAnyObstacle = (pt: Vec3): boolean =>
+    obstacles.some((obs) => {
+      const m = Math.max(obs.requiredClearanceM, clearanceM) + conduitRadiusM
+      return (
+        pt[0] >= obs.box.min[0] - m &&
+        pt[0] <= obs.box.max[0] + m &&
+        pt[1] >= obs.box.min[1] - m &&
+        pt[1] <= obs.box.max[1] + m &&
+        pt[2] >= obs.box.min[2] - m &&
+        pt[2] <= obs.box.max[2] + m
+      )
+    })
+
+  const sProjAnchor = walls ? projectPointToWalls(start[0], start[2], walls) : null
+  const eProjAnchor = walls ? projectPointToWalls(end[0], end[2], walls) : null
+  const sAnchorSnapped: Vec3 | null = sProjAnchor ? [round3(sProjAnchor.x), start[1], round3(sProjAnchor.z)] : null
+  const eAnchorSnapped: Vec3 | null = eProjAnchor ? [round3(eProjAnchor.x), end[1], round3(eProjAnchor.z)] : null
+  const isStartWallAnchor = Boolean(
+    sProjAnchor &&
+      isEndpointWallMounted(start, sProjAnchor) &&
+      !(wallPlacement === 'in-wall' && sAnchorSnapped && !isPointTrappedInAnyObstacle(start) && isPointTrappedInAnyObstacle(sAnchorSnapped)),
+  )
+  const isEndWallAnchor = Boolean(
+    eProjAnchor &&
+      isEndpointWallMounted(end, eProjAnchor) &&
+      !(wallPlacement === 'in-wall' && eAnchorSnapped && !isPointTrappedInAnyObstacle(end) && isPointTrappedInAnyObstacle(eAnchorSnapped)),
+  )
+  const startAnchor: Vec3 =
+    wallPlacement === 'in-wall' && isStartWallAnchor && sAnchorSnapped ? sAnchorSnapped : start
+  const endAnchor: Vec3 =
+    wallPlacement === 'in-wall' && isEndWallAnchor && eAnchorSnapped ? eAnchorSnapped : end
+
   const endpointsInsideWalls =
     roofEnv !== null &&
-    start[0] >= roofEnv.minX - 0.25 &&
-    start[0] <= roofEnv.maxX + 0.25 &&
-    start[2] >= roofEnv.minZ - 0.25 &&
-    start[2] <= roofEnv.maxZ + 0.25 &&
-    end[0] >= roofEnv.minX - 0.25 &&
-    end[0] <= roofEnv.maxX + 0.25 &&
-    end[2] >= roofEnv.minZ - 0.25 &&
-    end[2] <= roofEnv.maxZ + 0.25
+    startAnchor[0] >= roofEnv.minX - maxWallHalfThick - 0.15 &&
+    startAnchor[0] <= roofEnv.maxX + maxWallHalfThick + 0.15 &&
+    startAnchor[2] >= roofEnv.minZ - maxWallHalfThick - 0.15 &&
+    startAnchor[2] <= roofEnv.maxZ + maxWallHalfThick + 0.15 &&
+    endAnchor[0] >= roofEnv.minX - maxWallHalfThick - 0.15 &&
+    endAnchor[0] <= roofEnv.maxX + maxWallHalfThick + 0.15 &&
+    endAnchor[2] >= roofEnv.minZ - maxWallHalfThick - 0.15 &&
+    endAnchor[2] <= roofEnv.maxZ + maxWallHalfThick + 0.15
   const envBounds: XZBounds | null =
     endpointsInsideWalls && roofEnv
       ? {
-          minX: round3(roofEnv.minX - 0.2),
-          maxX: round3(roofEnv.maxX + 0.2),
-          minZ: round3(roofEnv.minZ - 0.2),
-          maxZ: round3(roofEnv.maxZ + 0.2),
+          minX: round3(roofEnv.minX),
+          maxX: round3(roofEnv.maxX),
+          minZ: round3(roofEnv.minZ),
+          maxZ: round3(roofEnv.maxZ),
         }
       : null
 
@@ -2821,19 +3524,43 @@ export function routeElectricalRun(
   }
 
   const pathExceedsWallEnvelope = (p: readonly Vec3[]): boolean => {
+    if (!walls || !endpointsInsideWalls) return false
+    if (hasEnclosedFootprint) {
+      for (let i = 0; i < p.length - 1; i++) {
+        const a = p[i]!
+        const b = p[i + 1]!
+        const segLenXZ = Math.hypot(b[0] - a[0], b[2] - a[2])
+        if (segLenXZ < 0.03) {
+          // Only check non-terminal vertical segments (allow wall-mounted endpoint stubs within wall thickness)
+          if (i > 0 && i < p.length - 2) {
+            if (!isPointInsideWallFootprint(a[0], a[2], walls, interiorPolygons, outdoorPolygons, footprintWallTol)) {
+              return true
+            }
+          }
+          continue
+        }
+        if (!isSegmentInsideWallFootprint(a, b, walls, interiorPolygons, outdoorPolygons, footprintWallTol)) {
+          return true
+        }
+      }
+      return false
+    }
     if (!envBounds) return false
+    const aabbTol = maxWallHalfThick + footprintWallTol
     for (const pt of p) {
       if (
-        pt[0] < envBounds.minX - 0.08 ||
-        pt[0] > envBounds.maxX + 0.08 ||
-        pt[2] < envBounds.minZ - 0.08 ||
-        pt[2] > envBounds.maxZ + 0.08
+        pt[0] < envBounds.minX - aabbTol ||
+        pt[0] > envBounds.maxX + aabbTol ||
+        pt[2] < envBounds.minZ - aabbTol ||
+        pt[2] > envBounds.maxZ + aabbTol
       ) {
         return true
       }
     }
     return false
   }
+
+  const isPathInFootprint = (p: readonly Vec3[]): boolean => !pathExceedsWallEnvelope(p)
 
   const isEndpointTrappedInObstacle = (pt: Vec3, obs: TradeObstacle): boolean => {
     const m = Math.max(obs.requiredClearanceM, clearanceM) + conduitRadiusM
@@ -2859,13 +3586,32 @@ export function routeElectricalRun(
   }
 
   // Baseline route (wall-guided Manhattan when building walls are supplied, else open Manhattan)
-  const fallbackXZ = buildManhattanCandidate(start, end, preferredChaseY, 'xz')
-  const fallbackZX = buildManhattanCandidate(start, end, preferredChaseY, 'zx')
+  const fallbackXZ = buildManhattanCandidate(startAnchor, endAnchor, preferredChaseY, 'xz')
+  const fallbackZX = buildManhattanCandidate(startAnchor, endAnchor, preferredChaseY, 'zx')
+  const fallbackXZIn = isPathInFootprint(fallbackXZ)
+  const fallbackZXIn = isPathInFootprint(fallbackZX)
   const fallbackManhattan =
-    polylineLengthM(fallbackXZ) <= polylineLengthM(fallbackZX) ? fallbackXZ : fallbackZX
+    fallbackXZIn && !fallbackZXIn
+      ? fallbackXZ
+      : fallbackZXIn && !fallbackXZIn
+        ? fallbackZX
+        : polylineLengthM(fallbackXZ) <= polylineLengthM(fallbackZX)
+          ? fallbackXZ
+          : fallbackZX
   const baseline =
-    (walls ? buildWallGuidedManhattanPath(start, end, preferredChaseY, walls, wallPlacement) : null) ??
-    fallbackManhattan
+    (walls
+      ? buildWallGuidedManhattanPath(
+          start,
+          end,
+          preferredChaseY,
+          walls,
+          wallPlacement,
+          false,
+          interiorPolygons,
+          outdoorPolygons,
+          isPointTrappedInAnyObstacle,
+        )
+      : null) ?? fallbackManhattan
   const directLengthM = polylineLengthM(baseline)
   const baselineClashes = detectRunTradeClashes(baseline, obstacles, clearanceM, conduitRadiusM)
 
@@ -2908,8 +3654,10 @@ export function routeElectricalRun(
     const bendPenalty =
       totalBendDegrees > maxBendDegrees ? (isFlexibleCable ? 50 : 400) : totalBendDegrees * 0.004
     const roofPenalty = pathViolatesRoof(p) ? 5000 : 0
-    const envPenalty = pathExceedsWallEnvelope(p) ? 5000 : 0
-    return { score: clashes.length * 1000 + roofPenalty + envPenalty + len + bendPenalty, clashes }
+    // Strongly prefer staying inside the enclosed wall footprint (800 >> any path length or bend delta),
+    // while NEVER preferring a Priority #1 Structural / Priority #2 Plumbing clash (2000) over a clash-free detour!
+    const envPenalty = pathExceedsWallEnvelope(p) ? 800 : 0
+    return { score: clashes.length * 2000 + roofPenalty + envPenalty + len + bendPenalty, clashes }
   }
 
   const resolveDetours = (
@@ -2957,6 +3705,7 @@ export function routeElectricalRun(
         segDetourMaxY,
         obs,
         envBounds,
+        walls && endpointsInsideWalls ? isPathInFootprint : undefined,
       )
 
       let improved = false
@@ -2992,16 +3741,32 @@ export function routeElectricalRun(
   const evalElevationList = (elevations: readonly number[], bypassHorizontal = false) => {
     if (walls) {
       for (const y of elevations) {
-        const candidate =
-          buildWallGuidedManhattanPath(start, end, y, walls, wallPlacement, bypassHorizontal) ??
-          buildManhattanCandidate(start, end, y, 'xz')
-        const { score, clashes } = scorePath(candidate)
-        if (score < bestScore) {
-          bestScore = score
-          bestPath = candidate
-          bestMode = 'wall-manhattan'
+        const wallCand = buildWallGuidedManhattanPath(
+          start,
+          end,
+          y,
+          walls,
+          wallPlacement,
+          bypassHorizontal,
+          interiorPolygons,
+          outdoorPolygons,
+          isPointTrappedInAnyObstacle,
+        )
+        const cands: Vec3[][] = wallCand
+          ? [wallCand]
+          : [
+              buildManhattanCandidate(startAnchor, endAnchor, y, 'xz'),
+              buildManhattanCandidate(startAnchor, endAnchor, y, 'zx'),
+            ]
+        for (const candidate of cands) {
+          const { score, clashes } = scorePath(candidate)
+          if (score < bestScore) {
+            bestScore = score
+            bestPath = candidate
+            bestMode = wallCand ? 'wall-manhattan' : 'open-manhattan'
+          }
+          if (clashes.length === 0 && score < 400 && y === preferredChaseY) return
         }
-        if (clashes.length === 0 && score < 400 && y === preferredChaseY) break
       }
     } else {
       for (const y of elevations) {
@@ -3033,10 +3798,31 @@ export function routeElectricalRun(
   bestScore = resolvedManhattan.score
   let currentClashes = resolvedManhattan.clashes
 
-  const filterXInEnv = (xs: number[]): number[] =>
-    envBounds ? xs.filter((x) => x >= envBounds.minX && x <= envBounds.maxX) : xs
-  const filterZInEnv = (zs: number[]): number[] =>
-    envBounds ? zs.filter((z) => z >= envBounds.minZ && z <= envBounds.maxZ) : zs
+  const filterXInEnv = (xs: number[]): number[] => {
+    const out: number[] = []
+    for (const rawX of xs) {
+      if (envBounds && (rawX < envBounds.minX || rawX > envBounds.maxX)) {
+        // Clamp inset -0.12 m inside exterior wall face rather than bulging outside
+        const clamped = round3(Math.max(envBounds.minX + 0.12, Math.min(envBounds.maxX - 0.12, rawX)))
+        if (!out.includes(clamped)) out.push(clamped)
+        continue
+      }
+      if (!out.includes(rawX)) out.push(rawX)
+    }
+    return out
+  }
+  const filterZInEnv = (zs: number[]): number[] => {
+    const out: number[] = []
+    for (const rawZ of zs) {
+      if (envBounds && (rawZ < envBounds.minZ || rawZ > envBounds.maxZ)) {
+        const clamped = round3(Math.max(envBounds.minZ + 0.12, Math.min(envBounds.maxZ - 0.12, rawZ)))
+        if (!out.includes(clamped)) out.push(clamped)
+        continue
+      }
+      if (!out.includes(rawZ)) out.push(rawZ)
+    }
+    return out
+  }
 
   // Step 2a: Explicit lateral box-bypass fallback around ANY clashing higher-priority obstacle
   // (`structural` columns/beams, `plumbing` equipment/stacks/manifolds, or `hvac` equipment/ducts/plenums/terminals)
@@ -3115,19 +3901,37 @@ export function routeElectricalRun(
       const cz = (obs.box.min[2] + obs.box.max[2]) / 2
       const halfX = (obs.box.max[0] - obs.box.min[0]) / 2
       const halfZ = (obs.box.max[2] - obs.box.min[2]) / 2
-      const xOffs = filterXInEnv([round3(cx + halfX + pad), round3(cx - (halfX + pad))])
-      const zOffs = filterZInEnv([round3(cz + halfZ + pad), round3(cz - (halfZ + pad))])
+      const rawXOffs = [round3(cx + halfX + pad), round3(cx - (halfX + pad))]
+      const rawZOffs = [round3(cz + halfZ + pad), round3(cz - (halfZ + pad))]
+      const xOffs = filterXInEnv(
+        walls && hasEnclosedFootprint
+          ? rawXOffs.map((rx) =>
+              isPointInsideWallFootprint(rx, cz, walls, interiorPolygons, outdoorPolygons, footprintWallTol)
+                ? rx
+                : clampPointInsetToWallFootprint(rx, cz, walls, 0.12, interiorPolygons, outdoorPolygons)[0],
+            )
+          : rawXOffs,
+      )
+      const zOffs = filterZInEnv(
+        walls && hasEnclosedFootprint
+          ? rawZOffs.map((rz) =>
+              isPointInsideWallFootprint(cx, rz, walls, interiorPolygons, outdoorPolygons, footprintWallTol)
+                ? rz
+                : clampPointInsetToWallFootprint(cx, rz, walls, 0.12, interiorPolygons, outdoorPolygons)[1],
+            )
+          : rawZOffs,
+      )
       for (const y of candidateYs) {
         const yMax = y > inWallMaxY ? Math.min(maxCavityY, round3(y + 0.2)) : inWallMaxY
         for (const xOff of xOffs) {
           tryBypassCand(
             simplifyOrthogonalPath([
-              start,
-              [start[0], y, start[2]],
-              [xOff, y, start[2]],
-              [xOff, y, end[2]],
-              [end[0], y, end[2]],
-              end,
+              startAnchor,
+              [startAnchor[0], y, startAnchor[2]],
+              [xOff, y, startAnchor[2]],
+              [xOff, y, endAnchor[2]],
+              [endAnchor[0], y, endAnchor[2]],
+              endAnchor,
             ]),
             yMax,
           )
@@ -3136,12 +3940,12 @@ export function routeElectricalRun(
         for (const zOff of zOffs) {
           tryBypassCand(
             simplifyOrthogonalPath([
-              start,
-              [start[0], y, start[2]],
-              [start[0], y, zOff],
-              [end[0], y, zOff],
-              [end[0], y, end[2]],
-              end,
+              startAnchor,
+              [startAnchor[0], y, startAnchor[2]],
+              [startAnchor[0], y, zOff],
+              [endAnchor[0], y, zOff],
+              [endAnchor[0], y, endAnchor[2]],
+              endAnchor,
             ]),
             yMax,
           )
@@ -3157,16 +3961,16 @@ export function routeElectricalRun(
       hasMepEquipDuctOrTermClash &&
       !allClashesAtImmovableEndpoint(currentClashes)
     ) {
-      const midX = round3((start[0] + end[0]) / 2)
-      const midZ = round3((start[2] + end[2]) / 2)
+      const midX = round3((startAnchor[0] + endAnchor[0]) / 2)
+      const midZ = round3((startAnchor[2] + endAnchor[2]) / 2)
       const lateralDeltas = [0.6, -0.6, 1.2, -1.2, 1.8, -1.8]
       const xChannels = filterXInEnv(
         Array.from(
           new Set([
             midX,
             ...lateralDeltas.map((d) => round3(midX + d)),
-            ...lateralDeltas.map((d) => round3(start[0] + d)),
-            ...lateralDeltas.map((d) => round3(end[0] + d)),
+            ...lateralDeltas.map((d) => round3(startAnchor[0] + d)),
+            ...lateralDeltas.map((d) => round3(endAnchor[0] + d)),
           ]),
         ),
       )
@@ -3175,8 +3979,8 @@ export function routeElectricalRun(
           new Set([
             midZ,
             ...lateralDeltas.map((d) => round3(midZ + d)),
-            ...lateralDeltas.map((d) => round3(start[2] + d)),
-            ...lateralDeltas.map((d) => round3(end[2] + d)),
+            ...lateralDeltas.map((d) => round3(startAnchor[2] + d)),
+            ...lateralDeltas.map((d) => round3(endAnchor[2] + d)),
           ]),
         ),
       )
@@ -3190,18 +3994,18 @@ export function routeElectricalRun(
       outerMechLateral: for (const y of mechElevs) {
         const yMax = y > inWallMaxY ? Math.min(maxCavityY, round3(y + 0.2)) : inWallMaxY
         for (const order of ['xz', 'zx'] as const) {
-          tryBypassCand(buildManhattanCandidate(start, end, y, order), yMax)
+          tryBypassCand(buildManhattanCandidate(startAnchor, endAnchor, y, order), yMax)
           if (currentClashes.length === 0 && bestScore < 400) break outerMechLateral
         }
         for (const sx of xChannels) {
           tryBypassCand(
             simplifyOrthogonalPath([
-              start,
-              [start[0], y, start[2]],
-              [sx, y, start[2]],
-              [sx, y, end[2]],
-              [end[0], y, end[2]],
-              end,
+              startAnchor,
+              [startAnchor[0], y, startAnchor[2]],
+              [sx, y, startAnchor[2]],
+              [sx, y, endAnchor[2]],
+              [endAnchor[0], y, endAnchor[2]],
+              endAnchor,
             ]),
             yMax,
           )
@@ -3210,12 +4014,12 @@ export function routeElectricalRun(
         for (const sz of zChannels) {
           tryBypassCand(
             simplifyOrthogonalPath([
-              start,
-              [start[0], y, start[2]],
-              [start[0], y, sz],
-              [end[0], y, sz],
-              [end[0], y, end[2]],
-              end,
+              startAnchor,
+              [startAnchor[0], y, startAnchor[2]],
+              [startAnchor[0], y, sz],
+              [endAnchor[0], y, sz],
+              [endAnchor[0], y, endAnchor[2]],
+              endAnchor,
             ]),
             yMax,
           )
@@ -3257,51 +4061,51 @@ export function routeElectricalRun(
     }
     outerConduit: for (const y of plenumElevs) {
       for (const order of ['xz', 'zx'] as const) {
-        tryConduitCand(buildManhattanCandidate(start, end, y, order))
+        tryConduitCand(buildManhattanCandidate(startAnchor, endAnchor, y, order))
         if (currentClashes.length === 0 && bestScore < 400) break outerConduit
       }
       // Offset-axis ceiling plenum paths (4 x 90° = 360° max, cleanly dodging wet-wall risers without U-detours)
-      const midX = round3((start[0] + end[0]) / 2)
-      const midZ = round3((start[2] + end[2]) / 2)
+      const midX = round3((startAnchor[0] + endAnchor[0]) / 2)
+      const midZ = round3((startAnchor[2] + endAnchor[2]) / 2)
       const xChannels = filterXInEnv(
         Array.from(
           new Set([
-            round3(start[0] + 0.45),
-            round3(start[0] - 0.45),
-            round3(start[0] + 0.9),
-            round3(start[0] - 0.9),
+            round3(startAnchor[0] + 0.45),
+            round3(startAnchor[0] - 0.45),
+            round3(startAnchor[0] + 0.9),
+            round3(startAnchor[0] - 0.9),
             midX,
-            round3(end[0] + 0.9),
-            round3(end[0] - 0.9),
-            round3(end[0] + 1.6),
-            round3(end[0] - 1.6),
+            round3(endAnchor[0] + 0.9),
+            round3(endAnchor[0] - 0.9),
+            round3(endAnchor[0] + 1.6),
+            round3(endAnchor[0] - 1.6),
           ]),
         ),
       )
       const zChannels = filterZInEnv(
         Array.from(
           new Set([
-            round3(start[2] + 0.45),
-            round3(start[2] - 0.45),
-            round3(start[2] + 0.9),
-            round3(start[2] - 0.9),
+            round3(startAnchor[2] + 0.45),
+            round3(startAnchor[2] - 0.45),
+            round3(startAnchor[2] + 0.9),
+            round3(startAnchor[2] - 0.9),
             midZ,
-            round3(end[2] + 0.9),
-            round3(end[2] - 0.9),
-            round3(end[2] + 1.6),
-            round3(end[2] - 1.6),
+            round3(endAnchor[2] + 0.9),
+            round3(endAnchor[2] - 0.9),
+            round3(endAnchor[2] + 1.6),
+            round3(endAnchor[2] - 1.6),
           ]),
         ),
       )
       for (const sx of xChannels) {
         tryConduitCand(
           simplifyOrthogonalPath([
-            start,
-            [start[0], y, start[2]],
-            [sx, y, start[2]],
-            [sx, y, end[2]],
-            [end[0], y, end[2]],
-            end,
+            startAnchor,
+            [startAnchor[0], y, startAnchor[2]],
+            [sx, y, startAnchor[2]],
+            [sx, y, endAnchor[2]],
+            [endAnchor[0], y, endAnchor[2]],
+            endAnchor,
           ]),
         )
         if (currentClashes.length === 0 && bestScore < 400) break outerConduit
@@ -3309,12 +4113,12 @@ export function routeElectricalRun(
       for (const sz of zChannels) {
         tryConduitCand(
           simplifyOrthogonalPath([
-            start,
-            [start[0], y, start[2]],
-            [start[0], y, sz],
-            [end[0], y, sz],
-            [end[0], y, end[2]],
-            end,
+            startAnchor,
+            [startAnchor[0], y, startAnchor[2]],
+            [startAnchor[0], y, sz],
+            [endAnchor[0], y, sz],
+            [endAnchor[0], y, endAnchor[2]],
+            endAnchor,
           ]),
         )
         if (currentClashes.length === 0 && bestScore < 400) break outerConduit
@@ -3547,8 +4351,10 @@ export function routeElectricalRun(
       const rawCrawl = buildCavityEuclideanPath(start, end, crawlY, walls, wallPlacement, bestClashes > 0)
       if (rawCrawl) {
         const crawlDetour = resolveDetours(rawCrawl, crawlY - 0.45, Math.min(-0.04, crawlY + 0.12), true)
-        const resolvesClash = crawlDetour.clashes.length < bestClashes
+        const crawlEnvelopeSafe = !pathExceedsWallEnvelope(crawlDetour.path)
+        const resolvesClash = crawlEnvelopeSafe && crawlDetour.clashes.length < bestClashes
         const strictlyShorter =
+          crawlEnvelopeSafe &&
           crawlDetour.clashes.length <= bestClashes &&
           crawlDetour.score + CAVITY_MIN_SAVINGS_M < bestScore
         if (resolvesClash || strictlyShorter) {

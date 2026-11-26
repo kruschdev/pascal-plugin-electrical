@@ -29,6 +29,7 @@ import {
   KITCHEN_PATTERN,
   LAUNDRY_PATTERN,
   LIVING_COMMON_PATTERN,
+  NON_BUILDING_OUTDOOR_PATTERN,
   OUTDOOR_PATTERN,
   POOL_PATTERN,
   buildAuditWallSegments,
@@ -56,6 +57,8 @@ import {
   extractTradeObstacles,
   getHvacEquipmentBox,
   getPlumbingFixtureBox,
+  isGroundOrLowestWalledLevel,
+  isPointInsideWallFootprint,
   polylineLengthM,
   resolveLevelHeightM,
   routeElectricalRun,
@@ -355,6 +358,73 @@ function dist2D(a: readonly [number, number], b: readonly [number, number]): num
   return Math.hypot(a[0] - b[0], a[1] - b[1])
 }
 
+function minDistPointToSegment2D(
+  px: number,
+  pz: number,
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+): number {
+  const vx = bx - ax
+  const vz = bz - az
+  const lenSq = vx * vx + vz * vz
+  if (lenSq < 1e-9) return Math.hypot(px - ax, pz - az)
+  const t = Math.max(0, Math.min(1, ((px - ax) * vx + (pz - az) * vz) / lenSq))
+  return Math.hypot(px - (ax + vx * t), pz - (az + vz * t))
+}
+
+function segmentsIntersect2D(
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  cx: number,
+  cz: number,
+  dx: number,
+  dz: number,
+): boolean {
+  const rx = bx - ax
+  const rz = bz - az
+  const sx = dx - cx
+  const sz = dz - cz
+  const denom = rx * sz - rz * sx
+  if (Math.abs(denom) < 1e-9) return false
+  const qpx = cx - ax
+  const qpz = cz - az
+  const t = (qpx * sz - qpz * sx) / denom
+  const u = (qpx * rz - qpz * rx) / denom
+  return t >= 0 && t <= 1 && u >= 0 && u <= 1
+}
+
+function minDistPolygonToWall(
+  poly: ReadonlyArray<readonly [number, number]>,
+  wall: WallSeg,
+): number {
+  if (poly.length < 3) return Number.POSITIVE_INFINITY
+  if (
+    pointInPolygon2D(wall.start[0], wall.start[1], poly) ||
+    pointInPolygon2D(wall.end[0], wall.end[1], poly)
+  ) {
+    return 0
+  }
+  let best = Number.POSITIVE_INFINITY
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i]!
+    const b = poly[(i + 1) % poly.length]!
+    if (segmentsIntersect2D(a[0], a[1], b[0], b[1], wall.start[0], wall.start[1], wall.end[0], wall.end[1])) {
+      return 0
+    }
+    const d1 = minDistPointToSegment2D(a[0], a[1], wall.start[0], wall.start[1], wall.end[0], wall.end[1])
+    if (d1 < best) best = d1
+    const d2 = minDistPointToSegment2D(wall.start[0], wall.start[1], a[0], a[1], b[0], b[1])
+    if (d2 < best) best = d2
+    const d3 = minDistPointToSegment2D(wall.end[0], wall.end[1], a[0], a[1], b[0], b[1])
+    if (d3 < best) best = d3
+  }
+  return best
+}
+
 function dist3D(a: Vec3, b: Vec3): number {
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2])
 }
@@ -612,6 +682,13 @@ export function planNecAutoPopulate(
   const walls = extractWalls(nodes, levelId)
   const routingWalls = extractRoutingWalls(nodes, levelId)
   const cavities = extractRoutingCavities(nodes, levelId)
+  const isGroundStory = isGroundOrLowestWalledLevel(nodes, levelId)
+  const interiorZonePolygons = zones
+    .filter((z) => !isOutdoorCategory(z.category))
+    .map((z) => z.polygon)
+  const outdoorZonePolygons = zones
+    .filter((z) => isOutdoorCategory(z.category))
+    .map((z) => z.polygon)
   const routingStrategy = options.routingStrategy ?? 'auto'
   const stairs = all.filter(
     (n) => n.type === 'stair' && belongsToLevel(nodes, n, levelId),
@@ -1754,6 +1831,97 @@ export function planNecAutoPopulate(
     return { position: [round3(z.centroid[0]), opts.mountY, round3(z.centroid[1])], rotation: 0 }
   }
 
+  // Helper: mount an Outdoor WR GFCI flush on an actual exterior building wall bordering `z`
+  // within `maxWallDistM` (default 1.2 m). Returns `null` if no exterior building wall borders `z`
+  // (never floats at a detached zone centroid or polygon edge!).
+  const snapToExteriorBuildingWall = (
+    z: ZoneInfo,
+    mountY: number,
+    maxWallDistM = 1.2,
+  ): { position: Vec3; rotation: number } | null => {
+    let best: { pos: Vec3; rot: number; score: number } | null = null
+    for (const wall of walls) {
+      if (minDistPolygonToWall(z.polygon, wall) > maxWallDistM) continue
+      const faceOff = wall.thickness / 2 + WALL_DEVICE_OFFSET_M
+      const probeOff = wall.thickness / 2 + 0.3
+      const spans = getWallRoomSpans(wall, false)
+      for (const [s0, s1] of spans) {
+        const spanLen = s1 - s0
+        if (spanLen < 0.2) continue
+        const rawTs: number[] = []
+        for (const frac of [0.5, 0.25, 0.75, 0.15, 0.85]) {
+          rawTs.push(s0 + spanLen * frac)
+        }
+        if (spanLen >= 0.28) {
+          for (let tStep = s0 + 0.12; tStep <= s1 - 0.12; tStep += 0.35) {
+            rawTs.push(tStep)
+          }
+        }
+        const triedKeys = new Set<number>()
+        for (const rawT of rawTs) {
+          const clampedRaw = Math.max(s0 + 0.12, Math.min(s1 - 0.12, rawT))
+          const snappedT = snapWallOffsetToStud(wall.length, clampedRaw, {
+            spanMin: s0,
+            spanMax: s1,
+            rule: resolveWallFramingRule(bonesCtx, wall.id),
+          }).offsetM
+          for (const t of [snappedT, clampedRaw]) {
+            const keyT = Math.round(t * 25)
+            if (triedKeys.has(keyT)) continue
+            triedKeys.add(keyT)
+            const cxW = wall.start[0] + wall.dx * t
+            const czW = wall.start[1] + wall.dz * t
+            for (const sign of [1, -1] as const) {
+              const pProbeX = cxW + wall.nx * sign * probeOff
+              const pProbeZ = czW + wall.nz * sign * probeOff
+              const oppProbeX = cxW - wall.nx * sign * probeOff
+              const oppProbeZ = czW - wall.nz * sign * probeOff
+              const pZone = zoneAtPoint(zones, pProbeX, pProbeZ)
+              const oppZone = zoneAtPoint(zones, oppProbeX, oppProbeZ)
+              const matchesZone = pZone?.id === z.id && oppZone?.id !== z.id
+              const oppIsInterior =
+                (oppZone !== null && !isOutdoorCategory(oppZone.category)) ||
+                (routingWalls.length > 0 &&
+                  isPointInsideWallFootprint(
+                    oppProbeX,
+                    oppProbeZ,
+                    routingWalls,
+                    interiorZonePolygons,
+                    outdoorZonePolygons,
+                    0,
+                  ))
+              const faceIsOutdoor = pZone === null || isOutdoorCategory(pZone.category)
+              if (!matchesZone && !(faceIsOutdoor && oppIsInterior)) continue
+
+              const wx = round3(cxW + wall.nx * sign * faceOff)
+              const wz = round3(czW + wall.nz * sign * faceOff)
+              const rot = sign === 1 ? wall.yaw : wall.yaw + Math.PI
+              const pos: Vec3 = [wx, mountY, wz]
+              const clearOfEquip = isWallSpotClearOfMep(wx, mountY, wz, cxW, czW)
+              if (!clearOfEquip) continue
+              const clearOfExisting = !isNearExisting(pos, rot, 0.35)
+              const clearOfRiser = !riserHitsBlockingMep(cxW, mountY, czW)
+              const hitsWindow = wall.openings.some(
+                (o) => o.kind === 'window' && t > o.tMin - 0.04 && t < o.tMax + 0.04,
+              )
+              const score =
+                (clearOfRiser ? 120 : 0) +
+                (clearOfExisting ? 120 : 0) +
+                (matchesZone ? 80 : 20) +
+                (hitsWindow ? -15 : 15) -
+                (t !== snappedT ? 4 : 0) -
+                dist2D([wx, wz], z.centroid) * 0.5
+              if (!best || score > best.score) {
+                best = { pos, rot, score }
+              }
+            }
+          }
+        }
+      }
+    }
+    return best ? { position: best.pos, rotation: best.rot } : null
+  }
+
   // Helper: snap an arbitrary point (e.g. stair landing device) to the nearest wall within `maxDistM` if available
   const snapPointToNearbyWall = (
     px: number,
@@ -2548,6 +2716,12 @@ export function planNecAutoPopulate(
       (eqKind === 'bath-exhaust-fan' ||
         (/bath.*exhaust|exhaust.*fan/i.test(`${eqKind} ${String(mepNode.name ?? '')} ${label}`) &&
           mepRawY >= 2.2))
+    const isOutdoorCondenser =
+      isHvacEquip &&
+      (eqKind === 'heat-pump-condenser' ||
+        eqKind === 'ac-condenser' ||
+        eqKind === 'mini-split-outdoor' ||
+        /condenser|mini.?split.*outdoor/i.test(`${eqKind} ${String(mepNode.name ?? '')} ${label}`))
 
     // Offset power receptacle/disconnect cleanly outside equipment footprint + clearance so wires never self-clash.
     // Derive radial offset dynamically from the actual equipment AABB half-extents + clearance (so wide units like
@@ -2572,7 +2746,9 @@ export function planNecAutoPopulate(
     const lateralOffsetM = mepNode.type === 'plumbing:fixture' ? 0.36 : 0
     const targetY = isCeilingHardwiredExhaust
       ? round3(Math.min(levelHeight - 0.03, Math.max(2.1, mepRawY >= 2.2 ? mepRawY : ceilingLightY)))
-      : Math.max(0.38, Math.min(1.5, mepRawY || 0.9))
+      : isOutdoorCondenser && mepRawY < -0.1
+        ? round3(mepRawY + 0.9)
+        : Math.max(0.38, Math.min(1.5, mepRawY || 0.9))
 
     const rawPoles =
       typeof rawDemand.poles === 'number'
@@ -2611,31 +2787,156 @@ export function planNecAutoPopulate(
       round3(Number(mepNode.position[2]) + Math.cos(mepRot) * radialOffsetM - Math.sin(mepRot) * lateralOffsetM),
     ]
     let pos: Vec3 = basePos
+    let mepDisconnectRot = mepRot
+    let isOutdoorMountedMep = false
 
-    if (isHvacEquip || mepNode.type === 'plumbing:equipment' || mepNode.type === 'plumbing:fixture') {
+    // VIS-V3-05: For outdoor HVAC condensers located outside building walls, mount the NEMA-3R
+    // disconnect flush on the nearest exterior wall face directly behind/beside the condenser
+    // at `condenserY + 0.9 m` so conduit stays strictly inside the building up to the wall exit
+    // and drops cleanly along the exterior wall face (never diagonally across outdoor air!).
+    if (isOutdoorCondenser && walls.length > 0) {
+      const mepOriginX = Number(mepNode.position[0])
+      const mepOriginZ = Number(mepNode.position[2])
+      const condenserOutsideWalls = !isPointInsideWallFootprint(
+        mepOriginX,
+        mepOriginZ,
+        routingWalls,
+        interiorZonePolygons,
+        outdoorZonePolygons,
+        0.025,
+      )
+      if (condenserOutsideWalls) {
+        let bestWallMount: { pos: Vec3; rot: number; score: number } | null = null
+        const otherObs = obstacles.filter((o) => o.nodeId !== mepNode.id)
+        for (const wall of walls) {
+          const projT = Math.max(
+            0,
+            Math.min(
+              wall.length,
+              (mepOriginX - wall.start[0]) * wall.dx + (mepOriginZ - wall.start[1]) * wall.dz,
+            ),
+          )
+          const projX = wall.start[0] + wall.dx * projT
+          const projZ = wall.start[1] + wall.dz * projT
+          const distToWall = Math.hypot(mepOriginX - projX, mepOriginZ - projZ)
+          if (distToWall > 3.5) continue
+          const dotOut = (mepOriginX - projX) * wall.nx + (mepOriginZ - projZ) * wall.nz
+          const outSign: 1 | -1 = dotOut >= 0 ? 1 : -1
+          const outNx = wall.nx * outSign
+          const outNz = wall.nz * outSign
+          const faceOff = wall.thickness / 2 + WALL_DEVICE_OFFSET_M
+          for (const shift of [0, 0.65, -0.65, 1.1, -1.1, 1.5, -1.5]) {
+            const t = Math.max(0.22, Math.min(wall.length - 0.22, projT + shift))
+            if (targetY >= 0 && wall.openings.some((o) => t > o.tMin - 0.06 && t < o.tMax + 0.06)) {
+              continue
+            }
+            const cxW = wall.start[0] + wall.dx * t
+            const czW = wall.start[1] + wall.dz * t
+            const wx = round3(cxW + outNx * faceOff)
+            const wz = round3(czW + outNz * faceOff)
+            const hitsSelf =
+              selfEqBox !== null &&
+              wx >= selfEqBox.min[0] - 0.06 &&
+              wx <= selfEqBox.max[0] + 0.06 &&
+              wz >= selfEqBox.min[2] - 0.06 &&
+              wz <= selfEqBox.max[2] + 0.06 &&
+              targetY >= selfEqBox.min[1] - 0.1 &&
+              targetY <= selfEqBox.max[1] + 0.1
+            const yRiserLo = Math.min(targetY, effectiveChaseY)
+            const yRiserHi = Math.max(targetY, effectiveChaseY)
+            const hitsOther = otherObs.some((obs) => {
+              const pad = Math.max(obs.requiredClearanceM, 0.05) + 0.04
+              const boxHitAtBox =
+                wx >= obs.box.min[0] - pad &&
+                wx <= obs.box.max[0] + pad &&
+                wz >= obs.box.min[2] - pad &&
+                wz <= obs.box.max[2] + pad &&
+                targetY >= obs.box.min[1] - 0.08 &&
+                targetY <= obs.box.max[1] + 0.08
+              const wallRiserHit =
+                cxW >= obs.box.min[0] - pad &&
+                cxW <= obs.box.max[0] + pad &&
+                czW >= obs.box.min[2] - pad &&
+                czW <= obs.box.max[2] + pad &&
+                yRiserHi >= obs.box.min[1] - 0.06 &&
+                yRiserLo <= obs.box.max[1] + 0.06
+              return boxHitAtBox || wallRiserHit
+            })
+            const rot = Math.atan2(outNx, outNz)
+            const candPos: Vec3 = [wx, targetY, wz]
+            const score =
+              (hitsSelf ? -600 : 0) +
+              (hitsOther ? -500 : 0) +
+              (isNearExisting(candPos, rot, 0.35) ? -120 : 100) -
+              distToWall * 20 -
+              Math.abs(shift) * 8
+            if (!bestWallMount || score > bestWallMount.score) {
+              bestWallMount = { pos: candPos, rot, score }
+            }
+          }
+        }
+        if (bestWallMount && bestWallMount.score > -400) {
+          pos = bestWallMount.pos
+          mepDisconnectRot = bestWallMount.rot
+          isOutdoorMountedMep = true
+        }
+      }
+    }
+
+    if (!isOutdoorMountedMep && (isHvacEquip || mepNode.type === 'plumbing:equipment' || mepNode.type === 'plumbing:fixture')) {
       const mepOriginX = Number(mepNode.position[0])
       const mepOriginZ = Number(mepNode.position[2])
       const mepOriginZone = zoneAtPoint(zones, mepOriginX, mepOriginZ)
       const otherObstacles = obstacles.filter((o) => o.nodeId !== mepNode.id)
+      // Mirror routing.ts `isEndpointWallMounted`: if an MEP terminal sits within wallSnapThreshold of a wall,
+      // the concealed in-wall vertical riser snaps to the wall centerline — validate BOTH the box AND its wall riser!
+      const resolveWallSnapXZ = (cx: number, cy: number, cz: number): [number, number] | null => {
+        let bestDist = Number.POSITIVE_INFINITY
+        let bestSnap: [number, number] | null = null
+        let bestWall: WallSeg | null = null
+        for (const wall of walls) {
+          const t = Math.max(0, Math.min(wall.length, (cx - wall.start[0]) * wall.dx + (cz - wall.start[1]) * wall.dz))
+          const sx = wall.start[0] + wall.dx * t
+          const sz = wall.start[1] + wall.dz * t
+          const d = Math.hypot(cx - sx, cz - sz)
+          if (d < bestDist) {
+            bestDist = d
+            bestSnap = [round3(sx), round3(sz)]
+            bestWall = wall
+          }
+        }
+        if (!bestWall || !bestSnap) return null
+        const wallSnapThreshold = Math.max(0.32, bestWall.thickness / 2 + 0.18)
+        const isCeilingFixture = cy >= levelHeight - 0.18 && bestDist > bestWall.thickness / 2 + 0.1
+        return bestDist <= wallSnapThreshold && !isCeilingFixture ? bestSnap : null
+      }
       const pointOrRiserHitsObstacle = (cx: number, cy: number, cz: number): boolean => {
         const yLo = Math.min(cy, effectiveChaseY)
         const yHi = Math.max(cy, effectiveChaseY)
-        for (const obs of otherObstacles) {
-          const pad = Math.max(obs.requiredClearanceM, 0.05) + 0.04
-          const b = obs.box
-          if (cx < b.min[0] - pad || cx > b.max[0] + pad) continue
-          if (cz < b.min[2] - pad || cz > b.max[2] + pad) continue
-          if (yHi >= b.min[1] - 0.05 && yLo <= b.max[1] + 0.05) return true
+        const snap = resolveWallSnapXZ(cx, cy, cz)
+        const testPts: Array<[number, number]> = snap ? [[cx, cz], snap] : [[cx, cz]]
+        for (const [tx, tz] of testPts) {
+          for (const obs of otherObstacles) {
+            const pad = Math.max(obs.requiredClearanceM, 0.05) + 0.04
+            const b = obs.box
+            if (tx < b.min[0] - pad || tx > b.max[0] + pad) continue
+            if (tz < b.min[2] - pad || tz > b.max[2] + pad) continue
+            if (yHi >= b.min[1] - 0.05 && yLo <= b.max[1] + 0.05) return true
+          }
         }
         return false
       }
       const pointOnlyHitsObstacle = (cx: number, cy: number, cz: number): boolean => {
-        for (const obs of otherObstacles) {
-          const pad = Math.max(obs.requiredClearanceM, 0.05) + 0.04
-          const b = obs.box
-          if (cx < b.min[0] - pad || cx > b.max[0] + pad) continue
-          if (cz < b.min[2] - pad || cz > b.max[2] + pad) continue
-          if (cy >= b.min[1] - 0.08 && cy <= b.max[1] + 0.08) return true
+        const snap = resolveWallSnapXZ(cx, cy, cz)
+        const testPts: Array<[number, number]> = snap ? [[cx, cz], snap] : [[cx, cz]]
+        for (const [tx, tz] of testPts) {
+          for (const obs of otherObstacles) {
+            const pad = Math.max(obs.requiredClearanceM, 0.05) + 0.04
+            const b = obs.box
+            if (tx < b.min[0] - pad || tx > b.max[0] + pad) continue
+            if (tz < b.min[2] - pad || tz > b.max[2] + pad) continue
+            if (cy >= b.min[1] - 0.08 && cy <= b.max[1] + 0.08) return true
+          }
         }
         return false
       }
@@ -2710,7 +3011,7 @@ export function planNecAutoPopulate(
             [0, -1],
           ]
           let bestFace: { p: Vec3; score: number } | null = null
-          for (const extraOff of [0, 0.22]) {
+          for (const extraOff of [0, 0.22, 0.45]) {
             for (let di = 0; di < dirCandidates.length; di++) {
               const [ux, uz] = dirCandidates[di]!
               const baseFaceOff = radialOffsetForDir(ux, uz)
@@ -2838,7 +3139,7 @@ export function planNecAutoPopulate(
     const addedMep = addPlanned({
       name: `${label} Power`,
       position: pos,
-      rotation: mepRot,
+      rotation: mepDisconnectRot,
       deviceKind: devKind,
       circuitGroup,
       necRef: `Cross-Trade MEP Power (${mepNode.type} ${mepNode.id})`,
@@ -2861,6 +3162,7 @@ export function planNecAutoPopulate(
       wireGauge,
       mepSourceNodeId: mepNode.id,
       mepHardwired: isHardwiredMepEquipment,
+      ...(isOutdoorMountedMep || (isOutdoorCondenser && mepRawY < -0.1) ? { isExterior: true } : {}),
     })
     if (addedMep && dedicatedCommit) {
       dedicatedGroupCounts.set(dedicatedCommit.base, dedicatedCommit.count)
@@ -2981,22 +3283,24 @@ export function planNecAutoPopulate(
           checkWetFixtureCompliance(inX, 1.22, inZ, 'switch', inDoorZone?.id ?? null).ok &&
           isWallSpotClearOfMep(inX, 1.22, inZ, px, pz)
 
-        // NEC 210.52(E)(1): Outdoor grade-accessible WR GFCI receptacle beside front/back entrance
-        addPlanned({
-          name: `${doorLabel} Outdoor WR GFCI`,
-          position: [round3(px + wall.nx * outsideSign * faceOff), 0.45, round3(pz + wall.nz * outsideSign * faceOff)],
-          rotation: outsideSign === 1 ? wall.yaw : wall.yaw + Math.PI,
-          deviceKind: 'weatherproof-gfci',
-          circuitGroup: 'Outdoor GFCI',
-          necRef: 'NEC 210.52(E)(1) / 210.8(A)(3)',
-          requiresGfci: true,
-          requiresAfci: false,
-          breakerAmps: 20,
-          loadVa: 180,
-          boxType: 'single-gang-deep',
-          wireGauge: '12',
-          isExterior: true,
-        })
+        // NEC 210.52(E)(1): Outdoor grade-accessible WR GFCI receptacle beside front/back entrance (ground story only)
+        if (isGroundStory) {
+          addPlanned({
+            name: `${doorLabel} Outdoor WR GFCI`,
+            position: [round3(px + wall.nx * outsideSign * faceOff), 0.45, round3(pz + wall.nz * outsideSign * faceOff)],
+            rotation: outsideSign === 1 ? wall.yaw : wall.yaw + Math.PI,
+            deviceKind: 'weatherproof-gfci',
+            circuitGroup: 'Outdoor GFCI',
+            necRef: 'NEC 210.52(E)(1) / 210.8(A)(3)',
+            requiresGfci: true,
+            requiresAfci: false,
+            breakerAmps: 20,
+            loadVa: 180,
+            boxType: 'single-gang-deep',
+            wireGauge: '12',
+            isExterior: true,
+          })
+        }
 
         // Interior entry wall receptacle right near front door (only when clear of tub/shower/sink/equipment)
         if (insideEntryReceptOk) {
@@ -3206,8 +3510,13 @@ export function planNecAutoPopulate(
       // VIS-06 / NEC 680.22(A): Swimming pool zones are outdoor water basins — never place indoor
       // ceiling lights, general habitable outlets, or floating pool-edge receptacles on them.
       if (POOL_PATTERN.test(cat)) continue
-      // NEC 210.52(E)(3): Balcony / Deck / Patio accessible Outdoor WR GFCI mounted flush on exterior wall
-      const spot = snapToZoneWall(z, { mountY: 0.45, preferExterior: true, avoidWindows: false })
+      // VIS-V3-05: Exclude detached / non-building yard, garden, courtyard, and game-spawn zones,
+      // and require attached outdoor living spaces (patio/porch/deck/balcony/terrace) to border
+      // an actual exterior building wall within 1.2 m (mounted flush on the wall, never floating).
+      if (NON_BUILDING_OUTDOOR_PATTERN.test(cat)) continue
+      if (walls.length === 0) continue
+      const spot = snapToExteriorBuildingWall(z, 0.45, 1.2)
+      if (!spot) continue
       addPlanned({
         name: `${z.name} Outdoor WR GFCI`,
         position: spot.position,
@@ -3741,8 +4050,8 @@ export function planNecAutoPopulate(
     }
   }
 
-  // Guarantee at least 1 Outdoor WR GFCI even if a minimal floorplan has no exterior doors/patio zones tagged yet
-  if (exteriorDoorCount === 0 && !planned.some((p) => p.circuitGroup === 'Outdoor GFCI') && walls.length > 0) {
+  // Guarantee at least 1 grade-accessible Outdoor WR GFCI on the ground story (NEC 210.52(E)(1))
+  if (isGroundStory && exteriorDoorCount === 0 && !planned.some((p) => p.circuitGroup === 'Outdoor GFCI') && walls.length > 0) {
     // Stay clear of exterior Plumbing hose-bibb vertical supply risers, sinks, tubs, and MEP equipment
     const exteriorSpotBlocked = (px: number, pz: number): boolean => {
       if (!checkWetFixtureCompliance(px, 0.45, pz, 'receptacle').ok) return true
@@ -3762,12 +4071,21 @@ export function planNecAutoPopulate(
     }
     const isExteriorWallFaceAt = (wCand: WallSeg, a: number, sign: 1 | -1): boolean => {
       if (wCand.openings.some((o) => a > o.tMin - 0.08 && a < o.tMax + 0.08)) return false
-      if (zones.length === 0) return true
       const cxW = wCand.start[0] + wCand.dx * a
       const czW = wCand.start[1] + wCand.dz * a
       const probeOff = wCand.thickness / 2 + 0.35
-      const probeZone = zoneAtPoint(zones, cxW + wCand.nx * sign * probeOff, czW + wCand.nz * sign * probeOff)
-      const oppZone = zoneAtPoint(zones, cxW - wCand.nx * sign * probeOff, czW - wCand.nz * sign * probeOff)
+      const pX = cxW + wCand.nx * sign * probeOff
+      const pZ = czW + wCand.nz * sign * probeOff
+      const oX = cxW - wCand.nx * sign * probeOff
+      const oZ = czW - wCand.nz * sign * probeOff
+      if (interiorZones.length === 0) {
+        if (routingWalls.length === 0) return true
+        const pIn = isPointInsideWallFootprint(pX, pZ, routingWalls, interiorZonePolygons, outdoorZonePolygons, 0)
+        const oIn = isPointInsideWallFootprint(oX, oZ, routingWalls, interiorZonePolygons, outdoorZonePolygons, 0)
+        return !pIn && oIn
+      }
+      const probeZone = zoneAtPoint(zones, pX, pZ)
+      const oppZone = zoneAtPoint(zones, oX, oZ)
       const faceIsOutdoor = probeZone === null || isOutdoorCategory(probeZone.category)
       const oppIsIndoor = oppZone !== null && !isOutdoorCategory(oppZone.category)
       return faceIsOutdoor && oppIsIndoor
@@ -4061,6 +4379,17 @@ export function planNecAutoPopulate(
       return skip.size > 0 ? obstacles.filter((o) => !skip.has(o.nodeId)) : obstacles
     }
 
+    // Armored flexible MC cable for residential grounded exterior condenser drops (y < 0) so
+    // wet-location exterior drops never violate NEC 334.12(B)(4) and multi-room interior framing
+    // runs never incur rigid-conduit NEC 358.26 >360° bend errors.
+    const runRacewayType: RacewayType =
+      racewayType === 'nm-b' &&
+      ordered.length === 1 &&
+      ordered[0]!.isExterior === true &&
+      ordered[0]!.position[1] < -0.05
+        ? 'mc'
+        : racewayType
+
     const hrRoute = (() => {
       if (!includeWiring || ordered.length === 0) return null
       const hrObs = obstaclesForTarget([ordered[0]!.mepSourceNodeId])
@@ -4068,11 +4397,13 @@ export function planNecAutoPopulate(
         preferredChaseY: circuitChaseY,
         clearanceM: 0.05,
         walls: routingWalls,
-        racewayType,
+        racewayType: runRacewayType,
         wireGauge: circuitWireGauge,
         cavities: circuitCavities,
         routingStrategy,
         laneOffsetLateralM: circuitLaneLateralM,
+        interiorPolygons: interiorZonePolygons,
+        outdoorPolygons: outdoorZonePolygons,
       }
       const koRoute = routeElectricalRun(panelStartPt, ordered[0]!.position, hrObs, hrOpts)
       if (koRoute.remainingClashes.length === 0 || knockoutOffM === 0) return koRoute
@@ -4093,11 +4424,13 @@ export function planNecAutoPopulate(
               preferredChaseY: circuitChaseY,
               clearanceM: 0.05,
               walls: routingWalls,
-              racewayType,
+              racewayType: runRacewayType,
               wireGauge: circuitWireGauge,
               cavities: circuitCavities,
               routingStrategy,
               laneOffsetLateralM: circuitLaneLateralM,
+              interiorPolygons: interiorZonePolygons,
+              outdoorPolygons: outdoorZonePolygons,
             },
           ),
         )
@@ -4111,7 +4444,7 @@ export function planNecAutoPopulate(
       const ampGauge = recommendWireGauge({
         material: 'cu',
         insulationRating: '90C',
-        racewayType,
+        racewayType: runRacewayType,
         ambientTempC: 30,
         currentCarryingCount: circuitPoles === 3 ? 3 : 2,
         loadAmps: circuitLoadAmps,
@@ -4129,9 +4462,9 @@ export function planNecAutoPopulate(
       })
       circuitWireGauge = largerGauge(largerGauge(circuitWireGauge, ampGauge), vdCheck.recommendedGauge)
 
-      if (racewayType === 'emt' || racewayType === 'pvc-40' || racewayType === 'rmc') {
+      if (runRacewayType === 'emt' || runRacewayType === 'pvc-40' || runRacewayType === 'rmc') {
         const fill = calculateConduitFill({
-          conduitType: racewayType,
+          conduitType: runRacewayType,
           tradeSize: '3/4"',
           conductors: [{ gauge: circuitWireGauge, count: circuitPoles === 3 ? 4 : 3 }],
           lengthInches: hrRoute.routedLengthM * METERS_TO_FEET * 12,
@@ -4220,7 +4553,7 @@ export function planNecAutoPopulate(
         targetDeviceId: firstDev.tempId,
         circuitNumber: ckt,
         occupancy,
-        racewayType,
+        racewayType: runRacewayType,
         tradeSize,
         wireGauge: circuitWireGauge,
         currentCarryingCount: circuitPoles === 3 ? 3 : 2,
@@ -4261,7 +4594,7 @@ export function planNecAutoPopulate(
           targetDeviceId: toDev.tempId,
           circuitNumber: ckt,
           occupancy,
-          racewayType,
+          racewayType: runRacewayType,
           tradeSize,
           wireGauge: circuitWireGauge,
           currentCarryingCount: circuitPoles === 3 ? 3 : 2,

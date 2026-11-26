@@ -435,8 +435,10 @@ export const GARAGE_PATTERN = /\b(garage|carport)\b/i
 export const BASEMENT_UTILITY_PATTERN =
   /(basement|utility|mechanical|crawl|cellar|sous.?sol|chaufferie)/i
 export const POOL_PATTERN = /\b(pool|swimming|piscine)\b/i
+export const NON_BUILDING_OUTDOOR_PATTERN =
+  /\b(spawn|backyard|frontyard|sideyard|yard|lawn|lot|garden|jardin|field|driveway|street|road|park|fountain|pool\s*deck|courtyard)\b/i
 export const OUTDOOR_PATTERN =
-  /(outdoor|patio|deck|porch|balcony|rooftop|exterior|yard|terrace|terrasse|balcon|jardin|\bpool\b|swimming|piscine|\bspawn\b)/i
+  /(outdoor|patio|deck|porch|balcony|rooftop|exterior|yard|terrace|terrasse|balcon|jardin|\bpool\b|swimming|piscine|\bspawn\b|\blawn\b|\bgarden\b|\bdriveway\b|\bfountain\b|\bcourtyard\b|\bstreet\b|\broad\b|\bpark\b|\blot\b|\bfield\b)/i
 export const HABITABLE_AFCI_PATTERN = new RegExp(
   [
     BEDROOM_PATTERN.source,
