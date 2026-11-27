@@ -987,7 +987,9 @@ export function auditSceneElectrical(
       if (
         !panelZoneEval.legal &&
         panelOutdoors &&
-        NEC_RULE_THRESHOLDS.panelForbiddenOutdoorNema.includes(pNema)
+        NEC_RULE_THRESHOLDS.panelForbiddenOutdoorNema.some(
+          (r) => r.toLowerCase() === pNema.trim().toLowerCase(),
+        )
       ) {
         push({
           severity: 'error',
@@ -1383,7 +1385,10 @@ export function auditSceneElectrical(
                 })
               }
             }
-            if (isSwitch && horizDist <= tubSwitchMinH) {
+            if (
+              isSwitch &&
+              (tubSwitchMinH <= 0 ? horizDist <= 0 : horizDist < tubSwitchMinH)
+            ) {
               push({
                 severity: 'error',
                 codeRef: 'NEC 404.4(C)',
@@ -1405,7 +1410,13 @@ export function auditSceneElectrical(
                 suggestedFix: `Raise ${devName} to >= 8 ft (2.44 m) AFF or move >= 3 ft outside the tub/shower rim.`,
               })
             }
-          } else if (fix.kind === 'stove' && isReceptacle && horizDist <= stoveMinH && devY >= stoveBandLow && devY <= stoveBandHigh) {
+          } else if (
+            fix.kind === 'stove' &&
+            isReceptacle &&
+            (stoveMinH <= 0 ? horizDist <= 0 : horizDist < stoveMinH) &&
+            devY >= stoveBandLow &&
+            devY <= stoveBandHigh
+          ) {
             push({
               severity: 'error',
               codeRef: 'NEC 210.52(C) / 110.11',

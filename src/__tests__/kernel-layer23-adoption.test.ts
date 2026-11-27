@@ -413,16 +413,16 @@ describe('Kernel Layer 2 & Layer 3 Adoption (Legal-Space-First Cavity Router + S
 
     // Verify WeakMap caching on `walls` (without `nodes`) also caches LegalCavityGraph
     const wallsOnly1 = routeElectricalViaLegalCavity({
-      start: [9.5, 0.38, 3.85],
-      end: [3.85, 0.38, 9.5],
+      start: [9.5, 0.38, 4.0],
+      end: [4.0, 0.38, 9.5],
       obstacles: [],
       walls,
       racewayType: 'emt',
       outdoorPolygons: [[[4, 4], [10, 4], [10, 10], [4, 10]]],
     })
     const wallsOnly2 = routeElectricalViaLegalCavity({
-      start: [9.0, 0.38, 3.85],
-      end: [3.85, 0.38, 9.0],
+      start: [9.0, 0.38, 4.0],
+      end: [4.0, 0.38, 9.0],
       obstacles: [],
       walls,
       racewayType: 'emt',

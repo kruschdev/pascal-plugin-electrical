@@ -323,6 +323,43 @@ export function extractExplicitRoofSegments(
   return canonical.map(canonicalRoofSegToExplicit)
 }
 
+const roofShellByNodesCustomHeightCache = new WeakMap<object, Map<string, LevelRoofShell>>()
+const roofEnvelopeByNodesCache = new WeakMap<object, Map<string, PitchedRoofEnvelope>>()
+const roofEnvelopeByWallsCache = new WeakMap<
+  readonly RoutingWallSegment[],
+  Map<string, PitchedRoofEnvelope>
+>()
+
+function inferLevelIdFromWalls(
+  nodes: Readonly<Record<string, SceneNodeLike>>,
+  levelIds: readonly string[],
+  walls?: readonly RoutingWallSegment[],
+): string | null {
+  if (!walls || walls.length === 0) return null
+  const kNodes = asKernelNodes(nodes)
+  const levelIdSet = new Set(levelIds)
+  let inferred: string | null = null
+  for (let i = 0; i < walls.length; i++) {
+    const w = walls[i]!
+    const rawWallNode = nodes[w.id]
+    const rawParentId = (w as { readonly parentId?: unknown }).parentId
+    const wLvl =
+      rawWallNode !== undefined
+        ? kernelResolveNodeLevelId(kNodes, asKernelNode(rawWallNode))
+        : typeof rawParentId === 'string' && levelIdSet.has(rawParentId)
+          ? rawParentId
+          : null
+    if (wLvl && levelIdSet.has(wLvl)) {
+      if (inferred === null) {
+        inferred = wLvl
+      } else if (inferred !== wLvl) {
+        return null
+      }
+    }
+  }
+  return inferred
+}
+
 /**
  * Compute pitched roof shell parameters from the level's wall envelope, delegating to
  * `@kruschdev/pascal-mep-kernel`'s `compileLevelRoofShell` (supporting all 7 roof types
@@ -357,29 +394,108 @@ export function computeRoofEnvelopeFromWalls(
   const halfSpan = (ridgeAlongX ? spanZ : spanX) / 2
   const ridgeCenter = ridgeAlongX ? (minZ + maxZ) / 2 : (minX + maxX) / 2
   const pitch = Number.isFinite(pitchRiseOver12) && pitchRiseOver12 > 0 ? pitchRiseOver12 : 6
-
-  const curLvlId =
-    levelId ?? (nodes ? Object.values(nodes).find((n) => n.type === 'level')?.id ?? null : null)
   const useOverride = Boolean(explicitSegsOverride && explicitSegsOverride.length > 0)
-  const shell = useOverride
-    ? null
-    : compileLevelRoofShell(
-        nodes ? asKernelNodes(nodes) : {},
-        curLvlId,
-        wallH,
-        {
+  const boundsSig = `${round3(minX)},${round3(maxX)},${round3(minZ)},${round3(maxZ)}`
+
+  let shell: LevelRoofShell | null = null
+  if (!useOverride) {
+    if (nodes) {
+      const kNodes = asKernelNodes(nodes)
+      const anatomy = compileBuildingAnatomy(kNodes)
+      const curLvlId =
+        levelId ??
+        (anatomy.levelIds.length <= 1
+          ? anatomy.levelIds[0] ?? null
+          : inferLevelIdFromWalls(nodes, anatomy.levelIds, walls) ?? anatomy.levelIds[0] ?? null)
+      const envKey = `${curLvlId ?? '__all__'}|${round3(wallH)}|${pitch}|${boundsSig}`
+      let byKey = roofEnvelopeByNodesCache.get(nodes as object)
+      const cachedEnv = byKey?.get(envKey)
+      if (cachedEnv) return cachedEnv
+
+      const anatWallH = anatomy.getLevelHeightM(curLvlId)
+      if (Math.abs(anatWallH - wallH) <= 1e-4) {
+        shell = anatomy.getRoofShell(curLvlId, {
           wallBounds: { minX, maxX, minZ, maxZ },
           fallbackPitchRiseOver12: pitch,
           clampOverhangToEave: true,
           footprintPadM: 0.15,
-        },
-      )
-  const explicitSegs = useOverride
-    ? explicitSegsOverride
-    : shell && shell.segments.length > 0
-      ? shell.segments.map(canonicalRoofSegToExplicit)
-      : undefined
+        })
+      } else {
+        let shellByKey = roofShellByNodesCustomHeightCache.get(nodes as object)
+        if (!shellByKey) {
+          shellByKey = new Map<string, LevelRoofShell>()
+          roofShellByNodesCustomHeightCache.set(nodes as object, shellByKey)
+        }
+        shell = shellByKey.get(envKey) ?? null
+        if (!shell) {
+          shell = compileLevelRoofShell(kNodes, curLvlId, wallH, {
+            wallBounds: { minX, maxX, minZ, maxZ },
+            fallbackPitchRiseOver12: pitch,
+            clampOverhangToEave: true,
+            footprintPadM: 0.15,
+          })
+          shellByKey.set(envKey, shell)
+        }
+      }
 
+      const explicitSegs =
+        shell.segments.length > 0 ? shell.segments.map(canonicalRoofSegToExplicit) : undefined
+      const env: PitchedRoofEnvelope = {
+        minX,
+        maxX,
+        minZ,
+        maxZ,
+        wallH,
+        pitchRiseOver12: pitch,
+        ridgeAlongX,
+        halfSpan,
+        ridgeCenter,
+        ...(explicitSegs && explicitSegs.length > 0 ? { explicitSegs } : {}),
+      }
+      roofEnvelopeShellMap.set(env, shell)
+      if (!byKey) {
+        byKey = new Map<string, PitchedRoofEnvelope>()
+        roofEnvelopeByNodesCache.set(nodes as object, byKey)
+      }
+      byKey.set(envKey, env)
+      return env
+    }
+
+    const wallKey = `${walls.length}|${round3(wallH)}|${pitch}|${boundsSig}`
+    let byWallKey = roofEnvelopeByWallsCache.get(walls)
+    const cachedEnv = byWallKey?.get(wallKey)
+    if (cachedEnv) return cachedEnv
+
+    shell = compileLevelRoofShell({}, levelId ?? null, wallH, {
+      wallBounds: { minX, maxX, minZ, maxZ },
+      fallbackPitchRiseOver12: pitch,
+      clampOverhangToEave: true,
+      footprintPadM: 0.15,
+    })
+    const explicitSegs =
+      shell.segments.length > 0 ? shell.segments.map(canonicalRoofSegToExplicit) : undefined
+    const env: PitchedRoofEnvelope = {
+      minX,
+      maxX,
+      minZ,
+      maxZ,
+      wallH,
+      pitchRiseOver12: pitch,
+      ridgeAlongX,
+      halfSpan,
+      ridgeCenter,
+      ...(explicitSegs && explicitSegs.length > 0 ? { explicitSegs } : {}),
+    }
+    roofEnvelopeShellMap.set(env, shell)
+    if (!byWallKey) {
+      byWallKey = new Map<string, PitchedRoofEnvelope>()
+      roofEnvelopeByWallsCache.set(walls, byWallKey)
+    }
+    byWallKey.set(wallKey, env)
+    return env
+  }
+
+  const explicitSegs = explicitSegsOverride
   const env: PitchedRoofEnvelope = {
     minX,
     maxX,
@@ -391,9 +507,6 @@ export function computeRoofEnvelopeFromWalls(
     halfSpan,
     ridgeCenter,
     ...(explicitSegs && explicitSegs.length > 0 ? { explicitSegs } : {}),
-  }
-  if (shell) {
-    roofEnvelopeShellMap.set(env, shell)
   }
   return env
 }
@@ -1493,6 +1606,31 @@ export function segmentIntersectsOpeningPrism(
   return segmentIntersectsOrientedPrismY(a, b, toKernelOpeningPrism(prism), padM)
 }
 
+const openingPrismsKernelArrayCache = new WeakMap<
+  readonly WallOpeningPrism[],
+  {
+    readonly len: number
+    readonly first?: WallOpeningPrism
+    readonly last?: WallOpeningPrism
+    readonly kernels: readonly KernelOrientedPrismY[]
+  }
+>()
+
+function getKernelOpeningPrisms(
+  prisms: readonly WallOpeningPrism[],
+): readonly KernelOrientedPrismY[] {
+  const len = prisms.length
+  const first = prisms[0]
+  const last = prisms[len - 1]
+  const cached = openingPrismsKernelArrayCache.get(prisms)
+  if (cached && cached.len === len && cached.first === first && cached.last === last) {
+    return cached.kernels
+  }
+  const kernels = prisms.map(toKernelOpeningPrism)
+  openingPrismsKernelArrayCache.set(prisms, { len, first, last, kernels })
+  return kernels
+}
+
 /**
  * Count how many segments along `path` intersect at least one door or window opening prism.
  */
@@ -1502,7 +1640,7 @@ export function countPathOpeningHits(
   padM = 0,
 ): number {
   if (prisms.length === 0 || path.length < 2) return 0
-  return countPathOpeningPrismHits(path, prisms.map(toKernelOpeningPrism), padM)
+  return countPathOpeningPrismHits(path, getKernelOpeningPrisms(prisms), padM)
 }
 
 function findFirstOpeningHit(
@@ -3094,7 +3232,7 @@ export function routeElectricalRun(
         const minYOpt = options.minY ?? 0.15
         const racewayOpt: RacewayType = options.racewayType ?? 'nm-b'
         const isFlexOpt = racewayOpt === 'nm-b' || racewayOpt === 'mc'
-        const maxBendOpt = options.maxBendDegrees ?? 360
+        const maxBendOpt = options.maxBendDegrees ?? NEC_RULE_THRESHOLDS.racewayMaxBendDegrees
         const clearOpt = options.clearanceM ?? DEFAULT_CLEARANCE_M
         const radOpt = options.conduitRadiusM ?? 0.015
 
@@ -3326,6 +3464,8 @@ export type RouteElectricalViaLegalCavityParams = {
   readonly interiorPolygons?: readonly (readonly (readonly [number, number])[])[]
   readonly outdoorPolygons?: readonly (readonly (readonly [number, number])[])[]
   readonly allowedBandsOverride?: readonly CavityBand[]
+  /** Optional prebuilt occupancy grid (when omitted, a WeakMap-cached base grid is built from `obstacles`). */
+  readonly occupancy?: TradeOccupancyGrid
 }
 
 export type LegalCavityElectricalRouteResult = CavityRouteResult & {
@@ -3354,6 +3494,16 @@ function mapTradeObstacleKind(obs: TradeObstacle): OccupancyKind {
   return 'hvac-equipment'
 }
 
+const occupancyGridCacheByObstacles = new WeakMap<
+  readonly TradeObstacle[],
+  {
+    readonly len: number
+    readonly first?: TradeObstacle
+    readonly last?: TradeObstacle
+    readonly grid: TradeOccupancyGrid
+  }
+>()
+
 function buildOccupancyGridFromTradeObstacles(
   obstacles: readonly TradeObstacle[],
 ): TradeOccupancyGrid {
@@ -3369,6 +3519,32 @@ function buildOccupancyGridFromTradeObstacles(
     nodeType: obs.nodeType,
   }))
   return new TradeOccupancyGrid(occObstacles)
+}
+
+function getCachedOccupancyGridFromTradeObstacles(
+  obstacles: readonly TradeObstacle[],
+): TradeOccupancyGrid {
+  const len = obstacles.length
+  const first = obstacles[0]
+  const last = obstacles[len - 1]
+  const cached = occupancyGridCacheByObstacles.get(obstacles)
+  if (cached && cached.len === len && cached.first === first && cached.last === last) {
+    return cached.grid
+  }
+  const grid = buildOccupancyGridFromTradeObstacles(obstacles)
+  occupancyGridCacheByObstacles.set(obstacles, { len, first, last, grid })
+  return grid
+}
+
+/**
+ * Encode a roof slope tangent into kernel `roof-segment.pitch`:
+ * `extractCanonicalRoofSegments` treats `<= 0` as flat (`0`), `> 1.4` as degrees, and `(0, 1.4]` as radians.
+ */
+function slopeTanToKernelPitch(slopeTan: number, roofType?: string): number {
+  if (roofType === 'flat' || !Number.isFinite(slopeTan) || slopeTan <= 1e-4) return 0
+  const rad = Math.atan(slopeTan)
+  const deg = (rad * 180) / Math.PI
+  return deg > 1.4 ? deg : rad
 }
 
 function synthesizeKernelNodesFromWalls(
@@ -3465,9 +3641,30 @@ function synthesizeKernelNodesFromWalls(
         width: seg.halfW * 2,
         depth: seg.halfD * 2,
         roofType: seg.roofType,
-        roofHeight: seg.halfD * seg.slopeTan,
+        pitch: slopeTanToKernelPitch(seg.slopeTan, seg.roofType),
         wallHeight: 0,
         overhang: seg.overhangM,
+      }
+    }
+  } else if (cavities?.hasAttic === false) {
+    if (Number.isFinite(minX) && maxX - minX >= 0.4 && maxZ - minZ >= 0.4) {
+      synthetic.__syn_roof_flat = {
+        id: '__syn_roof_flat',
+        type: 'roof-segment',
+        position: [(minX + maxX) / 2, levelH, (minZ + maxZ) / 2],
+        rotation: 0,
+        width: maxX - minX,
+        depth: maxZ - minZ,
+        roofType: 'flat',
+        pitch: 0,
+        wallHeight: 0,
+        overhang: 0.3,
+      }
+    } else {
+      synthetic.__syn_flat_assembly = {
+        id: '__syn_flat_assembly',
+        type: 'structural:assembly',
+        roofPitchRise: 0,
       }
     }
   } else if (
@@ -3481,21 +3678,37 @@ function synthesizeKernelNodesFromWalls(
     const spanZ = maxZ - minZ
     const ridgeAlongX = spanX >= spanZ
     const pitchRise =
-      typeof cavities.roofPitchRise === 'number' && cavities.roofPitchRise > 0
+      typeof cavities.roofPitchRise === 'number' &&
+      Number.isFinite(cavities.roofPitchRise) &&
+      cavities.roofPitchRise >= 0
         ? cavities.roofPitchRise
         : 6
-    const halfSpan = (ridgeAlongX ? spanZ : spanX) / 2
-    synthetic.__syn_roof_gable = {
-      id: '__syn_roof_gable',
-      type: 'roof-segment',
-      position: [(minX + maxX) / 2, levelH, (minZ + maxZ) / 2],
-      rotation: ridgeAlongX ? 0 : Math.PI / 2,
-      width: ridgeAlongX ? spanX : spanZ,
-      depth: ridgeAlongX ? spanZ : spanX,
-      roofType: 'gable',
-      roofHeight: halfSpan * (pitchRise / 12),
-      wallHeight: 0,
-      overhang: 0.3,
+    if (pitchRise <= 1e-4) {
+      synthetic.__syn_roof_flat = {
+        id: '__syn_roof_flat',
+        type: 'roof-segment',
+        position: [(minX + maxX) / 2, levelH, (minZ + maxZ) / 2],
+        rotation: 0,
+        width: spanX,
+        depth: spanZ,
+        roofType: 'flat',
+        pitch: 0,
+        wallHeight: 0,
+        overhang: 0.3,
+      }
+    } else {
+      synthetic.__syn_roof_gable = {
+        id: '__syn_roof_gable',
+        type: 'roof-segment',
+        position: [(minX + maxX) / 2, levelH, (minZ + maxZ) / 2],
+        rotation: ridgeAlongX ? 0 : Math.PI / 2,
+        width: ridgeAlongX ? spanX : spanZ,
+        depth: ridgeAlongX ? spanZ : spanX,
+        roofType: 'gable',
+        pitch: slopeTanToKernelPitch(pitchRise / 12, 'gable'),
+        wallHeight: 0,
+        overhang: 0.3,
+      }
     }
   }
 
@@ -3585,9 +3798,44 @@ export function routeElectricalViaLegalCavity(
   let graph: LegalCavityGraph | null = null
 
   if (nodes) {
-    const candidateAnatomy = compileBuildingAnatomy(asKernelNodes(nodes))
-    const candLevelId = levelId ?? candidateAnatomy.levelIds[0] ?? null
-    if (candidateAnatomy.getWalls(candLevelId).length > 0) {
+    const kNodes = asKernelNodes(nodes)
+    const candidateAnatomy = compileBuildingAnatomy(kNodes)
+    let candLevelId: string | null | undefined = levelId
+    if (candLevelId == null) {
+      if (candidateAnatomy.levelIds.length <= 1) {
+        candLevelId = candidateAnatomy.levelIds[0] ?? null
+      } else if (walls && walls.length > 0) {
+        // Multi-level scene with explicit `walls`: infer matching level from wall ancestry;
+        // if unresolvable or spanning multiple levels, skip `candidateAnatomy` so we fall back
+        // to the supplied `walls` rather than routing against `levelIds[0]`.
+        const inferred = inferLevelIdFromWalls(nodes, candidateAnatomy.levelIds, walls)
+        candLevelId = inferred ?? undefined
+      } else {
+        // Multi-level scene without `walls` or `levelId`: only match by unambiguous endpoint elevation.
+        const avgY = (start[1] + end[1]) / 2
+        let bestElevLvl: string | null = null
+        let elevMatches = 0
+        for (const lvlId of candidateAnatomy.levelIds) {
+          const lvlNode = kNodes[lvlId]
+          const baseY =
+            typeof lvlNode?.elevation === 'number' && Number.isFinite(lvlNode.elevation)
+              ? lvlNode.elevation
+              : Array.isArray(lvlNode?.position) &&
+                  typeof lvlNode.position[1] === 'number' &&
+                  Number.isFinite(lvlNode.position[1])
+                ? lvlNode.position[1]
+                : null
+          if (baseY === null) continue
+          const lvlH = candidateAnatomy.getLevelHeightM(lvlId)
+          if (avgY >= baseY - 0.5 && avgY <= baseY + lvlH + 1.5) {
+            bestElevLvl = lvlId
+            elevMatches++
+          }
+        }
+        candLevelId = elevMatches === 1 && bestElevLvl !== null ? bestElevLvl : undefined
+      }
+    }
+    if (candLevelId !== undefined && candidateAnatomy.getWalls(candLevelId).length > 0) {
       anatomy = candidateAnatomy
       resolvedLevelId = candLevelId
       let byKey = legalCavityGraphCacheByNodes.get(nodes as object)
@@ -3615,11 +3863,14 @@ export function routeElectricalViaLegalCavity(
 
   if (!anatomy || !graph) {
     if (!walls || walls.length === 0) return null
-    const roofSig = cavities?.explicitRoofSegs
-      ? `exp:${cavities.explicitRoofSegs.length}:${cavities.explicitRoofSegs.map((s) => `${s.roofType}@${round3(s.eaveY)}`).join(',')}`
-      : cavities?.hasAttic && !cavities.sources?.includes('upper-floor-joists')
-        ? `gable:${cavities.roofPitchRise ?? 6}:${cavities.levelHeight ?? ''}`
-        : `noroof:${cavities?.levelHeight ?? ''}`
+    const roofSig =
+      cavities?.explicitRoofSegs && cavities.explicitRoofSegs.length > 0
+        ? `exp:${cavities.explicitRoofSegs.length}:${cavities.explicitRoofSegs.map((s) => `${s.roofType}@${round3(s.eaveY)}:${round3(s.slopeTan)}`).join(',')}`
+        : cavities?.hasAttic === false
+          ? `flat:${cavities.levelHeight ?? ''}`
+          : cavities?.hasAttic && !cavities.sources?.includes('upper-floor-joists')
+            ? `gable:${cavities.roofPitchRise ?? 6}:${cavities.levelHeight ?? ''}`
+            : `noroof:${cavities?.levelHeight ?? ''}`
     const cacheKey = `${roofSig}|${optsKey}`
     let byKey = legalCavityGraphCacheByWalls.get(walls)
     if (!byKey) {
@@ -3674,7 +3925,7 @@ export function routeElectricalViaLegalCavity(
   )
   const effectiveMode: RoutingPhysicsMode = hasOpenCavityBand ? mode : 'orthogonal'
 
-  const occupancy = buildOccupancyGridFromTradeObstacles(obstacles)
+  const occupancy = params.occupancy ?? getCachedOccupancyGridFromTradeObstacles(obstacles)
   const cavityRes = routeInLegalCavities({
     anatomy,
     graph,
@@ -4258,7 +4509,7 @@ function routeElectricalRunCore(
   }
   // If in-wall chases still hit structural LVL headers above floor-to-ceiling windows, evaluate
   // wall-following Manhattan runs inside the overhead joist/attic cavity or dry crawlspace cavity!
-  if (bestScore >= 1000 && walls && cavities) {
+  if (bestScore >= 1000 && walls && cavities && routingStrategy !== 'wall-only') {
     const cavityWallElevs: number[] = []
     if (cavities.hasAttic && (!hasTrueRoofAttic || !roofEnv || maxCavityY > roofEnv.wallH + 0.02)) {
       const atticY = Math.min(resolvedAtticY, maxCavityY)
@@ -4933,7 +5184,7 @@ function routeElectricalRunCore(
         walls: walls ?? undefined,
         cavities,
         racewayType,
-        routingStrategy: 'auto',
+        routingStrategy,
         clearanceM,
         conduitRadiusM,
         maxBendDegrees,

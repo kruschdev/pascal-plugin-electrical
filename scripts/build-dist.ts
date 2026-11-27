@@ -43,6 +43,8 @@ const result = await Bun.build({
     'zod',
     'zustand',
     '@pascal-app/*',
+    '@kruschdev/pascal-mep-kernel',
+    '@kruschdev/pascal-mep-kernel/*',
   ],
   throw: false,
 })
@@ -52,9 +54,11 @@ if (!result.success) {
   process.exit(1)
 }
 
-// Guard against regressions back into development JSX runtime (`jsxDEV` throws in production React)
+// Guard against regressions back into development JSX runtime (`jsxDEV` throws in production React),
+// ensure `@kruschdev/pascal-mep-kernel` stays strictly external (`INV-MEP-09` WeakMap & instanceof identity),
 // and hoist any mid-file `"use client";` directives emitted by Bun.build code-splitting to line 1
 // so Next.js 16 Turbopack never rejects split chunks.
+let sawExternalKernelImport = false
 for (const output of result.outputs) {
   if (!output.path.endsWith('.js')) continue
   let contents = await Bun.file(output.path).text()
@@ -64,12 +68,29 @@ for (const output of result.outputs) {
     )
     process.exit(1)
   }
+  if (
+    /\bclass\s+TradeOccupancyGrid\b/.test(contents) ||
+    /\bfunction\s+compileBuildingAnatomy\b/.test(contents) ||
+    contents.includes('pascal-mep-kernel/dist/')
+  ) {
+    console.error(
+      `Kernel external guard failed: ${path.relative(rootDir, output.path)} inlined @kruschdev/pascal-mep-kernel internals.`,
+    )
+    process.exit(1)
+  }
+  if (/from\s*['"]@kruschdev\/pascal-mep-kernel(?:\/[^'"]*)?['"]/.test(contents)) {
+    sawExternalKernelImport = true
+  }
   const directiveRe = /^[ \t]*['"]use client['"];?[ \t]*\r?\n?/gm
   if (directiveRe.test(contents)) {
     const stripped = contents.replace(directiveRe, '')
     contents = `"use client";\n${stripped}`
     fs.writeFileSync(output.path, contents, 'utf8')
   }
+}
+if (!sawExternalKernelImport) {
+  console.error('Kernel external guard failed: no dist/*.js output imports external @kruschdev/pascal-mep-kernel.')
+  process.exit(1)
 }
 
 // Emit strict .d.ts type declarations alongside compiled ESM bundles
