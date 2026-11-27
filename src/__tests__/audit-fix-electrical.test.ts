@@ -2,8 +2,9 @@ import { describe, expect, test } from 'bun:test'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { TradeOccupancyGrid } from '@kruschdev/pascal-mep-kernel'
+import { TradeOccupancyGrid, compileBuildingAnatomy } from '@kruschdev/pascal-mep-kernel'
 import {
+  OUTDOOR_PATTERN,
   type RoutingWallSegment,
   type TradeObstacle,
   auditSceneElectrical,
@@ -11,6 +12,7 @@ import {
   countPathOpeningHits,
   extractRoutingWalls,
   extractWallOpeningPrisms,
+  planNecAutoPopulate,
   routeElectricalRun,
   routeElectricalViaLegalCavity,
 } from '../nec'
@@ -493,5 +495,49 @@ describe('Phase 1 Electrical Audit Fixes (BUG-EH-01..04, BUG-EH-11, OPT-EH-01..0
         }
       }
     }
+  })
+
+  test('VIS-COURTYARD-01: OUTDOOR_PATTERN matches Lanai/Veranda/Loggia/Pergola and U-shaped courtyard houses route zero cables across Lanai void', () => {
+    for (const label of ['Lanai', 'Veranda', 'Loggia', 'Pergola', 'Piscina', 'Terraza', 'Plaza']) {
+      expect(OUTDOOR_PATTERN.test(label)).toBe(true)
+    }
+
+    // U-shaped courtyard house:
+    //   North spine: X[0..16], Z[0..4]
+    //   West wing:   X[0..4],  Z[4..10]
+    //   East wing:   X[12..16], Z[4..10]
+    //   Open Lanai courtyard void: X[4..12], Z[4..10]
+    const scene: Record<string, SceneNodeLike> = {
+      lvl: { id: 'lvl', type: 'level', height: 2.7 },
+      // Outer + courtyard walls
+      w1: { id: 'w1', type: 'wall', parentId: 'lvl', start: [0, 0], end: [16, 0], thickness: 0.14, height: 2.7 },
+      w2: { id: 'w2', type: 'wall', parentId: 'lvl', start: [16, 0], end: [16, 10], thickness: 0.14, height: 2.7 },
+      w3: { id: 'w3', type: 'wall', parentId: 'lvl', start: [16, 10], end: [12, 10], thickness: 0.14, height: 2.7 },
+      w4: { id: 'w4', type: 'wall', parentId: 'lvl', start: [12, 10], end: [12, 4], thickness: 0.14, height: 2.7 },
+      w5: { id: 'w5', type: 'wall', parentId: 'lvl', start: [12, 4], end: [4, 4], thickness: 0.14, height: 2.7 },
+      w6: { id: 'w6', type: 'wall', parentId: 'lvl', start: [4, 4], end: [4, 10], thickness: 0.14, height: 2.7 },
+      w7: { id: 'w7', type: 'wall', parentId: 'lvl', start: [4, 10], end: [0, 10], thickness: 0.14, height: 2.7 },
+      w8: { id: 'w8', type: 'wall', parentId: 'lvl', start: [0, 10], end: [0, 0], thickness: 0.14, height: 2.7 },
+      // Interior wing partitions
+      w9: { id: 'w9', type: 'wall', parentId: 'lvl', start: [4, 0], end: [4, 4], thickness: 0.14, height: 2.7 },
+      w10: { id: 'w10', type: 'wall', parentId: 'lvl', start: [12, 0], end: [12, 4], thickness: 0.14, height: 2.7 },
+      z_living: { id: 'z_living', type: 'zone', parentId: 'lvl', name: 'Living room', polygon: [[4, 0], [12, 0], [12, 4], [4, 4]] },
+      z_west: { id: 'z_west', type: 'zone', parentId: 'lvl', name: 'Guest bedroom', polygon: [[0, 0], [4, 0], [4, 10], [0, 10]] },
+      z_east: { id: 'z_east', type: 'zone', parentId: 'lvl', name: 'Master bedroom', polygon: [[12, 0], [16, 0], [16, 10], [12, 10]] },
+      z_lanai: { id: 'z_lanai', type: 'zone', parentId: 'lvl', name: 'Lanai', polygon: [[4, 4], [12, 4], [12, 10], [4, 10]] },
+    }
+
+    const plan = planNecAutoPopulate(scene, { levelId: 'lvl', includeWiring: true })
+    const fp = compileBuildingAnatomy(scene).getFootprint('lvl')
+
+    // Zero floating indoor ceiling lights over the open-sky Lanai
+    const lanaiCeilingLights = plan.devices.filter(
+      (d) => /lanai/i.test(d.name) && d.deviceKind === 'luminaire' && d.position[1] > 2.2,
+    )
+    expect(lanaiCeilingLights.length).toBe(0)
+
+    // Zero conduit/cable runs crossing the open Lanai courtyard void
+    const courtyardRuns = plan.runs.filter((r) => fp.pathCrossesOutdoorVoid(r.path))
+    expect(courtyardRuns.length).toBe(0)
   })
 })
