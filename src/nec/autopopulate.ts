@@ -217,6 +217,17 @@ export type AutoPopulatePlan = {
   }
 }
 
+type WallOpeningInfo = {
+  tMin: number
+  tMax: number
+  rawMin: number
+  rawMax: number
+  sillY: number
+  headY: number
+  kind: 'door' | 'window'
+  node: SceneNodeLike
+}
+
 type WallSeg = {
   id: string
   start: [number, number]
@@ -228,7 +239,7 @@ type WallSeg = {
   nz: number
   yaw: number
   thickness: number
-  openings: Array<{ tMin: number; tMax: number; kind: 'door' | 'window'; node: SceneNodeLike }>
+  openings: WallOpeningInfo[]
 }
 
 type ZoneInfo = {
@@ -553,11 +564,13 @@ function extractWalls(nodes: Readonly<Record<string, SceneNodeLike>>, levelId: s
     const yaw = Math.atan2(nx, nz)
     const thickness = typeof n.thickness === 'number' ? n.thickness : 0.14
 
-    const openings: WallSeg['openings'] = []
+    const openings: WallOpeningInfo[] = []
     for (const child of all) {
       if (child.parentId !== n.id) continue
       if (child.type !== 'door' && child.type !== 'window') continue
-      const openW = typeof child.width === 'number' ? child.width : 0.9
+      const isWin = child.type === 'window'
+      const openW = typeof child.width === 'number' && child.width > 0 ? child.width : isWin ? 1.0 : 0.9
+      const openH = typeof child.height === 'number' && child.height > 0 ? child.height : isWin ? 1.2 : 2.1
       let tCenter = len / 2
       if (Array.isArray(child.position) && typeof child.position[0] === 'number') {
         const px = child.position[0] as number
@@ -568,10 +581,35 @@ function extractWalls(nodes: Readonly<Record<string, SceneNodeLike>>, levelId: s
         } else {
           tCenter = (px - start[0]) * dx + (pz - start[1]) * dz
         }
+      } else if (typeof child.offset === 'number' && Number.isFinite(child.offset)) {
+        tCenter = child.offset
       }
+      let sillY = 0
+      let headY = openH
+      if (isWin) {
+        sillY = 0.9
+        if (typeof child.sillHeight === 'number' && Number.isFinite(child.sillHeight)) {
+          sillY = child.sillHeight
+        } else if (
+          Array.isArray(child.position) &&
+          typeof child.position[1] === 'number' &&
+          Number.isFinite(child.position[1]) &&
+          child.position[1] > 0
+        ) {
+          // Pascal WindowNode stores vertical center at position[1] (sillY = centerY - height / 2)
+          sillY = Math.max(0, child.position[1] - openH / 2)
+        }
+        headY = sillY + openH
+      }
+      const rawMin = Math.max(0, tCenter - openW / 2)
+      const rawMax = Math.min(len, tCenter + openW / 2)
       openings.push({
-        tMin: Math.max(0, tCenter - openW / 2 - 0.12),
-        tMax: Math.min(len, tCenter + openW / 2 + 0.12),
+        tMin: Math.max(0, rawMin - 0.12),
+        tMax: Math.min(len, rawMax + 0.12),
+        rawMin,
+        rawMax,
+        sillY,
+        headY,
         kind: child.type,
         node: child,
       })
@@ -592,8 +630,23 @@ function zoneAtPoint(zones: readonly ZoneInfo[], x: number, z: number): ZoneInfo
   return null
 }
 
-function unbrokenWallSpans(wall: WallSeg, avoidWindows = false): Array<[number, number]> {
-  const blocked = wall.openings.filter((o) => o.kind === 'door' || (avoidWindows && o.kind === 'window'))
+function isOpeningBlockingMountY(o: WallOpeningInfo, avoidWindows: boolean, mountY?: number): boolean {
+  if (o.kind === 'door') return true
+  if (o.kind === 'window') {
+    if (avoidWindows) return true
+    // NEC 210.52(A)(2)(1): Floor-to-ceiling glass & low-sill windows (sillY < 0.52m) NEVER accept
+    // standard 15"-18" AFF receptacles inside the glass span.
+    if (o.sillY < 0.52) return true
+    // Block any window whose vertical glass span (plus 0.14m box/trim clearance) overlaps the device height.
+    if (typeof mountY === 'number' && mountY >= o.sillY - 0.14 && mountY <= o.headY + 0.14) {
+      return true
+    }
+  }
+  return false
+}
+
+function unbrokenWallSpans(wall: WallSeg, avoidWindows = false, mountY?: number): Array<[number, number]> {
+  const blocked = wall.openings.filter((o) => isOpeningBlockingMountY(o, avoidWindows, mountY))
   const spans: Array<[number, number]> = []
   let cursor = 0
   for (const op of blocked) {
@@ -617,8 +670,9 @@ function wallRoomSpans(
   wall: WallSeg,
   allWalls: readonly WallSeg[],
   avoidWindows = false,
+  mountY?: number,
 ): Array<[number, number]> {
-  const baseSpans = unbrokenWallSpans(wall, avoidWindows)
+  const baseSpans = unbrokenWallSpans(wall, avoidWindows, mountY)
   const cuts: number[] = []
   for (const other of allWalls) {
     if (other.id === wall.id) continue
@@ -696,14 +750,13 @@ export function planNecAutoPopulate(
   const obstacles = extractTradeObstacles(nodes, levelId)
 
   // Cache wallRoomSpans once per planNecAutoPopulate call (ELC-OPT-03)
-  const wallSpansCacheAvoidWin = new Map<string, Array<[number, number]>>()
-  const wallSpansCacheAllowWin = new Map<string, Array<[number, number]>>()
-  const getWallRoomSpans = (wall: WallSeg, avoidWindows = false): Array<[number, number]> => {
-    const cache = avoidWindows ? wallSpansCacheAvoidWin : wallSpansCacheAllowWin
-    let spans = cache.get(wall.id)
+  const wallSpansCache = new Map<string, Array<[number, number]>>()
+  const getWallRoomSpans = (wall: WallSeg, avoidWindows = false, mountY?: number): Array<[number, number]> => {
+    const cacheKey = `${wall.id}:${avoidWindows ? '1' : '0'}:${typeof mountY === 'number' ? Math.round(mountY * 100) : 'x'}`
+    let spans = wallSpansCache.get(cacheKey)
     if (!spans) {
-      spans = wallRoomSpans(wall, walls, avoidWindows)
-      cache.set(wall.id, spans)
+      spans = wallRoomSpans(wall, walls, avoidWindows, mountY)
+      wallSpansCache.set(cacheKey, spans)
     }
     return spans
   }
@@ -1457,7 +1510,7 @@ export function planNecAutoPopulate(
           (resolved.position[0] - hostWForCheck.start[0]) * hostWForCheck.dx +
           (resolved.position[2] - hostWForCheck.start[1]) * hostWForCheck.dz
         const avoidWinForNudge = resolved.position[1] >= 0.95
-        const hostSpans = getWallRoomSpans(hostWForCheck, avoidWinForNudge)
+        const hostSpans = getWallRoomSpans(hostWForCheck, avoidWinForNudge, resolved.position[1])
         const enclosingSpan = hostSpans.find(([s0, s1]) => curAlong >= s0 - 0.12 && curAlong <= s1 + 0.12)
         const spanMinA = enclosingSpan ? Math.max(0.24, enclosingSpan[0] + 0.08) : 0.24
         const spanMaxA = enclosingSpan ? Math.min(hostWForCheck.length - 0.24, enclosingSpan[1] - 0.08) : hostWForCheck.length - 0.24
@@ -1475,7 +1528,7 @@ export function planNecAutoPopulate(
           const na = curAlong + shift
           if (na < spanMinA || na > spanMaxA) continue
           const hitsOpening = hostWForCheck.openings.some(
-            (o) => (o.kind === 'door' || (avoidWinForNudge && o.kind === 'window')) && na > o.tMin && na < o.tMax,
+            (o) => isOpeningBlockingMountY(o, avoidWinForNudge, resolved.position[1]) && na > o.tMin && na < o.tMax,
           )
           if (hitsOpening) continue
           const nx = round3(resolved.position[0] + hostWForCheck.dx * shift)
@@ -1694,7 +1747,7 @@ export function planNecAutoPopulate(
         }
         const faceOff = wall.thickness / 2 + WALL_DEVICE_OFFSET_M
         const probeOff = wall.thickness / 2 + 0.3
-        const spans = getWallRoomSpans(wall, skipWindows)
+        const spans = getWallRoomSpans(wall, skipWindows, opts.mountY)
         for (const [s0, s1] of spans) {
           const spanLen = s1 - s0
           if (spanLen < 0.2) continue
@@ -1844,7 +1897,7 @@ export function planNecAutoPopulate(
       if (minDistPolygonToWall(z.polygon, wall) > maxWallDistM) continue
       const faceOff = wall.thickness / 2 + WALL_DEVICE_OFFSET_M
       const probeOff = wall.thickness / 2 + 0.3
-      const spans = getWallRoomSpans(wall, false)
+      const spans = getWallRoomSpans(wall, false, mountY)
       for (const [s0, s1] of spans) {
         const spanLen = s1 - s0
         if (spanLen < 0.2) continue
@@ -2825,8 +2878,17 @@ export function planNecAutoPopulate(
           const outNx = wall.nx * outSign
           const outNz = wall.nz * outSign
           const faceOff = wall.thickness / 2 + WALL_DEVICE_OFFSET_M
-          for (const shift of [0, 0.65, -0.65, 1.1, -1.1, 1.5, -1.5]) {
-            const t = Math.max(0.22, Math.min(wall.length - 0.22, projT + shift))
+          const candidateTs: number[] = []
+          for (const shift of [0, 0.65, -0.65, 1.1, -1.1, 1.5, -1.5, 2.4, -2.4]) {
+            candidateTs.push(Math.max(0.22, Math.min(wall.length - 0.22, projT + shift)))
+          }
+          // Also try the nearest solid pier immediately flanking any wide storefront window/door
+          for (const o of wall.openings) {
+            if (o.tMin - 0.14 >= 0.22) candidateTs.push(o.tMin - 0.14)
+            if (o.tMax + 0.14 <= wall.length - 0.22) candidateTs.push(o.tMax + 0.14)
+          }
+          for (const t of candidateTs) {
+            const shift = t - projT
             if (targetY >= 0 && wall.openings.some((o) => t > o.tMin - 0.06 && t < o.tMax + 0.06)) {
               continue
             }
@@ -3264,11 +3326,21 @@ export function planNecAutoPopulate(
           latchCandidates.find((tCand) => !hitsHeaderAtT(tCand) && isLatchClearOfInsideWetAndMep(tCand)) ??
           latchCandidates.find((tCand) => isLatchClearOfInsideWetAndMep(tCand)) ??
           latchCandidates.find((tCand) => !hitsHeaderAtT(tCand))
+        // On narrow foyer walls where the door fills most of the wall, keep flanking devices on the
+        // solid king-stud corner pier strictly outside the door leaf `[op.rawMin, op.rawMax]`!
+        const narrowPierCandidates: number[] = []
+        if (op.rawMin >= 0.14) narrowPierCandidates.push(round3(Math.max(0.08, op.rawMin - 0.08)))
+        if (wall.length - op.rawMax >= 0.14) {
+          narrowPierCandidates.push(round3(Math.min(wall.length - 0.08, op.rawMax + 0.08)))
+        }
+        const narrowLatchT =
+          narrowPierCandidates.find((tCand) => isLatchClearOfInsideWetAndMep(tCand)) ?? narrowPierCandidates[0]
         const latchT =
           clearLatchT ??
+          narrowLatchT ??
           Math.min(
-            wall.length - 0.25,
-            Math.max(0.25, op.tMax + 0.26 <= wall.length - 0.2 ? op.tMax + 0.26 : op.tMin - 0.26),
+            wall.length - 0.12,
+            Math.max(0.12, op.tMax + 0.26 <= wall.length - 0.12 ? op.tMax + 0.26 : op.tMin - 0.26),
           )
         const px = wall.start[0] + wall.dx * latchT
         const pz = wall.start[1] + wall.dz * latchT
@@ -3411,6 +3483,10 @@ export function planNecAutoPopulate(
           // REAL-ELC-02: Validate against tub/shower 3 ft zone, sink basin, stove, and MEP equipment/terminals/risers;
           // shift along the same wall span if blocked, or skip if the entire span is obstructed.
           const isSpanTCompliant = (tVal: number): { ok: boolean; wx: number; wz: number } => {
+            const hitsOpeningAtMountY = wall.openings.some(
+              (o) => isOpeningBlockingMountY(o, false, mountY) && tVal > o.tMin && tVal < o.tMax,
+            )
+            if (hitsOpeningAtMountY) return { ok: false, wx: 0, wz: 0 }
             const cxT = wall.start[0] + wall.dx * tVal
             const czT = wall.start[1] + wall.dz * tVal
             const wxT = round3(cxT + wall.nx * sign * faceOff)
@@ -4954,7 +5030,7 @@ export function findNextWallPlacement(
   for (const wall of walls) {
     const faceOff = wall.thickness / 2 + 0.008
     const probeOff = wall.thickness / 2 + 0.3
-    const spans = wallRoomSpans(wall, walls, mountY >= 0.95)
+    const spans = wallRoomSpans(wall, walls, mountY >= 0.95, mountY)
     const wRule = resolveWallFramingRule(bonesCtx, wall.id)
     for (const [s0, s1] of spans) {
       const spanLen = s1 - s0

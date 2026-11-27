@@ -4,7 +4,9 @@ import { auditSceneElectrical } from '../nec/audit'
 import { planNecAutoPopulate } from '../nec/autopopulate'
 import type { SceneNodeLike } from '../nec/load-calc'
 import {
+  countPathOpeningHits,
   extractRoutingWalls,
+  extractWallOpeningPrisms,
   isPointInsideWallFootprint,
   isSegmentInsideWallFootprint,
   routeElectricalRun,
@@ -586,5 +588,207 @@ describe('Round 3 Visual Audit Fixes (VIS-V3-05)', () => {
       preferredChaseY: 2.55,
     })
     expect(directRes.remainingClashes).toHaveLength(0)
+  })
+
+  test('7. Zero wall devices inside floor-to-ceiling/mid-height windows, zero multi-wall chases cutting window/door glass, and under-sill king-stud riser jogs', () => {
+    // 7a: Courtyard house with floor-to-ceiling windows (sillY = 0.05m, h = 2.3m -> centerY = 1.2m),
+    // a 2.1m x 1.8m window (sillY = 0.40m -> centerY = 1.3m), a raised garage window (sillY = 0.55m -> centerY = 1.3m),
+    // and overhead structural LVL headers above the glass spans.
+    const glassHouse: Record<string, SceneNodeLike> = {
+      bldg: { id: 'bldg', type: 'building' },
+      l0: { id: 'l0', type: 'level', parentId: 'bldg', level: 0, height: 2.65 },
+      // Perimeter + courtyard walls
+      w_n: { id: 'w_n', type: 'wall', parentId: 'l0', start: [-6.5, -3], end: [6, -3], height: 2.65, thickness: 0.16 },
+      w_e: { id: 'w_e', type: 'wall', parentId: 'l0', start: [6, -3], end: [6, 1.5], height: 2.65, thickness: 0.16 },
+      w_court_n: { id: 'w_court_n', type: 'wall', parentId: 'l0', start: [-2, 1.5], end: [6, 1.5], height: 2.65, thickness: 0.16 },
+      w_court_w: { id: 'w_court_w', type: 'wall', parentId: 'l0', start: [-2, 1.5], end: [-2, 4.5], height: 2.65, thickness: 0.16 },
+      w_s: { id: 'w_s', type: 'wall', parentId: 'l0', start: [-6.5, 4.5], end: [-2, 4.5], height: 2.65, thickness: 0.16 },
+      w_w: { id: 'w_w', type: 'wall', parentId: 'l0', start: [-6.5, 4.5], end: [-6.5, -3], height: 2.65, thickness: 0.16 },
+      w_div: { id: 'w_div', type: 'wall', parentId: 'l0', start: [-2, -3], end: [-2, 1.5], height: 2.65, thickness: 0.14 },
+      // Floor-to-ceiling 5.1m x 2.3m window on w_court_n (sillY = 1.2 - 1.15 = 0.05m, headY = 2.35m)
+      win_51: {
+        id: 'win_51',
+        type: 'window',
+        parentId: 'w_court_n',
+        position: [4.0, 1.2, 0],
+        width: 5.1,
+        height: 2.3,
+      },
+      // 2.1m x 1.8m window on w_court_w (sillY = 1.3 - 0.9 = 0.40m, headY = 2.20m)
+      win_21: {
+        id: 'win_21',
+        type: 'window',
+        parentId: 'w_court_w',
+        position: [1.5, 1.3, 0],
+        width: 2.1,
+        height: 1.8,
+      },
+      // Floor-to-ceiling 3.8m x 2.3m window on w_s (sillY = 0.05m, headY = 2.35m)
+      win_38: {
+        id: 'win_38',
+        type: 'window',
+        parentId: 'w_s',
+        position: [2.25, 1.2, 0],
+        width: 3.8,
+        height: 2.3,
+      },
+      // Interior door on w_div (0.9m wide, 2.1m tall)
+      door_div: {
+        id: 'door_div',
+        type: 'door',
+        parentId: 'w_div',
+        position: [2.25, 1.05, 0],
+        width: 0.9,
+        height: 2.1,
+      },
+      // Garage raised window (sillY = 0.55m, headY = 2.05m) on w_w
+      win_gar: {
+        id: 'win_gar',
+        type: 'window',
+        parentId: 'w_w',
+        position: [5.5, 1.3, 0],
+        width: 1.6,
+        height: 1.5,
+      },
+      // Structural LVL header spanning right over win_51 (Y in [2.35..2.63])
+      beam_hdr: {
+        id: 'beam_hdr',
+        type: 'structural:beam',
+        parentId: 'l0',
+        start: [-0.8, 2.49, 1.5],
+        end: [4.8, 2.49, 1.5],
+        widthM: 0.12,
+        depthM: 0.28,
+        label: 'LVL Window Header',
+      },
+      z_living: {
+        id: 'z_living',
+        type: 'zone',
+        parentId: 'l0',
+        name: 'Living Room',
+        category: 'living',
+        polygon: [[-2, -3], [6, -3], [6, 1.5], [-2, 1.5]],
+      },
+      z_dining: {
+        id: 'z_dining',
+        type: 'zone',
+        parentId: 'l0',
+        name: 'Dining Room',
+        category: 'dining',
+        polygon: [[-6.5, -3], [-2, -3], [-2, 4.5], [-6.5, 4.5]],
+      },
+      z_garage: {
+        id: 'z_garage',
+        type: 'zone',
+        parentId: 'l0',
+        name: 'Garage',
+        category: 'garage',
+        polygon: [[-6.5, -3], [-2, -3], [-2, 0.5], [-6.5, 0.5]],
+      },
+    }
+
+    const out = electricalAgentOperations.electrical_autopopulate_nec(
+      glassHouse as never,
+      { levelId: 'l0', occupancy: 'residential', includeWiring: true },
+      { activeLevelId: 'l0' },
+    )
+    const created = (out.changes?.create ?? []).map((c) => c.node as SceneNodeLike)
+    const merged: Record<string, SceneNodeLike> = { ...glassHouse }
+    for (const n of created) merged[n.id] = n
+
+    const rWalls = extractRoutingWalls(merged, 'l0')
+    const prisms = extractWallOpeningPrisms(rWalls)
+    expect(prisms.length).toBe(5)
+
+    // ZERO wall devices mounted inside ANY window or door opening prism
+    const devices = created.filter((n) => n.type === 'electrical:device')
+    for (const dev of devices) {
+      const pos = dev.position as Vec3
+      for (const p of prisms) {
+        if (pos[1] < p.yMin || pos[1] > p.yMax) continue
+        const rx = pos[0] - p.originX
+        const rz = pos[2] - p.originZ
+        const t = rx * p.dx + rz * p.dz
+        const perp = Math.abs(rx * p.nx + rz * p.nz)
+        expect(t >= p.tMin && t <= p.tMax && perp <= p.halfPerp + 0.08).toBe(false)
+      }
+    }
+
+    // ZERO electrical conduit segments intersecting ANY window or door opening prism
+    const runs = created.filter((n) => n.type === 'electrical:conduit-run')
+    expect(runs.length).toBeGreaterThan(0)
+    for (const run of runs) {
+      const path = run.path as Vec3[]
+      expect(countPathOpeningHits(path, prisms)).toBe(0)
+    }
+
+    const audit = auditSceneElectrical(merged)
+    expect(audit.errorCount).toBe(0)
+    expect(audit.passed).toBe(true)
+
+    // 7b: Multi-wall route passing walls with huge windows + overhead LVL header (no attic/crawlspace)
+    // must NEVER drop to y = 1.36..1.85m through the glass!
+    const lvlObs: TradeObstacle[] = [
+      {
+        id: 'lvl_1:seg0',
+        nodeId: 'lvl_1',
+        nodeType: 'structural:beam',
+        trade: 'structural',
+        priorityRank: 1,
+        box: { min: [-0.8, 2.35, 1.44], max: [4.8, 2.63, 1.56] },
+        requiredClearanceM: 0.05,
+        label: 'structural beam LVL header',
+      },
+    ]
+    const multiWallNoCavity = routeElectricalRun([-6.3, 0.38, 4.42], [5.4, 0.38, 1.42], lvlObs, {
+      walls: rWalls,
+      racewayType: 'nm-b',
+      preferredChaseY: 2.55,
+    })
+    expect(multiWallNoCavity.remainingClashes).toHaveLength(0)
+    expect(countPathOpeningHits(multiWallNoCavity.path, prisms)).toBe(0)
+
+    // 7c: Outlet mounted under a raised window (sillY = 0.90m, headY = 2.10m) must jog horizontally
+    // below the sill to a solid king-stud pier BEFORE climbing vertically — zero vertical risers through glass!
+    const raisedWinWalls: RoutingWallSegment[] = [
+      {
+        id: 'w_north',
+        start: [0, 0],
+        end: [6, 0],
+        thickness: 0.16,
+        height: 2.7,
+        windowSpans: [{ startDist: 1.8, endDist: 4.2, sillY: 0.9, headY: 2.1 }],
+      },
+      { id: 'w_east', start: [6, 0], end: [6, 4], thickness: 0.16, height: 2.7 },
+      { id: 'w_south', start: [6, 4], end: [0, 4], thickness: 0.16, height: 2.7 },
+      { id: 'w_west', start: [0, 4], end: [0, 0], thickness: 0.16, height: 2.7 },
+    ]
+    const raisedPrisms = extractWallOpeningPrisms(raisedWinWalls)
+
+    // Wall-manhattan route from under-sill outlet [3.0, 0.38, 0.08] -> high switch on East wall [5.92, 1.22, 2.0]
+    const underSillWallRoute = routeElectricalRun([3.0, 0.38, 0.08], [5.92, 1.22, 2.0], [], {
+      walls: raisedWinWalls,
+      racewayType: 'nm-b',
+      preferredChaseY: 2.55,
+    })
+    expect(countPathOpeningHits(underSillWallRoute.path, raisedPrisms)).toBe(0)
+    // Verify it actually jogs horizontally below sill before rising vertically outside [1.8, 4.2]
+    const hasUnderSillJog = underSillWallRoute.path.some(
+      (pt, idx) =>
+        idx > 0 &&
+        pt[1] <= 0.78 &&
+        Math.abs(pt[0] - underSillWallRoute.path[idx - 1]![0]) > 0.5 &&
+        (pt[0] < 1.8 || pt[0] > 4.2),
+    )
+    expect(hasUnderSillJog).toBe(true)
+
+    // Attic-euclidean route from under-sill outlet [3.0, 0.38, 0.08] -> opposite South wall switch [3.0, 1.22, 3.92]
+    const underSillAtticRoute = routeElectricalRun([3.0, 0.38, 0.08], [3.0, 1.22, 3.92], [], {
+      walls: raisedWinWalls,
+      racewayType: 'nm-b',
+      preferredChaseY: 2.55,
+      cavities: { hasAttic: true, hasCrawlSpace: false, crawlSpaceWet: false, atticY: 2.85, crawlSpaceY: -0.18, sources: ['roof'], levelHeight: 2.7 },
+    })
+    expect(countPathOpeningHits(underSillAtticRoute.path, raisedPrisms)).toBe(0)
   })
 })
