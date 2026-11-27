@@ -1,6 +1,6 @@
 # Walkthrough Voiceover Script (`@kruschdev/pascal-plugin-electrical`)
 
-Timed narration script synchronized to [`assets/demo-walkthrough.mp4`](../assets/demo-walkthrough.mp4) (`59.7s` narrated runtime, `1280 x 720` H.264 @ 24fps + 48 kHz AAC voiceover via `gemini-3.8-flash-tts` voice `Charon`, 148 words, singular first-person voice).
+Timed narration script synchronized to [`demo-walkthrough.mp4`](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/demo-walkthrough.mp4) (`59.7s` narrated runtime, `1280 x 720` H.264 @ 24fps + 48 kHz AAC voiceover via `gemini-3.8-flash-tts` voice `Charon`, 148 words, singular first-person voice).
 
 ## Clean Continuous Narration Text (TTS Input)
 

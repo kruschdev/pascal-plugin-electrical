@@ -1,8 +1,8 @@
 # 50-Model Clean-Room MIT Electrical 3D CAD Library
 
-Every electrical material in [`@kruschdev/pascal-plugin-electrical/cad`](../src/cad/index.ts) is built procedurally from clean-room Three.js geometry (MIT license, zero third-party meshes) and pre-exported to binary `.glb` + studio `.png` thumbnails in [`assets/cad/`](../assets/cad/catalog.json) following Pascal's `public/items/<slug>/` layout.
+Every electrical material in [`@kruschdev/pascal-plugin-electrical/cad`](../src/cad/index.ts) is built procedurally from clean-room Three.js geometry (MIT license, zero third-party meshes) and can be downloaded pre-exported as binary `.glb` + studio `.png` thumbnails from the [`v0.2.7` GitHub Release (`electrical-cad-models-v0.2.7.tar.gz`)](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/electrical-cad-models-v0.2.7.tar.gz) or regenerated locally into `assets/cad/` via `bun run export:cad` following Pascal's `public/items/<slug>/` layout.
 
-![50 Clean-Room MIT Electrical CAD Material Models](../assets/cad-material-catalog.png)
+![50 Clean-Room MIT Electrical CAD Material Models](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/cad-material-catalog.png)
 
 ## Programmatic Usage (`./cad`)
 

@@ -19,9 +19,9 @@ Watch the full two-story Aymeric House finished-to-cutaway walkthrough (Structur
 
 ## Walkthrough Video (Recorded Live in Pascal Editor)
 
-![Live Pascal Editor Walkthrough: One-Click NEC Minimum Auto-Populate on Pascal's Built-In Two-Bedroom House, 3D Trade-Priority Routing Around Plumbing & HVAC, Cover-Off 3D Panel Interior Wiring View, Live Panelboard Schedule, NEC 220 Load Calc, and Live Priced BOM Calculator](./assets/demo-walkthrough.gif)
+![Live Pascal Editor Walkthrough: One-Click NEC Minimum Auto-Populate on Pascal's Built-In Two-Bedroom House, 3D Trade-Priority Routing Around Plumbing & HVAC, Cover-Off 3D Panel Interior Wiring View, Live Panelboard Schedule, NEC 220 Load Calc, and Live Priced BOM Calculator](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/demo-walkthrough.gif)
 
-**[Watch Full 720p HD Walkthrough Video Recorded in Pascal Editor (`assets/demo-walkthrough.mp4`)](./assets/demo-walkthrough.mp4)**
+**[Watch Full 720p HD Walkthrough Video Recorded in Pascal Editor (`v0.2.7` Release Asset)](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/demo-walkthrough.mp4)**
 
 1. **NEC Minimum Auto-Populate, Bones Schematic Ingestion (`bones:framing`, `bones:device`, `bones:service`), Interconnected Smoke/CO + Pilot Lighting, and Smart Auto-Wiring**: One click inside Pascal Editor scans each level (walls, T-junctions, doors, bathtubs/showers, rooms, and optional `@pascal-app/plugin-bones` `bones:framing`, `bones:device`, and `bones:service` nodes) to import persisted Bones receptacles, GFCIs, outdoor WR GFCIs, switches (preserving user-dragged coordinates), and 240V service anchors (`water-heater`, `heat-pump`) into engineered 1-pole and 2-pole balanced circuits, mount `MDP-1` inside a clean stud bay (honoring Bones `panel` or back-to-back `electric-meter` / `power-entry` anchors), snap every nail-on outlet, GFCI, and switch flush against the side face of a `16" OC` or `24" OC` stud (`src/nec/framing-interop.ts`), and wire hardwired 120V interconnected Smoke/CO alarms inside every bedroom and outside sleeping areas via `14/3` interconnect on a single non-GFCI 15A AFCI circuit shared with the primary hallway or living-area pilot light (`IRC R314/R315` and `NFPA 72 A.29.9.4`, so a tripped breaker is noticed immediately). When Bones devices are present, the Electrical rail also exposes a dedicated **Import & Wire Bones Schematic** (`bonesMode: 'import-only'`) button to convert your exact Bones layout straight into panel schedules, NEC 220 load calcs, 3D routing, and priced BOMs without duplicating outlets. Adding another outlet in an existing room automatically snaps it to a wall stud, extends that room's circuit run, upsizes spliced anchor boxes per NEC 314.16, and checks NEC 210.19(A) voltage drop, while adding a smoke/CO alarm automatically interconnects onto the existing smoke/CO circuit via `14/3`.
 2. **Legal-Cavity Wall-Manhattan & Attic/Crawl-Space Routing with 3D Opening & Courtyard Protection**: Powered by [`@kruschdev/pascal-mep-kernel`](https://github.com/kruschdev/pascal-mep-kernel), cables route dead-center inside wall stud bays while strictly avoiding 3D door and window opening prisms (`0` glass cuts, with under-sill king-stud risers and floor-to-ceiling storefront exclusion) and open outdoor courtyards (`Lanai`, `Patio`, `Pool`, `Veranda`, `Loggia`, `Pergola`). Whenever a building has an accessible attic (`roof`, `attic` zone, or upper floor joists) or dry crawl space / unfinished basement, flexible cables (`NM-B`/`MC`) automatically transition vertically through bored top/sole plates into roof-clamped pulls across the enclosed cavity (emitting `NEC 334.23 / 320.23` guard-strip and `NEC 334.15(C)` bored floor-joist/running-board drafting notes, while enforcing the `NEC 334.12(B)(4)` wet crawl-space ban in both routing and audit, and keeping rigid `EMT`/`RMC`/`PVC` strictly orthogonal per `NEC 110.12`). Every circuit is color-coded across 3D, 2D floorplans, and the Electrical rail's live Circuit Legend (`CKT-1`..`CKT-10`).
@@ -31,13 +31,13 @@ Watch the full two-story Aymeric House finished-to-cutaway walkthrough (Structur
 
 ## Showcase Gallery
 
-![4-Panel 3D Panel Interior Showcase: Residential 200A Cover Off, Zoomed Breakers/Lugs/Gutters, Rebuilt Panel Cover On with Engraved NEMA Nameplate and NEC 110.16 Arc-Flash Placard, and Commercial 400A 277/480V 3-Phase Panelboard](./assets/demo-panel-wired-interior.png)
+![4-Panel 3D Panel Interior Showcase: Residential 200A Cover Off, Zoomed Breakers/Lugs/Gutters, Rebuilt Panel Cover On with Engraved NEMA Nameplate and NEC 110.16 Arc-Flash Placard, and Commercial 400A 277/480V 3-Phase Panelboard](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/demo-panel-wired-interior.png)
 
-![Live Pascal Editor Electrical Rail and Native Low Walls Inspection View: Concealed In-Wall 3D Manhattan Routing, Catalog Equipment Picker, and Trade-Priority Obstacle Detection](./assets/demo-3d-trade-routing.png)
+![Live Pascal Editor Electrical Rail and Native Low Walls Inspection View: Concealed In-Wall 3D Manhattan Routing, Catalog Equipment Picker, and Trade-Priority Obstacle Detection](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/demo-3d-trade-routing.png)
 
-![Split-Pane Pascal Editor 3D Viewport and Live Populated Panelboard Schedule with NEC Audit (0/0)](./assets/demo-panel-schedule.png)
+![Split-Pane Pascal Editor 3D Viewport and Live Populated Panelboard Schedule with NEC Audit (0/0)](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/demo-panel-schedule.png)
 
-![50 Clean-Room MIT Electrical CAD Material Models (.glb): Load Centers, Open-Cover and Panel-Cover-On Panels, Solar Inverters, Battery ESS, Automatic Transfer Switches, VFDs, SPDs, Dry-Type Transformers, NEC 314.16 Boxes, Smart Wiring Devices, Light Fixtures, Cable Tray, Wireways, and Grounding Hardware](./assets/cad-material-catalog.png)
+![50 Clean-Room MIT Electrical CAD Material Models (.glb): Load Centers, Open-Cover and Panel-Cover-On Panels, Solar Inverters, Battery ESS, Automatic Transfer Switches, VFDs, SPDs, Dry-Type Transformers, NEC 314.16 Boxes, Smart Wiring Devices, Light Fixtures, Cable Tray, Wireways, and Grounding Hardware](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/cad-material-catalog.png)
 
 ### 50-Model Clean-Room MIT CAD Library (6 Categories)
 
@@ -94,8 +94,8 @@ All `package.json` entrypoints resolve directly to `./src/*.ts` (with zero `prep
 npm install @kruschdev/pascal-plugin-electrical
 # or
 bun add @kruschdev/pascal-plugin-electrical
-# or pin directly by GitHub commit SHA (for Next.js / hosted Pascal)
-bun add github:kruschdev/pascal-plugin-electrical#d32b6e6
+# or pin directly by GitHub release tag or commit SHA (for Next.js / hosted Pascal)
+bun add github:kruschdev/pascal-plugin-electrical#v0.2.7
 ```
 
 ```ts

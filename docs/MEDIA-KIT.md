@@ -6,13 +6,14 @@ Ready-to-share video, high-resolution screenshots, 3D CAD contact sheet, OpenGra
 
 | Asset | Resolution / Format | Best Use |
 |---|---|---|
-| [`assets/social-preview.png`](../assets/social-preview.png) | `1280 x 640` PNG | GitHub Social Preview, OpenGraph card, LinkedIn/X link banner |
-| [`assets/demo-walkthrough.mp4`](../assets/demo-walkthrough.mp4) | `1280 x 720` H.264 MP4 (`59.7s`, narrated AAC + `+faststart`) | X video post, LinkedIn native video, YouTube, GitHub Release |
-| [`assets/demo-walkthrough.gif`](../assets/demo-walkthrough.gif) | `640px` palette-optimized GIF | README preview, Reddit, Discord, Slack |
-| [`assets/demo-3d-trade-routing.png`](../assets/demo-3d-trade-routing.png) | `1440 x 810` PNG | Live Pascal Editor Low Walls view showing concealed in-wall Manhattan routing & Catalog Equipment rail |
-| [`assets/demo-panel-wired-interior.png`](../assets/demo-panel-wired-interior.png) | `1920 x 760` PNG | 4-panel 3D Panel Interior showcase (Cover Off, Zoom Breakers & Lugs, Panel Cover On, 400A 3-Phase) |
-| [`assets/demo-panel-schedule.png`](../assets/demo-panel-schedule.png) | `1440 x 810` PNG | Live split-pane 3D house + populated Panelboard Schedule |
-| [`assets/cad-material-catalog.png`](../assets/cad-material-catalog.png) | `1680 x 2560` PNG | Complete 50-model clean-room MIT CAD catalog contact sheet (5x10 studio grid) |
+| [`social-preview.png`](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/social-preview.png) | `1280 x 640` PNG | GitHub Social Preview, OpenGraph card, LinkedIn/X link banner |
+| [`demo-walkthrough.mp4`](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/demo-walkthrough.mp4) | `1280 x 720` H.264 MP4 (`59.7s`, narrated AAC + `+faststart`) | X video post, LinkedIn native video, YouTube, GitHub Release |
+| [`demo-walkthrough.gif`](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/demo-walkthrough.gif) | `640px` palette-optimized GIF | README preview, Reddit, Discord, Slack |
+| [`demo-3d-trade-routing.png`](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/demo-3d-trade-routing.png) | `1440 x 810` PNG | Live Pascal Editor Low Walls view showing concealed in-wall Manhattan routing & Catalog Equipment rail |
+| [`demo-panel-wired-interior.png`](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/demo-panel-wired-interior.png) | `1920 x 760` PNG | 4-panel 3D Panel Interior showcase (Cover Off, Zoom Breakers & Lugs, Panel Cover On, 400A 3-Phase) |
+| [`demo-panel-schedule.png`](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/demo-panel-schedule.png) | `1440 x 810` PNG | Live split-pane 3D house + populated Panelboard Schedule |
+| [`cad-material-catalog.png`](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/cad-material-catalog.png) | `1680 x 2560` PNG | Complete 50-model clean-room MIT CAD catalog contact sheet (5x10 studio grid) |
+| [`electrical-cad-models-v0.2.7.tar.gz`](https://github.com/kruschdev/pascal-plugin-electrical/releases/download/v0.2.7/electrical-cad-models-v0.2.7.tar.gz) | `.tar.gz` (`1.2 MB`) | All 50 pre-exported `.glb` models, 50 thumbnails, and `catalog.json` |
 | [`docs/WALKTHROUGH-SCRIPT.md`](./WALKTHROUGH-SCRIPT.md) | Markdown Beat Sheet | Timed ~60-second chapter-by-chapter narration script & TTS input text |
 | [`scripts/add-voiceover.sh`](../scripts/add-voiceover.sh) | Bash (`gemini-api tts` + `ffmpeg`) | One-command Gemini TTS synthesis (`gemini-3.8-flash-tts`) and AAC muxing into `assets/demo-walkthrough-narrated.mp4` |
 
