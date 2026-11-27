@@ -18,8 +18,21 @@
  * - NEC 220 Panel Bus Overload, Phase Imbalance & NEC 705.12(B)(3)(2) Solar 120% Busbar Rule
  */
 
+import {
+  createOrientedPrismY,
+  evaluatePlacementCandidate,
+  fromTupleAabb3,
+  orientedPrismIntersectsAabb3,
+  pointInPolygon2D,
+} from '@kruschdev/pascal-mep-kernel'
 import type { SceneNodeLike } from './load-calc'
 import { buildPanelSchedule } from './panel-schedule'
+import {
+  NEC_MATERIAL_POLICY_RULES,
+  NEC_PANEL_ZONE_RULES,
+  NEC_RACEWAY_BEND_RULES,
+  NEC_RULE_THRESHOLDS,
+} from './rules'
 import {
   type Aabb3,
   type TradeObstacle,
@@ -102,17 +115,6 @@ export type NecSceneAuditReport = {
   findings: NecAuditFinding[]
 }
 
-function pointInPolygon2D(px: number, pz: number, polygon: ReadonlyArray<readonly [number, number]>): boolean {
-  let inside = false
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const [xi, zi] = polygon[i]!
-    const [xj, zj] = polygon[j]!
-    const intersect = zi > pz !== zj > pz && px < ((xj - xi) * (pz - zi)) / (zj - zi + 1e-12) + xi
-    if (intersect) inside = !inside
-  }
-  return inside
-}
-
 function getZoneAt(
   nodes: Readonly<Record<string, SceneNodeLike>>,
   x: number,
@@ -158,56 +160,24 @@ export type OrientedPrismY = {
 }
 
 export function prismIntersectsAabb(prism: OrientedPrismY, box: Aabb3): boolean {
-  if (box.max[1] < prism.yMin || box.min[1] > prism.yMax) return false
-
-  // 2D Separating Axis Theorem (SAT) in XZ:
-  // 1) Project AABB corners onto equipment's local (lx, lz) axes
-  const boxCorners: [number, number][] = [
-    [box.min[0], box.min[2]],
-    [box.max[0], box.min[2]],
-    [box.max[0], box.max[2]],
-    [box.min[0], box.max[2]],
-  ]
-  let minLx = Number.POSITIVE_INFINITY
-  let maxLx = Number.NEGATIVE_INFINITY
-  let minLz = Number.POSITIVE_INFINITY
-  let maxLz = Number.NEGATIVE_INFINITY
-  for (const [wx, wz] of boxCorners) {
-    const dx = wx - prism.centerX
-    const dz = wz - prism.centerZ
-    const lx = dx * prism.cos - dz * prism.sin
-    const lz = dx * prism.sin + dz * prism.cos
-    if (lx < minLx) minLx = lx
-    if (lx > maxLx) maxLx = lx
-    if (lz < minLz) minLz = lz
-    if (lz > maxLz) maxLz = lz
-  }
-  if (maxLx < prism.lxMin || minLx > prism.lxMax) return false
-  if (maxLz < prism.lzMin || minLz > prism.lzMax) return false
-
-  // 2) Project oriented prism corners onto world (X, Z) axes
-  const prismCorners: [number, number][] = [
-    [prism.lxMin, prism.lzMin],
-    [prism.lxMax, prism.lzMin],
-    [prism.lxMax, prism.lzMax],
-    [prism.lxMin, prism.lzMax],
-  ]
-  let minWx = Number.POSITIVE_INFINITY
-  let maxWx = Number.NEGATIVE_INFINITY
-  let minWz = Number.POSITIVE_INFINITY
-  let maxWz = Number.NEGATIVE_INFINITY
-  for (const [lx, lz] of prismCorners) {
-    const wx = prism.centerX + lx * prism.cos + lz * prism.sin
-    const wz = prism.centerZ - lx * prism.sin + lz * prism.cos
-    if (wx < minWx) minWx = wx
-    if (wx > maxWx) maxWx = wx
-    if (wz < minWz) minWz = wz
-    if (wz > maxWz) maxWz = wz
-  }
-  if (maxWx < box.min[0] || minWx > box.max[0]) return false
-  if (maxWz < box.min[2] || minWz > box.max[2]) return false
-
-  return true
+  // `audit.ts` OrientedPrismY uses Three.js Ry(rotY):
+  //   world = center + (lx*cos + lz*sin, -lx*sin + lz*cos)
+  // Kernel `createOrientedPrismY` uses standard 2D rotation:
+  //   world = center + (lx*cos - lz*sin,  lx*sin + lz*cos)
+  // Negating `sin` maps identically between the two conventions.
+  const kernelPrism = createOrientedPrismY({
+    centerX: prism.centerX,
+    centerZ: prism.centerZ,
+    cos: prism.cos,
+    sin: -prism.sin,
+    lxMin: prism.lxMin,
+    lxMax: prism.lxMax,
+    lzMin: prism.lzMin,
+    lzMax: prism.lzMax,
+    yMin: prism.yMin,
+    yMax: prism.yMax,
+  })
+  return orientedPrismIntersectsAabb3(kernelPrism, fromTupleAabb3(box))
 }
 
 export function getEquipmentSpacePrisms(
@@ -245,12 +215,13 @@ export function getEquipmentSpacePrisms(
   const baseY = kind === 'transformer' ? pos[1] : 0
   const topY = kind === 'transformer' ? pos[1] + h : pos[1] + h / 2
   const workingYMax = Math.max(baseY + clearance.heightM, topY)
+  const dedicatedOverheadH = NEC_RULE_THRESHOLDS.dedicatedOverheadHeightM
   const dedicatedYMax =
     typeof structuralCeilingY === 'number' &&
     Number.isFinite(structuralCeilingY) &&
     structuralCeilingY > topY
-      ? Math.min(topY + 1.829, structuralCeilingY)
-      : topY + 1.829
+      ? Math.min(topY + dedicatedOverheadH, structuralCeilingY)
+      : topY + dedicatedOverheadH
   const zFront = d / 2 + 0.02
 
   const workingPrism: OrientedPrismY = {
@@ -953,7 +924,7 @@ export function auditSceneElectrical(
     if (pPos) {
       const pHeight = typeof panel.height === 'number' ? panel.height : 0.92
       const topBreakerY = pPos[1] + pHeight * 0.35
-      if (topBreakerY > 2.007) {
+      if (topBreakerY > NEC_RULE_THRESHOLDS.panelMaxHandleHeightM) {
         push({
           severity: 'error',
           codeRef: 'NEC 240.24(A)',
@@ -968,7 +939,30 @@ export function auditSceneElectrical(
       const panelLevelId = resolveNodeLevelId(nodes, panel)
       const pZone = getZoneAt(nodes, pPos[0], pPos[2], panelLevelId, zones)
       const pZoneCat = zoneDescriptorOf(pZone)
-      if (pZoneCat && BATHROOM_PATTERN.test(pZoneCat)) {
+      const pNema = typeof panel.nemaRating === 'string' ? panel.nemaRating : 'NEMA-1'
+      const panelInBath = Boolean(pZoneCat && BATHROOM_PATTERN.test(pZoneCat))
+      const panelInCloset = Boolean(pZoneCat && CLOSET_PATTERN.test(pZoneCat))
+      const panelOutdoors = Boolean(pZoneCat && OUTDOOR_PATTERN.test(pZoneCat))
+      const canonicalPanelRoom = panelInBath
+        ? 'bathroom'
+        : panelInCloset
+          ? 'closet'
+          : panelOutdoors
+            ? 'outdoor'
+            : pZoneCat || undefined
+      const panelZoneEval = evaluatePlacementCandidate(
+        NEC_PANEL_ZONE_RULES,
+        {
+          id: panel.id,
+          kind: 'electrical:panel',
+          pos: pPos,
+          roomCategory: canonicalPanelRoom,
+          nemaRating: pNema,
+          isOutdoors: panelOutdoors,
+        },
+        'audit',
+      )
+      if (!panelZoneEval.legal && panelInBath) {
         push({
           severity: 'error',
           codeRef: 'NEC 240.24(E)',
@@ -979,7 +973,7 @@ export function auditSceneElectrical(
           suggestedFix: `Relocate ${panelName} outside "${pZone?.name ?? pZoneCat}" to a hallway, utility room, or garage.`,
         })
       }
-      if (pZoneCat && CLOSET_PATTERN.test(pZoneCat)) {
+      if (!panelZoneEval.legal && panelInCloset) {
         push({
           severity: 'error',
           codeRef: 'NEC 240.24(D)',
@@ -990,8 +984,11 @@ export function auditSceneElectrical(
           suggestedFix: `Relocate ${panelName} outside the clothes closet with clear 30"W x 36"D working space.`,
         })
       }
-      const pNema = typeof panel.nemaRating === 'string' ? panel.nemaRating : 'NEMA-1'
-      if (pZoneCat && OUTDOOR_PATTERN.test(pZoneCat) && pNema === 'NEMA-1') {
+      if (
+        !panelZoneEval.legal &&
+        panelOutdoors &&
+        NEC_RULE_THRESHOLDS.panelForbiddenOutdoorNema.includes(pNema)
+      ) {
         push({
           severity: 'error',
           codeRef: 'NEC 312.2',
@@ -1270,11 +1267,21 @@ export function auditSceneElectrical(
         const devFacesExterior =
           isExteriorDevice &&
           (!outerProbeZone || OUTDOOR_PATTERN.test(zoneDescriptorOf(outerProbeZone)))
+        const tubReceptMinH = NEC_RULE_THRESHOLDS.tubReceptacle.auditMinHorizontalM
+        const tubReceptMaxV = NEC_RULE_THRESHOLDS.tubReceptacle.auditMaxVerticalM
+        const tubSwitchMinH = NEC_RULE_THRESHOLDS.tubSwitch.auditMinHorizontalM
+        const tubLumMinH = NEC_RULE_THRESHOLDS.tubLuminaire.auditMinHorizontalM
+        const tubLumMaxV = NEC_RULE_THRESHOLDS.tubLuminaire.auditMaxVerticalM
+        const stoveMinH = NEC_RULE_THRESHOLDS.stoveReceptacle.auditMinHorizontalM
+        const [stoveBandLow, stoveBandHigh] = NEC_RULE_THRESHOLDS.stoveReceptacle.auditVerticalBandM
+        const sinkMinH = NEC_RULE_THRESHOLDS.sinkReceptacle.auditMinHorizontalM
+        const sinkMaxV = NEC_RULE_THRESHOLDS.sinkReceptacle.auditMaxVerticalM
+        const maxFixtureAuditDist = Math.max(tubReceptMinH, tubLumMinH, tubSwitchMinH, stoveMinH, sinkMinH)
         for (const entry of wetFixtureEntries) {
           const { fix, cx: fixCx, cz: fixCz, zone: fixZone, roomTag: fixRoomTag } = entry
           if (devLevelId && fix.levelId && devLevelId !== fix.levelId) continue
           const horizDist = horizontalDistToAabbXZ(x, z, fix.box)
-          if (horizDist >= 0.914) continue
+          if (horizDist >= maxFixtureAuditDist) continue
           if (zone && fixZone && zone.id !== fixZone.id) continue
           if (!zone || !fixZone) {
             if (devRoomTag && fixRoomTag && devRoomTag !== fixRoomTag) continue
@@ -1301,7 +1308,7 @@ export function auditSceneElectrical(
             }
           }
           if (fix.kind === 'tub-shower') {
-            if (isReceptacle && !isCeilingBathExhaustMep && horizDist < 0.914 && devY < 2.438) {
+            if (isReceptacle && !isCeilingBathExhaustMep && horizDist < tubReceptMinH && devY < tubReceptMaxV) {
               // NEC 2023 406.9(C) Exception: In compact bathrooms with less than the required 3 ft zone,
               // the mandatory NEC 210.52(D) basin GFCI receptacle is permitted on the farthest wall
               // outside the tub/shower rim (horizDist > 0.15 m).
@@ -1311,7 +1318,7 @@ export function auditSceneElectrical(
               if (
                 isGfciProtected &&
                 BATHROOM_PATTERN.test(zoneCat) &&
-                horizDist > 0.15 &&
+                horizDist > tubSwitchMinH &&
                 zone &&
                 Array.isArray(zone.polygon) &&
                 zone.polygon.length >= 3
@@ -1350,7 +1357,7 @@ export function auditSceneElectrical(
                   }
                   maxAchievableTubDistByZone.set(cacheKey, maxAchievableDist)
                 }
-                if (maxAchievableDist < 0.914 && horizDist >= maxAchievableDist - 0.18) {
+                if (maxAchievableDist < tubReceptMinH && horizDist >= maxAchievableDist - 0.18) {
                   qualifiesCompactBathException = true
                 }
               }
@@ -1376,7 +1383,7 @@ export function auditSceneElectrical(
                 })
               }
             }
-            if (isSwitch && horizDist <= 0.15) {
+            if (isSwitch && horizDist <= tubSwitchMinH) {
               push({
                 severity: 'error',
                 codeRef: 'NEC 404.4(C)',
@@ -1387,7 +1394,7 @@ export function auditSceneElectrical(
                 suggestedFix: `Relocate switch ${devName} outside the tub/shower enclosure.`,
               })
             }
-            if (isLuminaire && !isCeilingBathExhaustMep && horizDist < 0.914 && devY < 2.438) {
+            if (isLuminaire && !isCeilingBathExhaustMep && horizDist < tubLumMinH && devY < tubLumMaxV) {
               push({
                 severity: 'error',
                 codeRef: 'NEC 410.10(D)',
@@ -1398,7 +1405,7 @@ export function auditSceneElectrical(
                 suggestedFix: `Raise ${devName} to >= 8 ft (2.44 m) AFF or move >= 3 ft outside the tub/shower rim.`,
               })
             }
-          } else if (fix.kind === 'stove' && isReceptacle && horizDist <= 0.08 && devY >= 0.75 && devY <= 1.65) {
+          } else if (fix.kind === 'stove' && isReceptacle && horizDist <= stoveMinH && devY >= stoveBandLow && devY <= stoveBandHigh) {
             push({
               severity: 'error',
               codeRef: 'NEC 210.52(C) / 110.11',
@@ -1408,7 +1415,7 @@ export function auditSceneElectrical(
               nodeIds: [dev.id, fix.node.id],
               suggestedFix: `Shift ${devName} laterally onto adjacent countertop wall clear of the cooktop.`,
             })
-          } else if (fix.kind === 'sink' && isReceptacle && !isCeilingBathExhaustMep && horizDist === 0 && devY <= 1.05) {
+          } else if (fix.kind === 'sink' && isReceptacle && !isCeilingBathExhaustMep && horizDist <= sinkMinH && devY <= sinkMaxV) {
             push({
               severity: 'error',
               codeRef: 'NEC 406.5(E)',
@@ -1423,7 +1430,7 @@ export function auditSceneElectrical(
       }
 
       // NEC 410.16(C): Closet luminaire clearance
-      if (isLuminaire && zoneCat && CLOSET_PATTERN.test(zoneCat) && devPos[1] < 2.1) {
+      if (isLuminaire && zoneCat && CLOSET_PATTERN.test(zoneCat) && devPos[1] < NEC_RULE_THRESHOLDS.closetLuminaireMinYM) {
         push({
           severity: 'error',
           codeRef: 'NEC 410.16(C)',
@@ -1803,37 +1810,61 @@ export function auditSceneElectrical(
 
     // 3b. NEC 358.26 / 344.26 / 352.26 max 360° bends between pull points (raceways)
     const { totalBendDegrees } = countPathBendDegrees(path)
-    if (
-      (racewayType === 'emt' || racewayType === 'pvc-40' || racewayType === 'rmc') &&
-      totalBendDegrees > 360
-    ) {
+    const runOrigin: Vec3 = path[0] ?? [0, 0, 0]
+    const bendEval = evaluatePlacementCandidate(
+      NEC_RACEWAY_BEND_RULES,
+      {
+        id: run.id,
+        kind: 'electrical:conduit-run',
+        system: racewayType,
+        pos: runOrigin,
+        bendDegrees: totalBendDegrees,
+      },
+      'audit',
+    )
+    if (!bendEval.legal) {
+      const maxBendDeg = NEC_RULE_THRESHOLDS.racewayMaxBendDegrees
       push({
         severity: 'error',
         codeRef: 'NEC 358.26',
         category: 'raceway-bends',
-        title: `Conduit ${runName} exceeds 360° total bends (${totalBendDegrees}°)`,
-        message: `${runName} accumulates ${totalBendDegrees}° of bends between pull points (maximum 360° allowed in EMT/RMC/PVC).`,
+        title: `Conduit ${runName} exceeds ${maxBendDeg}° total bends (${totalBendDegrees}°)`,
+        message: `${runName} accumulates ${totalBendDegrees}° of bends between pull points (maximum ${maxBendDeg}° allowed in EMT/RMC/PVC).`,
         nodeIds: [run.id],
         suggestedFix: 'Split the run with an accessible junction/pull box (electrical:device junction-box).',
       })
     }
 
     // 3c. NEC 334.12 / 300.22(C) Commercial, Plenum & Wet Crawl-Space NM-B restrictions
-    if (racewayType === 'nm-b' && (occupancy === 'commercial' || inPlenum)) {
-      push({
-        severity: 'error',
-        codeRef: inPlenum ? 'NEC 300.22(C)' : 'NEC 334.12',
-        category: 'wiring-method',
-        title: `NM-B cable prohibited on ${runName}`,
-        message: inPlenum
-          ? `NM-B (Romex) is prohibited in environmental air-handling plenums (NEC 300.22(C)).`
-          : `NM-B (Romex) is restricted in commercial construction / suspended ceilings (NEC 334.12).`,
-        nodeIds: [run.id],
-        suggestedFix: 'Switch racewayType to "emt", "mc", or "rmc".',
-      })
-    } else if (racewayType === 'nm-b' && path.some((pt) => pt[1] < -0.05)) {
-      const runCavities = getCavitiesForLevel(runLevelId)
-      if (runCavities.crawlSpaceWet) {
+    const runInSubFloor = path.some((pt) => pt[1] < -0.05)
+    const runInWetCrawlspace = runInSubFloor && getCavitiesForLevel(runLevelId).crawlSpaceWet
+    const materialEval = evaluatePlacementCandidate(
+      NEC_MATERIAL_POLICY_RULES,
+      {
+        id: run.id,
+        kind: 'electrical:conduit-run',
+        system: racewayType,
+        pos: runOrigin,
+        occupancy,
+        inPlenum,
+        inWetCrawlspace: runInWetCrawlspace,
+      },
+      'audit',
+    )
+    if (!materialEval.legal) {
+      if (occupancy === 'commercial' || inPlenum) {
+        push({
+          severity: 'error',
+          codeRef: inPlenum ? 'NEC 300.22(C)' : 'NEC 334.12',
+          category: 'wiring-method',
+          title: `NM-B cable prohibited on ${runName}`,
+          message: inPlenum
+            ? `NM-B (Romex) is prohibited in environmental air-handling plenums (NEC 300.22(C)).`
+            : `NM-B (Romex) is restricted in commercial construction / suspended ceilings (NEC 334.12).`,
+          nodeIds: [run.id],
+          suggestedFix: 'Switch racewayType to "emt", "mc", or "rmc".',
+        })
+      } else if (runInWetCrawlspace) {
         push({
           severity: 'error',
           codeRef: 'NEC 334.12(B)(4)',

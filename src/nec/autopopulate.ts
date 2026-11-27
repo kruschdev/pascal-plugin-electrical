@@ -18,6 +18,13 @@
  */
 
 import {
+  type NearFixtureMeasurement,
+  type SceneNodeLike as KernelSceneNodeLike,
+  evaluatePlacementCandidate,
+  extractCanonicalWallOpenings,
+  pointInPolygon2D,
+} from '@kruschdev/pascal-mep-kernel'
+import {
   BASEMENT_UTILITY_PATTERN,
   BATHROOM_PATTERN,
   BEDROOM_PATTERN,
@@ -65,6 +72,13 @@ import {
   type RoutingMode,
   type Vec3,
 } from './routing'
+import {
+  NEC_FIXTURE_KEEPOUT_RULES,
+  NEC_MATERIAL_POLICY_RULES,
+  NEC_OPENING_KEEPOUT_RULES,
+  NEC_PANEL_ZONE_RULES,
+  NEC_RULE_THRESHOLDS,
+} from './rules'
 import { calculateBoxFill, calculateConduitFill, calculateVoltageDrop, recommendWireGauge } from './sizing'
 import {
   type BoxFillGauge,
@@ -257,17 +271,6 @@ type ZoneInfo = {
   maxZ: number
 }
 
-function pointInPolygon2D(px: number, pz: number, polygon: ReadonlyArray<readonly [number, number]>): boolean {
-  let inside = false
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const [xi, zi] = polygon[i]!
-    const [xj, zj] = polygon[j]!
-    const intersect = zi > pz !== zj > pz && px < ((xj - xi) * (pz - zi)) / (zj - zi + 1e-12) + xi
-    if (intersect) inside = !inside
-  }
-  return inside
-}
-
 function polygonStats(poly: readonly [number, number][]): {
   centroid: [number, number]
   areaM2: number
@@ -363,6 +366,24 @@ function isHabitableAfci(cat: string): boolean {
     !isOutdoorCategory(cat) &&
     !isGarage(cat)
   )
+}
+
+function isPanelProhibitedZone(cat: string, nemaRating = 'NEMA-1'): boolean {
+  const isBath = isBathroom(cat)
+  const isCloset = CLOSET_PATTERN.test(cat)
+  const isOut = isOutdoorCategory(cat)
+  const canonicalRoom = isBath ? 'bathroom' : isCloset ? 'closet' : isOut ? 'outdoor' : cat
+  return !evaluatePlacementCandidate(
+    NEC_PANEL_ZONE_RULES,
+    {
+      kind: 'electrical:panel',
+      pos: [0, 1.52, 0],
+      roomCategory: canonicalRoom,
+      nemaRating,
+      isOutdoors: isOut,
+    },
+    'placement',
+  ).legal
 }
 
 function dist2D(a: readonly [number, number], b: readonly [number, number]): number {
@@ -485,33 +506,53 @@ function createWetFixtureChecker(
     const resolvedZoneId =
       deviceZoneId !== undefined ? deviceZoneId : (zoneAtPoint(zones, x, z)?.id ?? null)
     let minTubDist = Number.POSITIVE_INFINITY
-    let hitsTub = false
-    let hitsSink = false
-    let hitsStove = false
+    const nearFixtures: NearFixtureMeasurement[] = []
     for (const fix of wetFixtures) {
       if (resolvedZoneId && fix.zoneId && resolvedZoneId !== fix.zoneId) continue
       const horizDist = horizontalDistToAabbXZ(x, z, fix.box)
-      if (fix.kind === 'sink') {
-        if (role !== 'receptacle' || y > 1.2 || horizDist >= 0.25) continue
-        if (wallSeparatesPoints2D(x, z, fix.cx, fix.cz, auditWallSegs)) continue
+      if (horizDist >= 5.0) continue
+      const separatedByWall = wallSeparatesPoints2D(x, z, fix.cx, fix.cz, auditWallSegs)
+      if (separatedByWall) continue
+      if (fix.kind === 'tub-shower' && horizDist < minTubDist) {
+        minTubDist = horizDist
+      }
+      nearFixtures.push({
+        kind: fix.kind,
+        horizontalDistM: horizDist,
+        separatedByWall,
+      })
+    }
+    if (nearFixtures.length === 0) {
+      return { ok: true, minTubDist, hitsTub: false, hitsSink: false, hitsStove: false }
+    }
+    const evalRes = evaluatePlacementCandidate(
+      NEC_FIXTURE_KEEPOUT_RULES,
+      {
+        kind: role,
+        role,
+        pos: [x, y, z],
+        nearFixtures,
+      },
+      'placement',
+    )
+    let hitsTub = false
+    let hitsSink = false
+    let hitsStove = false
+    for (const v of evalRes.violations) {
+      if (
+        v.ruleId === 'nec-406-9c-tub-receptacle' ||
+        v.ruleId === 'nec-404-4c-tub-switch' ||
+        v.ruleId === 'nec-410-10d-tub-luminaire'
+      ) {
+        hitsTub = true
+      } else if (v.ruleId === 'nec-406-5e-sink-receptacle') {
         hitsSink = true
-      } else if (fix.kind === 'stove') {
-        if (role !== 'receptacle' || y < 0.65 || y > 1.75 || horizDist >= 0.15) continue
-        if (wallSeparatesPoints2D(x, z, fix.cx, fix.cz, auditWallSegs)) continue
+      } else if (v.ruleId === 'nec-210-52c-stove-receptacle') {
         hitsStove = true
-      } else if (fix.kind === 'tub-shower') {
-        if (horizDist >= 5.0) continue
-        if (wallSeparatesPoints2D(x, z, fix.cx, fix.cz, auditWallSegs)) continue
-        if (horizDist < minTubDist) minTubDist = horizDist
-        if ((role === 'receptacle' || role === 'luminaire') && y < 2.438 && horizDist < 0.925) {
-          hitsTub = true
-        } else if (role === 'switch' && horizDist <= 0.25) {
-          hitsTub = true
-        }
       }
     }
     return {
-      ok: !hitsTub && !hitsSink && !hitsStove,
+      ok: evalRes.legal,
       minTubDist,
       hitsTub,
       hitsSink,
@@ -565,52 +606,22 @@ function extractWalls(nodes: Readonly<Record<string, SceneNodeLike>>, levelId: s
     const thickness = typeof n.thickness === 'number' ? n.thickness : 0.14
 
     const openings: WallOpeningInfo[] = []
-    for (const child of all) {
-      if (child.parentId !== n.id) continue
-      if (child.type !== 'door' && child.type !== 'window') continue
-      const isWin = child.type === 'window'
-      const openW = typeof child.width === 'number' && child.width > 0 ? child.width : isWin ? 1.0 : 0.9
-      const openH = typeof child.height === 'number' && child.height > 0 ? child.height : isWin ? 1.2 : 2.1
-      let tCenter = len / 2
-      if (Array.isArray(child.position) && typeof child.position[0] === 'number') {
-        const px = child.position[0] as number
-        const pz = typeof child.position[2] === 'number' ? (child.position[2] as number) : 0
-        // Handle both wall-local X offset (Pascal default) and world XZ coordinates
-        if (Math.abs(pz) < 0.4 && px >= -0.2 && px <= len + 0.2) {
-          tCenter = px
-        } else {
-          tCenter = (px - start[0]) * dx + (pz - start[1]) * dz
-        }
-      } else if (typeof child.offset === 'number' && Number.isFinite(child.offset)) {
-        tCenter = child.offset
-      }
-      let sillY = 0
-      let headY = openH
-      if (isWin) {
-        sillY = 0.9
-        if (typeof child.sillHeight === 'number' && Number.isFinite(child.sillHeight)) {
-          sillY = child.sillHeight
-        } else if (
-          Array.isArray(child.position) &&
-          typeof child.position[1] === 'number' &&
-          Number.isFinite(child.position[1]) &&
-          child.position[1] > 0
-        ) {
-          // Pascal WindowNode stores vertical center at position[1] (sillY = centerY - height / 2)
-          sillY = Math.max(0, child.position[1] - openH / 2)
-        }
-        headY = sillY + openH
-      }
-      const rawMin = Math.max(0, tCenter - openW / 2)
-      const rawMax = Math.min(len, tCenter + openW / 2)
+    const canonicalOpenings = extractCanonicalWallOpenings(
+      nodes as unknown as Readonly<Record<string, KernelSceneNodeLike>>,
+      n as unknown as KernelSceneNodeLike,
+      { includeHidden: true },
+    )
+    for (const op of canonicalOpenings) {
+      const child = nodes[op.id]
+      if (!child) continue
       openings.push({
-        tMin: Math.max(0, rawMin - 0.12),
-        tMax: Math.min(len, rawMax + 0.12),
-        rawMin,
-        rawMax,
-        sillY,
-        headY,
-        kind: child.type,
+        tMin: Math.max(0, op.startU - 0.12),
+        tMax: Math.min(len, op.endU + 0.12),
+        rawMin: op.startU,
+        rawMax: op.endU,
+        sillY: op.rawSillYM,
+        headY: op.headYM,
+        kind: op.kind,
         node: child,
       })
     }
@@ -631,16 +642,31 @@ function zoneAtPoint(zones: readonly ZoneInfo[], x: number, z: number): ZoneInfo
 }
 
 function isOpeningBlockingMountY(o: WallOpeningInfo, avoidWindows: boolean, mountY?: number): boolean {
-  if (o.kind === 'door') return true
+  if (o.kind === 'door' || (o.kind === 'window' && avoidWindows)) {
+    return !evaluatePlacementCandidate(
+      NEC_OPENING_KEEPOUT_RULES,
+      {
+        kind: 'device',
+        role: 'device',
+        pos: [0, mountY ?? 0, 0],
+        openingKind: o.kind,
+      },
+      'placement',
+    ).legal
+  }
   if (o.kind === 'window') {
-    if (avoidWindows) return true
-    // NEC 210.52(A)(2)(1): Floor-to-ceiling glass & low-sill windows (sillY < 0.52m) NEVER accept
-    // standard 15"-18" AFF receptacles inside the glass span.
-    if (o.sillY < 0.52) return true
-    // Block any window whose vertical glass span (plus 0.14m box/trim clearance) overlaps the device height.
-    if (typeof mountY === 'number' && mountY >= o.sillY - 0.14 && mountY <= o.headY + 0.14) {
-      return true
-    }
+    return !evaluatePlacementCandidate(
+      NEC_OPENING_KEEPOUT_RULES,
+      {
+        kind: 'device',
+        role: 'device',
+        pos: [0, mountY ?? 0, 0],
+        openingKind: 'window',
+        openingSillYM: o.sillY,
+        openingHeadYM: o.headY,
+      },
+      'placement',
+    ).legal
   }
   return false
 }
@@ -727,8 +753,9 @@ export function planNecAutoPopulate(
   const includeSmokeAlarms = options.includeSmokeAlarms ?? occupancy === 'residential'
   const includeWiring = options.includeWiring !== false
   const levelHeight = resolveLevelHeightM(nodes, levelId)
-  const ceilingLightY = round3(Math.max(2.1, levelHeight - 0.04))
-  const ceilingSmokeY = round3(Math.max(2.1, levelHeight - 0.03))
+  const minCeilingFixtureY = NEC_RULE_THRESHOLDS.closetLuminaireMinYM
+  const ceilingLightY = round3(Math.max(minCeilingFixtureY, levelHeight - 0.04))
+  const ceilingSmokeY = round3(Math.max(minCeilingFixtureY, levelHeight - 0.03))
   const preferredChaseY = options.preferredChaseY ?? 2.55
   const effectiveChaseY = round3(Math.min(preferredChaseY, levelHeight - 0.06))
 
@@ -1128,10 +1155,7 @@ export function planNecAutoPopulate(
             const nz = hostWall.nz * side
             const zProbe = zoneAtPoint(zones, px + nx * 0.45, pz + nz * 0.45)
             if (zones.length > 0 && !zProbe) continue
-            if (
-              zProbe &&
-              (isBathroom(zProbe.category) || CLOSET_PATTERN.test(zProbe.category) || isOutdoorCategory(zProbe.category))
-            ) {
+            if (zProbe && isPanelProhibitedZone(zProbe.category)) {
               continue
             }
             const candX = round3(px + nx * (hostWall.thickness / 2 + 0.072))
@@ -1218,21 +1242,15 @@ export function planNecAutoPopulate(
                   continue
                 }
               }
-              if (zProbe) {
-                const cat = zProbe.category
-                if (isBathroom(cat) || CLOSET_PATTERN.test(cat) || isOutdoorCategory(cat)) continue
+              if (zProbe && isPanelProhibitedZone(zProbe.category)) {
+                continue
               }
               const candX = round3(px + nx * (w.thickness / 2 + 0.072))
               const candZ = round3(pz + nz * (w.thickness / 2 + 0.072))
               const candRot = side === 1 ? w.yaw : w.yaw + Math.PI
               // Also check panel's own center isn't inside a bathroom/closet/outdoor zone
               const centerZone = zoneAtPoint(zones, candX, candZ)
-              if (
-                centerZone &&
-                (isBathroom(centerZone.category) ||
-                  CLOSET_PATTERN.test(centerZone.category) ||
-                  isOutdoorCategory(centerZone.category))
-              ) {
+              if (centerZone && isPanelProhibitedZone(centerZone.category)) {
                 continue
               }
               const clr = evaluatePanelClearance(candX, 1.52, candZ, candRot)
@@ -1311,12 +1329,7 @@ export function planNecAutoPopulate(
             const candZ = round3(pz + nz * (w.thickness / 2 + 0.072))
             const candRot = side === 1 ? w.yaw : w.yaw + Math.PI
             const zProbe = zoneAtPoint(zones, px + nx * 0.45, pz + nz * 0.45)
-            const prohibitedZone = Boolean(
-              zProbe &&
-                (isBathroom(zProbe.category) ||
-                  CLOSET_PATTERN.test(zProbe.category) ||
-                  isOutdoorCategory(zProbe.category)),
-            )
+            const prohibitedZone = Boolean(zProbe && isPanelProhibitedZone(zProbe.category))
             const clr = evaluatePanelClearance(candX, 1.52, candZ, candRot)
             const score = 10 - (prohibitedZone ? 5000 : 0) - panelPenaltyFor(clr)
             if (score > bestPanelScore) {
@@ -2798,7 +2811,12 @@ export function planNecAutoPopulate(
     const radialOffsetM = radialOffsetForDir(Math.sin(mepRot), Math.cos(mepRot))
     const lateralOffsetM = mepNode.type === 'plumbing:fixture' ? 0.36 : 0
     const targetY = isCeilingHardwiredExhaust
-      ? round3(Math.min(levelHeight - 0.03, Math.max(2.1, mepRawY >= 2.2 ? mepRawY : ceilingLightY)))
+      ? round3(
+          Math.min(
+            levelHeight - 0.03,
+            Math.max(NEC_RULE_THRESHOLDS.closetLuminaireMinYM, mepRawY >= 2.2 ? mepRawY : ceilingLightY),
+          ),
+        )
       : isOutdoorCondenser && mepRawY < -0.1
         ? round3(mepRawY + 0.9)
         : Math.max(0.38, Math.min(1.5, mepRawY || 0.9))
@@ -3620,7 +3638,11 @@ export function planNecAutoPopulate(
         return pointInPolygon2D(Number(d.position[0]), Number(d.position[2]), z.polygon)
       })
       if (!hasExistingBathGfci) {
-        const spot = snapToZoneWall(z, { mountY: 1.12, minTubDistM: 0.925, avoidWindows: true })
+        const spot = snapToZoneWall(z, {
+          mountY: 1.12,
+          minTubDistM: NEC_RULE_THRESHOLDS.tubReceptacle.placementMinHorizontalM,
+          avoidWindows: true,
+        })
         addPlanned({
           name: `${z.name} Vanity GFCI`,
           position: spot.position,
@@ -4458,11 +4480,23 @@ export function planNecAutoPopulate(
     // Armored flexible MC cable for residential grounded exterior condenser drops (y < 0) so
     // wet-location exterior drops never violate NEC 334.12(B)(4) and multi-room interior framing
     // runs never incur rigid-conduit NEC 358.26 >360° bend errors.
-    const runRacewayType: RacewayType =
-      racewayType === 'nm-b' &&
+    const isWetExteriorGroundDrop =
       ordered.length === 1 &&
       ordered[0]!.isExterior === true &&
       ordered[0]!.position[1] < -0.05
+    const nmbAllowedForDrop = evaluatePlacementCandidate(
+      NEC_MATERIAL_POLICY_RULES,
+      {
+        kind: 'electrical:conduit-run',
+        system: racewayType,
+        pos: ordered[0]?.position ?? [0, 0, 0],
+        occupancy,
+        inWetCrawlspace: isWetExteriorGroundDrop,
+      },
+      'placement',
+    ).legal
+    const runRacewayType: RacewayType =
+      racewayType === 'nm-b' && isWetExteriorGroundDrop && !nmbAllowedForDrop
         ? 'mc'
         : racewayType
 
@@ -4478,6 +4512,8 @@ export function planNecAutoPopulate(
         cavities: circuitCavities,
         routingStrategy,
         laneOffsetLateralM: circuitLaneLateralM,
+        nodes,
+        levelId,
         interiorPolygons: interiorZonePolygons,
         outdoorPolygons: outdoorZonePolygons,
       }
@@ -4505,6 +4541,8 @@ export function planNecAutoPopulate(
               cavities: circuitCavities,
               routingStrategy,
               laneOffsetLateralM: circuitLaneLateralM,
+              nodes,
+              levelId,
               interiorPolygons: interiorZonePolygons,
               outdoorPolygons: outdoorZonePolygons,
             },
@@ -4952,11 +4990,11 @@ export function findNextWallPlacement(
     kind === 'motor-load' || kind === 'floor-box'
       ? 0
       : kind === 'luminaire'
-        ? round3(Math.max(2.1, safeLevelHeight - 0.04))
+        ? round3(Math.max(NEC_RULE_THRESHOLDS.closetLuminaireMinYM, safeLevelHeight - 0.04))
         : kind === 'smoke-co'
-          ? round3(Math.max(2.1, safeLevelHeight - 0.03))
+          ? round3(Math.max(NEC_RULE_THRESHOLDS.closetLuminaireMinYM, safeLevelHeight - 0.03))
           : kind === 'ceiling-fan'
-            ? round3(Math.max(2.1, safeLevelHeight - 0.16))
+            ? round3(Math.max(NEC_RULE_THRESHOLDS.closetLuminaireMinYM, safeLevelHeight - 0.16))
             : kind === 'junction-box'
               ? round3(Math.max(1.2, Math.min(2.45, safeLevelHeight - 0.1)))
               : kind === 'spd'
@@ -5316,6 +5354,8 @@ export function planDeviceAutoConnection(
       racewayType,
       wireGauge: baseWireGauge,
       cavities,
+      nodes,
+      levelId,
     })
 
     // Check NEC 210.19(A) branch voltage drop across existing circuit upstream run + new daisy-chain hop
@@ -5484,6 +5524,8 @@ export function planDeviceAutoConnection(
     racewayType,
     wireGauge: breakerAmps >= 20 ? '12' : '14',
     cavities,
+    nodes,
+    levelId,
   })
 
   const ccc = draft.poles === 3 ? 3 : 2
